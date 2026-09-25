@@ -1,0 +1,63 @@
+# FastVideo3 CI（TDD §12.3）：每模块合并门禁 + nightly 真实 API 冒烟
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 18 * * *"   # nightly: 真实 API 冒烟
+
+jobs:
+  lint-type-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install (dev, 无重型本地组件)
+        run: |
+          pip install -e ".[dev]"
+      - name: Lint (ruff)
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: Type (mypy)
+        run: mypy fastvideo3
+      - name: Unit + Fake 全链路冒烟
+        run: pytest -m "not api" --cov=fastvideo3 --cov-report=term-missing
+
+  web-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install frontend deps
+        run: npm ci
+      - name: Build Vue frontend
+        run: npm run build
+
+  nightly-api-smoke:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Real API smoke (minimal, budget < ¥5)
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+        run: pytest -m api

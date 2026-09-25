@@ -1,0 +1,34 @@
+# FastVideo3 进阶数据库模式（prod-postgres）
+# 一键拉起: docker compose up -d      停止: docker compose down
+# 教学默认模式 edu-sqlite 无需本文件 —— 零配置直接跑。
+services:
+  postgres:
+    image: postgres:16-alpine          # 官方镜像, 拉取即用
+    container_name: fv3-postgres
+    environment:
+      POSTGRES_DB: ${FV3_PG_DB:-fastvideo3}
+      POSTGRES_USER: ${FV3_PG_USER:-fv3}
+      POSTGRES_PASSWORD: ${FV3_PG_PASSWORD:-fv3_change_me}
+    ports:
+      - "5432:5432"
+    volumes:
+      - fv3_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${FV3_PG_USER:-fv3}"]
+      interval: 5s
+      retries: 10
+
+  pgadmin:                              # 可选: 数据库可视化(教学演示用)
+    image: dpage/pgadmin4:latest
+    profiles: ["tools"]                 # docker compose --profile tools up -d 才启动
+    container_name: fv3-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@fastvideo3.local
+      PGADMIN_DEFAULT_PASSWORD: ${FV3_PGADMIN_PASSWORD:-admin}
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+
+volumes:
+  fv3_pgdata:

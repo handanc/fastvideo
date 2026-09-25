@@ -1,0 +1,54 @@
+# FastVideo3 默认供应商路由与生成参数（对应 TDD §10）
+# 2026-08 起默认全百炼单 KEY 栈（性价比选型），文本走模型市场专属端点。
+providers:
+  text: {default: dashscope_qwen, fallback: deepseek}
+  t2i: {default: dashscope_t2i, fallback: siliconflow_flux}
+  i2v: {default: dashscope_wan22_i2v, fallback: siliconflow_wan22}
+  talk: {default: dashscope_wan22_s2v, fallback: kling_lipsync}   # v2v_overlay 模式可换 dashscope_videoretalk(视频口型替换)
+  tts: {default: edge_tts, fallback: dashscope_cosyvoice}   # edge-tts 免费已验证; 账号开通 cosyvoice 后对调即可
+  vlm: {default: dashscope_vlm}
+
+generation:
+  aspect_ratio: "9:16"          # 竖屏短剧默认; 可选 16:9 / 1:1
+  shot_duration_sec: 5
+  talk_mode: s2v_direct         # s2v_direct | v2v_overlay | audio_overlay
+  resolution: [540, 960]        # 成片统一规格(宽,高); 交付档用 profile_high 提到 [1080,1920]
+  quality: economy              # economy=性价比 | high=交付画质(--quality high 覆盖)
+  i2v_resolution: 480P          # wan 系 I2V 档位: 480P | 720P | 1080P
+  style_suffix: ""              # 全局风格锚(全片画风统一), high 档内置真人电影感锚
+  negative_prompt: ""           # 全局负向提示词(防卡通化)
+  color_grade: false            # 成片轻度调色
+  loudnorm: false               # 交付响度归一 -16 LUFS
+  encode_crf: 23                # 中间编码 CRF(越小越清, high 档 20)
+  encode_preset: ultrafast
+  bgm_volume: 0.15
+  storyboard_sample_rate: 0.5   # 分镜 VLM 一致性抽查比例
+  max_script_revisions: 2       # 编剧-评审迭代轮数上限
+
+limits:
+  max_parallel_jobs: 4          # 全局异步任务并发上限; 与供应商配额取小
+  per_provider_concurrency:     # 按账号实际配额调整(新账号视频并发常仅 2-5)
+    dashscope: 3
+    kling: 2
+  i2v_poll_timeout_min: 30
+  retry_per_shot: 2
+
+models:                        # 各能力实际调用的模型名(可热更新, 无需改代码)
+  # 文本: qwen3.7-plus(百炼模型市场专属端点, 见 .env 的 DASHSCOPE_TEXT_BASE_URL)
+  dashscope_text: qwen3.7-plus
+  deepseek_text: deepseek-chat
+  # 图像: 万相最具性价比文生图
+  dashscope_t2i: wanx2.1-t2i-turbo
+  siliconflow_t2i: black-forest-labs/FLUX.1-dev
+  # 视频: flash 档 480P ¥0.11/秒（性价比之王）
+  dashscope_i2v: wan2.2-i2v-flash
+  siliconflow_i2v: Wan-AI/Wan2.2-I2V-A14B
+  # 口型: 数字人 480P ¥0.5/秒, 新账号送 100 秒
+  dashscope_s2v: wan2.2-s2v
+  # 口型替换(更先进档): 视频+音频→重对口型, 对应 v2v_overlay 模式
+  dashscope_retalk: videoretalk
+  kling_talk: kling-v2-master
+  # 语音: ¥2/万字符; 失败自动降级 edge-tts(免费)
+  dashscope_tts: cosyvoice-v2
+  # 视觉评审: 降价后极便宜
+  dashscope_vlm: qwen-vl-plus

@@ -1,0 +1,530 @@
+"""阿里云百炼（DashScope）Provider 族：T2I / I2V / S2V(Talk) / TTS / VLM。
+
+异步任务统一模式：POST 提交(X-DashScope-Async: enable) → GET /tasks/{id} 轮询。
+本地文件以 base64 data URI 传入（无需公网图床）—— 具体字段以官方文档为准，
+模型名可在 configs/default.yaml 热更新。
+"""
+
+from __future__ import annotations
+
+import base64
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from fastvideo3.providers.base import (
+    I2VProvider,
+    ImageResult,
+    ProviderError,
+    T2IProvider,
+    TalkProvider,
+    TTSProvider,
+    VideoJobStatus,
+    VLMProvider,
+    api_retry,
+    raise_for_status,
+)
+from fastvideo3.providers.deepseek import OpenAICompatTextProvider
+
+API_BASE = "https://dashscope.aliyuncs.com/api/v1"
+COMPAT_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+
+class DashScopeBase:
+    name = "dashscope"
+
+    def __init__(self, api_key: str, model: str):
+        if not api_key:
+            raise ProviderError("dashscope: 缺少 DASHSCOPE_API_KEY，请在 .env 中配置")
+        self.api_key = api_key
+        self.model = model
+        self._job_dest: dict[str, Path] = {}
+        self._job_meta: dict[str, dict] = {}
+
+    def _headers(self, async_mode: bool = False) -> dict[str, str]:
+        h = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        if async_mode:
+            h["X-DashScope-Async"] = "enable"
+        return h
+
+    @api_retry(attempts=3)
+    async def _submit_task(self, url: str, body: dict, extra_headers: dict | None = None) -> str:
+        headers = self._headers(async_mode=True)
+        if extra_headers:
+            headers.update(extra_headers)
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, headers=headers, json=body)
+        data = resp.json()
+        raise_for_status(resp, data)
+        task_id = (data.get("output") or {}).get("task_id")
+        if not task_id:
+            raise ProviderError(f"dashscope submit 无 task_id: {str(data)[:200]}")
+        return task_id
+
+    @api_retry(attempts=2)
+    async def _query_task(self, task_id: str) -> dict:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(f"{API_BASE}/tasks/{task_id}", headers=self._headers())
+        data = resp.json()
+        raise_for_status(resp, data)
+        return data
+
+    async def poll(self, job_id: str) -> VideoJobStatus:
+        data = await self._query_task(job_id)
+        output = data.get("output") or {}
+        status = output.get("task_status", "").upper()
+        dest = self._job_dest.get(job_id)
+        if status == "SUCCEEDED":
+            url = _first_media_url(output)
+            if not url or dest is None:
+                return VideoJobStatus(status="failed", error=f"无产物地址: {str(output)[:200]}")
+            await _download(url, dest)
+            return VideoJobStatus(status="succeeded", progress=1.0, output_uri=dest)
+        if status in ("FAILED", "UNKNOWN"):
+            return VideoJobStatus(status="failed", error=output.get("message", "task failed"))
+        return VideoJobStatus(status="running", progress=0.5)
+
+
+def _first_media_url(output: dict) -> str | None:
+    results = output.get("results") or []
+    if results:
+        return results[0].get("url") or results[0].get("video_url")
+    return output.get("video_url") or output.get("image_url")
+
+
+async def _download(url: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        dest.write_bytes(resp.content)
+
+
+def _data_uri(path: Path, mime: str) -> str:
+    b64 = base64.b64encode(path.read_bytes()).decode()
+    return f"data:{mime};base64,{b64}"
+
+
+# ───────────────────────── T2I ─────────────────────────
+class DashScopeT2IProvider(DashScopeBase, T2IProvider):
+    name = "dashscope_wan26"
+
+    @api_retry(attempts=3)
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str = "1024*1024",
+        dest: Path,
+        ref_image: Path | None = None,
+        negative_prompt: str = "",
+        seed: int | None = None,
+    ) -> ImageResult:
+        params: dict[str, Any] = {"size": size, "n": 1}
+        if negative_prompt:
+            params["negative_prompt"] = negative_prompt
+        if seed is not None:
+            params["seed"] = seed  # 同角色/同场景固定种子 → 脸与色调跨镜头一致
+        body = {
+            "model": self.model,
+            "input": {"prompt": prompt},
+            "parameters": params,
+        }
+        task_id = await self._submit_task(
+            f"{API_BASE}/services/aigc/text2image/image-synthesis", body
+        )
+        self._job_dest[task_id] = dest
+        status = await self.poll(task_id)
+        # 图像任务直接轮询至完成
+        from fastvideo3.providers.base import poll_until_done
+
+        status = await poll_until_done(
+            self.poll, task_id, timeout_sec=300, fast_interval=2, slow_interval=5
+        )
+        if status.status != "succeeded" or status.output_uri is None:
+            raise ProviderError(f"t2i failed: {status.error}")
+        return ImageResult(uri=status.output_uri, meta={"task_id": task_id})
+
+
+# ───────────────────────── I2V ─────────────────────────
+class DashScopeI2VProvider(DashScopeBase, I2VProvider):
+    name = "dashscope_wan22_i2v"
+
+    async def submit(  # type: ignore[override]
+        self, dest: Path, image: Path, prompt: str = "", **params: Any
+    ) -> str:
+        body = {
+            "model": self.model,
+            "input": {"prompt": prompt, "img_url": _data_uri(image, "image/png")},
+            "parameters": {"resolution": params.get("resolution", "480P")},
+        }
+        task_id = await self._submit_task(
+            f"{API_BASE}/services/aigc/video-generation/video-synthesis", body
+        )
+        self._job_dest[task_id] = dest
+        return task_id
+
+
+# ───────────────────────── Talk（S2V：图+音频 → 说话视频） ─────────────────────────
+class DashScopeTalkProvider(DashScopeBase, TalkProvider):
+    """wan2.2-s2v 数字人对口型：首帧图+人声音频 → 口型/表情/动作同步的说话视频。
+
+    该模型**拒绝 base64 data URI**（400 url error）—— 先经百炼临时 OSS 直传
+    拿 oss:// URL，再以 X-DashScope-OssResourceResolve 头解析（官方流程）。
+    """
+
+    name = "dashscope_wan22_s2v"
+
+    async def submit(  # type: ignore[override]
+        self, dest: Path, image: Path, audio: Path, **params: Any
+    ) -> str:
+        from fastvideo3.utils.dashscope_upload import OSS_RESOLVE_HEADER, upload_local_file
+
+        image_url = await upload_local_file(self.api_key, self.model, image)
+        audio_url = await upload_local_file(self.api_key, self.model, audio)
+        body = {
+            "model": self.model,
+            "input": {"image_url": image_url, "audio_url": audio_url},
+        }
+        task_id = await self._submit_task(
+            f"{API_BASE}/services/aigc/video-generation/video-synthesis",
+            body,
+            extra_headers=OSS_RESOLVE_HEADER,
+        )
+        self._job_dest[task_id] = dest
+        return task_id
+
+
+# ─────────────────── Talk-Retalk（视频+音频 → 口型替换，更先进档） ───────────────────
+class DashScopeRetalkProvider(DashScopeBase, TalkProvider):
+    """声动人像 VideoRetalk：人物视频+人声音频 → 口型与音频匹配的新视频。
+
+    对应参考项目 FastVideo 本地对口型模型（MultiTalk 类）的云端替代，且支持
+    对已有 I2V 运动片段重对口型（v2v_overlay 模式）；音频长于视频时可用
+    video_extension 扩展原视频尾部。输入同样需 oss:// 临时 URL。
+    """
+
+    name = "dashscope_videoretalk"
+    supports_video_input = True
+
+    async def submit(  # type: ignore[override]
+        self,
+        dest: Path,
+        image: Path | None = None,
+        audio: Path | None = None,
+        video: Path | None = None,
+        **params: Any,
+    ) -> str:
+        if video is None or audio is None:
+            raise ProviderError("videoretalk 需要 video 与 audio 输入")
+        from fastvideo3.utils.dashscope_upload import OSS_RESOLVE_HEADER, upload_local_file
+
+        video_url = await upload_local_file(self.api_key, self.model, video)
+        audio_url = await upload_local_file(self.api_key, self.model, audio)
+        body = {
+            "model": self.model,
+            "input": {"video_url": video_url, "audio_url": audio_url},
+            "parameters": {"video_extension": bool(params.get("video_extension", True))},
+        }
+        task_id = await self._submit_task(
+            f"{API_BASE}/services/aigc/image2video/video-synthesis",
+            body,
+            extra_headers=OSS_RESOLVE_HEADER,
+        )
+        self._job_dest[task_id] = dest
+        return task_id
+
+
+# ───────────────────────── TTS（CosyVoice，官方 dashscope SDK 接入） ─────────────────────────
+class DashScopeTTSProvider(TTSProvider):
+    """CosyVoice 走官方 dashscope SDK（WebSocket 协议，无公开 REST 端点）。
+
+    注意：账号需已开通 cosyvoice-v2，否则引擎返回 418 —— 此时系统自动降级 edge-tts。
+    """
+
+    name = "dashscope_cosyvoice"
+
+    def __init__(self, api_key: str, model: str = "cosyvoice-v2"):
+        if not api_key:
+            raise ProviderError("dashscope: 缺少 DASHSCOPE_API_KEY")
+        self.api_key = api_key
+        self.model = model
+
+    @api_retry(attempts=2)
+    async def synthesize(
+        self, text: str, *, voice: str = "", emotion: str = "", dest: Path
+    ) -> Path:
+        try:
+            import dashscope
+            from dashscope.audio.tts_v2 import SpeechSynthesizer
+        except ImportError as e:  # pragma: no cover
+            raise ProviderError("缺少 dashscope SDK: pip install dashscope") from e
+
+        import asyncio
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        def _call() -> bytes | None:
+            dashscope.api_key = self.api_key
+            synth = SpeechSynthesizer(model=self.model, voice=voice or "longwan")
+            return synth.call(text)
+
+        audio = await asyncio.to_thread(_call)
+        if not audio or len(audio) < 1000:
+            raise ProviderError("cosyvoice 返回空音频（账号可能未开通该模型）")
+        # SDK 输出 mp3 → 统一转 16k 单声道 WAV（时长测量/拼接/口型输入一致）
+        tmp = dest.with_suffix(dest.suffix + ".raw")
+        tmp.write_bytes(audio)
+        from fastvideo3.utils.ffmpeg import run_ffmpeg
+
+        run_ffmpeg(["-i", str(tmp), "-ar", "16000", "-ac", "1", str(dest)])
+        tmp.unlink(missing_ok=True)
+        return dest
+
+
+# ───────────────────────── VLM 评审（qwen-vl，走 OpenAI 兼容端点） ─────────────────────────
+class DashScopeVLMProvider(VLMProvider):
+    name = "dashscope_qwen_vl"
+
+    def __init__(self, api_key: str, model: str = "qwen-vl-max"):
+        if not api_key:
+            raise ProviderError("dashscope: 缺少 DASHSCOPE_API_KEY")
+        self.api_key = api_key
+        self.model = model
+
+    @api_retry(attempts=3)
+    async def review(self, media: list[Path], *, rubric: str, dest: Path | None = None) -> Any:
+        from fastvideo3.core.schema import ReviewResult
+
+        content: list[dict] = []
+        for m in media[:4]:
+            mime = "image/png" if m.suffix.lower() == ".png" else "image/jpeg"
+            content.append({"type": "image_url", "image_url": {"url": _data_uri(m, mime)}})
+        content.append({"type": "text", "text": rubric + "\n\n只输出 JSON。"})
+        body = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": content}],
+            "response_format": {"type": "json_object"},
+        }
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{COMPAT_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=body,
+            )
+        data = resp.json()
+        raise_for_status(resp, data)
+        import json as _json
+
+        raw = data["choices"][0]["message"]["content"]
+        try:
+            parsed = _json.loads(raw)
+        except _json.JSONDecodeError:
+            parsed = {"passed": True, "feedback": raw[:200], "score": 0.7}
+        return ReviewResult(
+            target=media[0].name if media else "",
+            passed=bool(parsed.get("passed", True)),
+            score=float(parsed.get("score", 0.7)),
+            feedback=str(parsed.get("feedback", "")),
+            rubric=rubric[:200],
+        )
+
+
+# ─────────────────── 万相 2.7 商业级档（media 数组新协议） ───────────────────
+class DashScopeWan27Base(DashScopeBase):
+    """wan2.7 新协议：input.media=[{type,url},...]，本地文件走临时 OSS 直传。
+
+    type 取值：first_frame / last_frame / driving_audio / reference_image / reference_video。
+    """
+
+    async def _submit_media(
+        self, dest: Path, media: list[tuple[str, Path]], prompt: str, parameters: dict
+    ) -> str:
+        from fastvideo3.utils.dashscope_upload import OSS_RESOLVE_HEADER, upload_local_file
+
+        uploaded = [(t, await upload_local_file(self.api_key, self.model, p)) for t, p in media]
+        body = {
+            "model": self.model,
+            "input": {"prompt": prompt, "media": [{"type": t, "url": u} for t, u in uploaded]},
+            "parameters": parameters,
+        }
+        task_id = await self._submit_task(
+            f"{API_BASE}/services/aigc/video-generation/video-synthesis",
+            body,
+            extra_headers=OSS_RESOLVE_HEADER,
+        )
+        self._job_dest[task_id] = dest
+        return task_id
+
+
+class DashScopeI2V27Provider(DashScopeWan27Base, I2VProvider):
+    """wan2.7-i2v：首帧(+driving_audio 原生口型/尾帧/续写)，运动质量商业级。"""
+
+    name = "dashscope_wan27_i2v"
+
+    async def submit(  # type: ignore[override]
+        self,
+        dest: Path,
+        image: Path,
+        prompt: str = "",
+        audio: Path | None = None,
+        **params: Any,
+    ) -> str:
+        media: list[tuple[str, Path]] = [("first_frame", image)]
+        if audio is not None:
+            media.append(("driving_audio", audio))
+        parameters = {
+            "resolution": params.get("resolution", "1080P"),
+            "duration": int(params.get("duration", 5)),
+            "prompt_extend": False,  # 提示词由编剧+风格锚精确控制，关掉模型改写
+        }
+        return await self._submit_media(dest, media, prompt, parameters)
+
+
+class DashScopeI2V27TalkProvider(DashScopeWan27Base, TalkProvider):
+    """口型通道：首帧+对白音频 → wan2.7 原生口型同步（替代 s2v/videoretalk，无账号门控）。"""
+
+    name = "dashscope_wan27_audio"
+
+    async def submit(  # type: ignore[override]
+        self,
+        dest: Path,
+        image: Path | None = None,
+        audio: Path | None = None,
+        video: Path | None = None,
+        **params: Any,
+    ) -> str:
+        if image is None or audio is None:
+            raise ProviderError("wan2.7 口型通道需要 image 与 audio")
+        parameters = {
+            "resolution": params.get("resolution", "1080P"),
+            "duration": int(params.get("duration", 5)),
+            "prompt_extend": False,
+        }
+        return await self._submit_media(
+            dest,
+            [("first_frame", image), ("driving_audio", audio)],
+            str(params.get("prompt", "") or ""),
+            parameters,
+        )
+
+
+class DashScopeR2VProvider(DashScopeWan27Base, I2VProvider):
+    """wan2.7-r2v 参考生视频：角色参考图→像素级形象一致的视频（商业管线的一致性引擎）。
+
+    prompt 用"图1/图2"指代参考图；ratio 控制画幅（竖屏 9:16）。
+    """
+
+    name = "dashscope_wan27_r2v"
+
+    async def submit(  # type: ignore[override]
+        self,
+        dest: Path,
+        image: Path | None = None,
+        prompt: str = "",
+        refs: list[Path] | None = None,
+        **params: Any,
+    ) -> str:
+        sources = refs or ([image] if image else [])
+        if not sources:
+            raise ProviderError("r2v 需要至少一张参考图")
+        parameters = {
+            "resolution": params.get("resolution", "1080P"),
+            "duration": int(params.get("duration", 5)),
+            "ratio": params.get("ratio", "9:16"),
+        }
+        return await self._submit_media(
+            dest, [("reference_image", p) for p in sources[:2]], prompt, parameters
+        )
+
+
+class DashScopeWan27ImageProvider(DashScopeBase, T2IProvider):
+    """wan2.7-image：messages 协议文生图，支持角色参考图（主体一致性硬锁脸）。
+
+    首帧带角色立绘作参考图生成 → 脸在源头锁住，下游 i2v/口型全部继承一致的脸。
+    """
+
+    name = "dashscope_wan27_image"
+    supports_reference_image = True
+
+    @api_retry(attempts=3)
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str = "1024*1024",
+        dest: Path,
+        ref_image: Path | None = None,
+        negative_prompt: str = "",
+        seed: int | None = None,
+    ) -> ImageResult:
+        from fastvideo3.utils.dashscope_upload import OSS_RESOLVE_HEADER, upload_local_file
+
+        content: list[dict[str, Any]] = [{"text": prompt}]
+        extra = None
+        if ref_image is not None:
+            content.append({"image": await upload_local_file(self.api_key, self.model, ref_image)})
+            extra = OSS_RESOLVE_HEADER
+        body = {
+            "model": self.model,
+            "input": {"messages": [{"role": "user", "content": content}]},
+            "parameters": {"size": size, "n": 1},
+        }
+        task_id = await self._submit_task(
+            f"{API_BASE}/services/aigc/multimodal-generation/generation",
+            body,
+            extra_headers=extra,
+        )
+        self._job_dest[task_id] = dest
+        from fastvideo3.providers.base import poll_until_done
+
+        status = await poll_until_done(
+            self.poll, task_id, timeout_sec=300, fast_interval=2, slow_interval=5
+        )
+        if status.status != "succeeded" or status.output_uri is None:
+            raise ProviderError(f"wan2.7-image failed: {status.error}")
+        return ImageResult(uri=status.output_uri, meta={"task_id": task_id})
+
+    async def poll(self, job_id: str) -> VideoJobStatus:
+        """wan2.7-image 产物在 output.choices[].message.content[].image，需自定义解析。"""
+        data = await self._query_task(job_id)
+        output = data.get("output") or {}
+        status = output.get("task_status", "").upper()
+        dest = self._job_dest.get(job_id)
+        if status == "SUCCEEDED":
+            url: str | None = None
+            for ch in output.get("choices") or []:
+                for c in (ch.get("message") or {}).get("content") or []:
+                    if c.get("image"):
+                        url = c["image"]
+            url = url or _first_media_url(output)
+            if not url or dest is None:
+                return VideoJobStatus(status="failed", error=f"无产物地址: {str(output)[:200]}")
+            await _download(url, dest)
+            return VideoJobStatus(status="succeeded", progress=1.0, output_uri=dest)
+        if status in ("FAILED", "UNKNOWN"):
+            return VideoJobStatus(status="failed", error=output.get("message", "task failed"))
+        return VideoJobStatus(status="running", progress=0.5)
+
+
+class DashScopeTextProvider(OpenAICompatTextProvider):
+    """百炼 qwen 文本（全栈只需一把 DASHSCOPE_API_KEY）。
+
+    base_url 支持百炼模型市场的专属端点（如 qwen3.7-plus 的工作空间端点）。
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "qwen-plus",
+        base_url: str | None = None,
+        enable_thinking: bool = False,
+    ):
+        super().__init__(
+            api_key,
+            base_url or COMPAT_BASE,
+            model,
+            name="dashscope_qwen",
+            enable_thinking=enable_thinking,
+        )

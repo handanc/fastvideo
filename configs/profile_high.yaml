@@ -1,0 +1,31 @@
+# 交付画质档（--quality high / FV3_QUALITY=high）：深度合并覆盖 default.yaml。
+# 选型原则：同预算内优先保"全片一致性 + 分辨率 + 运动质量"三大观感项。
+# 成本量级（90 秒片）：t2i-plus 约 21 张 ≈ ¥4 + i2v-plus 1080P 约 80s ≈ ¥50 量级，
+# 仍远低于 PRD 的 ¥150 熔断线；economy 档保持教学零压力。
+providers:
+  i2v: {default: dashscope_wan22_i2v, fallback: siliconflow_wan22}
+
+generation:
+  resolution: [1080, 1920]        # 竖屏交付标准（对齐主流微短剧平台）
+  i2v_resolution: 1080P           # flash-480P 是"粗糙感"主因之一；plus-1080P 运动/细节质变
+  # 全局风格锚：所有文生图（角色立绘/场景/分镜首帧）统一追加，杜绝"一格动漫一格真人"。
+  # 中英双语文本：万相对英文摄影术语更敏感，显著压低 3D/皮克斯风漏网率
+  style_suffix: >-
+    真人写实电影剧照，院线级画质，自然皮肤纹理，电影级三点布光，
+    柔和胶片颗粒，浅景深，高动态范围，色彩科学参考ARRI Alexa，
+    photorealistic live-action film still, shot on 35mm lens, realistic human skin,
+    natural color grading, no animation, no CGI look
+  # 负向提示词：风格统一与劣化防御的硬约束
+  negative_prompt: >-
+    卡通，动漫，二次元，插画，手绘，3D渲染，CG感，塑料感，蜡像感，皮克斯风格，Q版，
+    低质量，模糊，畸形，多余手指，脸部崩坏，字幕，水印，logo，过曝，
+    cartoon, anime, 3d render, pixar style, disney style, illustration, painting
+  color_grade: true
+  loudnorm: true
+  encode_crf: 20
+  encode_preset: veryfast
+  bgm_volume: 0.12
+
+models:
+  dashscope_t2i: wanx2.1-t2i-plus     # plus 档：构图/质感/提示词遵循度显著优于 turbo
+  dashscope_i2v: wan2.2-i2v-plus      # plus 档：运动连贯、无闪帧、细节保留

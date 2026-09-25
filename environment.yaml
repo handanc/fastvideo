@@ -1,0 +1,16 @@
+# FastVideo3 conda 环境（一键创建：conda env create -f environment.yaml）
+# 说明：
+# - ffmpeg 经 conda-forge 安装；若失败可跳过（项目会自动回退到 imageio-ffmpeg 自带二进制）
+# - torch（CPU 版）为可选本地视觉组件依赖，不在这里安装，避免环境解析变慢；
+#   需要双人同屏分割/抠图时按 scripts/setup.* 单独安装：
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+name: fastvideo3
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - ffmpeg>=6.0
+  - pip:
+      - -r requirements.txt
