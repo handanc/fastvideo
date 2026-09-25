@@ -1,4 +1,8 @@
-"""rembg 人物抠图懒加载封装（本地 CPU）。"""
+"""rembg 人物抠图懒加载封装（本地 CPU）。
+
+⚠ 本期未接入管线：双人对话镜头已改为「分镜首帧同框 + 单条 S2V」（m6_talk._two_person），
+本模块与 yolo.py 暂无调用点，保留供后续"分割合成进阶"使用。
+"""
 
 from __future__ import annotations
 

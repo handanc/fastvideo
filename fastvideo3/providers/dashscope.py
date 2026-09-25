@@ -164,7 +164,7 @@ def _image_data_uri(path: Path, max_side: int = 1280, quality: int = 85) -> str:
                 return _data_uri(path, mime)
             scale = max_side / max(w, h)
             im2 = im.convert("RGB").resize(
-                (max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS
+                (max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS
             )
             buf = io.BytesIO()
             im2.save(buf, format="JPEG", quality=quality)
@@ -348,7 +348,19 @@ class DashScopeTTSProvider(TTSProvider):
 
         def _call() -> bytes | None:
             dashscope.api_key = self.api_key
-            synth = SpeechSynthesizer(model=self.model, voice=voice or "longwan")
+            # emotion 通道运行时核实：SDK 签名支持才透传（不做臆测性参数映射）。
+            # 此前 emotion 一路传递到这里被静默丢弃。
+            kwargs: dict[str, Any] = {}
+            if emotion:
+                import inspect
+
+                try:
+                    sig = inspect.signature(SpeechSynthesizer.__init__)
+                    if "emotion" in sig.parameters:
+                        kwargs["emotion"] = emotion
+                except (TypeError, ValueError):  # pragma: no cover
+                    pass
+            synth = SpeechSynthesizer(model=self.model, voice=voice or "longwan", **kwargs)
             return synth.call(text)
 
         audio = await asyncio.to_thread(_call)

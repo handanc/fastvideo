@@ -18,9 +18,13 @@ pip install -e .
 # 2) 零成本演示（Fake 模式，无需任何 KEY）
 fastvideo3 run --topic "校园喜剧" --duration 30 --fake
 
-# 3) 真实生成：复制 .env.example → .env，填入两把 KEY 后
-fastvideo3 run --topic "职场新人的第一天" --duration 60
+# 3) 真实生成：复制 .env.example → .env，填入 KEY 后（先探活防欠费白跑）
+fastvideo3 doctor --probe
+fastvideo3 run --topic "职场新人的第一天" --duration 30 --quality cinema --budget 150
 ```
+
+画质档位与成本（30 秒成片估算）：`economy` ≈¥5-10（教学）· `high` ≈¥15-25（交付 1080P）·
+`cinema` ≈¥40-60（商业级：wan2.7 + 角色参考锁脸 + 抽卡选优，对齐 YouTube AI 短剧观感）。
 
 **一把 `DASHSCOPE_API_KEY` 跑通全系统**（2026-08 起默认全百炼栈，性价比选型）：
 
@@ -40,7 +44,7 @@ fastvideo3 run --topic "职场新人的第一天" --duration 60
 | `fastvideo3 run --topic ... [--fake] [--review gated] [--talk-mode audio_overlay]` | 端到端生成                                       |
 | `fastvideo3 stage script/assets/storyboard/shots/audio/talk/edit`                  | 单阶段运行（教学）                               |
 | `fastvideo3 resume <run_id> --decision approve`                                    | 续跑 / 人工审片回复                              |
-| `fastvideo3 doctor`                                                                | 环境自检                                         |
+| `fastvideo3 doctor [--probe]`                                                      | 环境自检（--probe 真实 KEY 探活：欠费/未开通在跑片烧钱前暴露） |
 | `fastvideo3 cost <run_id>` / `fastvideo3 ls-runs`                                | 成本台账 / 历史运行                              |
 | `fastvideo3 serve`                                                                 | **Vue Web 面板**（FastAPI + Vue3，见下节） |
 | `streamlit run fastvideo3/app/streamlit_app.py`                                    | Streamlit 面板（教学观测用）                     |
@@ -64,9 +68,9 @@ fastvideo3 serve
 
 | 视图     | 功能                                                                                           |
 | -------- | ---------------------------------------------------------------------------------------------- |
-| 新建任务 | 主题/风格/时长/审片模式/口型模式/画质/画幅/熔断/Fake 开关 → 后台启动生成                      |
+| 新建任务 | 主题/风格/时长/审片模式/口型模式/画质/画幅/熔断/Fake 开关 → 后台启动生成。**默认 cinema 档真实生成**（成本预估提示联动时长），Fake 需显式勾选并有醒目警示 |
 | 运行历史 | 状态徽章（完成/运行中/待审片/失败/停摆）+ 成本摘要，5s 自动刷新                                |
-| 运行详情 | 事件流时间线（3s 轮询）· 成本明细 · 资产/分镜画廊 · 成片与镜头片段播放 · 审片通过/驳回续跑 |
+| 运行详情 | 事件流时间线（3s 轮询，失败/降级/账户门事件红色高亮）· 成本明细 · 资产/分镜画廊 · 成片与镜头片段播放 · **终审徽标**（绿=通过+分数 / 黄=评审异常已放行 / 红=未通过+意见）· 审片通过/驳回续跑（驳回自动重拍 ≤2 镜后重合成） |
 | 环境自检 | JSON 版 doctor（依赖/FFmpeg/KEY/权重/数据库）                                                  |
 
 REST API（Swagger 文档：`/docs`）：`GET/POST /api/runs` · `GET /api/runs/{id}` · `POST /api/runs/{id}/resume` · `GET /api/files/{id}/{stage}/{name}` · `GET /api/doctor` · `GET /api/health`
@@ -115,4 +119,4 @@ cd web && npm ci && npm run build   # 前端构建门禁（CI job: web-build）
 
 1. Provider 层用 **httpx 直连**（更薄、更教学友好），未强依赖 LangChain 的 LLM 封装；LangGraph 仍是编排骨架。
 2. 并行采用"图级扇出（shots/audio 双分支）+ 节点内信号量并发"；逐镜头 `Send()` map-reduce 留作进阶练习（见 TDD §5.4）。
-3. 双人同屏在缺少 ultralytics/rembg 时自动降级为左右拼接，保证任何环境可交付。
+3. 双人对话镜头用分镜首帧（本就两人同框）走单条 S2V，不再做立绘左右拼接（旧路径被 9:16 cover 裁切毁帧）；YOLO/rembg 分割合成留作进阶练习（utils 中保留、暂无调用点）。

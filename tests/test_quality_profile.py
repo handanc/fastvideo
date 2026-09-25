@@ -36,6 +36,35 @@ def test_load_config_economy_default_untouched(tmp_path):
     assert cfg.resolution == (540, 960)
     assert cfg.i2v_resolution == "480P"
     assert not cfg.color_grade
+    # 新增质量开关的默认值（economy 零成本教学定位不变）
+    assert cfg.asset_candidates == 1
+    assert not cfg.script_review
+    assert not cfg.auto_reshoot
+    assert cfg.output_fps == 24
+    assert cfg.intermediate_crf == 18
+
+
+def test_load_config_cinema_profile_overlay(tmp_path, monkeypatch):
+    """cinema 档：商业级配置全量生效（抽卡/锁脸/评审/选优模型）。"""
+    monkeypatch.setenv("FV3_QUALITY", "cinema")
+    cfg = load_config(dotenv_path=tmp_path / "none.env")
+    assert cfg.quality == "cinema"
+    assert cfg.resolution == (1080, 1920)
+    assert cfg.i2v_resolution == "1080P"
+    assert cfg.use_r2v_for_characters and cfg.use_reference_keyframes
+    assert cfg.candidates_per_shot == 2
+    assert cfg.asset_candidates == 2  # 角色立绘抽卡选优
+    assert cfg.script_review is True  # auto 剧本 critic 评审
+    assert cfg.storyboard_sample_rate == 1.0
+    # 兑现"qwen-vl-max 打分取优"（此前 yaml 未覆盖 vlm，静默继承 plus 档）
+    assert cfg.models["dashscope_vlm"] == "qwen-vl-max"
+
+
+def test_load_config_high_profile_enables_script_review(tmp_path, monkeypatch):
+    monkeypatch.setenv("FV3_QUALITY", "high")
+    cfg = load_config(dotenv_path=tmp_path / "none.env")
+    assert cfg.script_review is True
+    assert cfg.asset_candidates == 1  # high 档不抽卡（成本取舍）
 
 
 def test_normalize_cover_fills_frame_no_black_bars(tmp_path):

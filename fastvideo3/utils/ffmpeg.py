@@ -357,8 +357,8 @@ def merge_all(
         acc_d = acc_d + durations[k] - fade_dur
         prev_v, prev_a = vout, aout
     args: list[str] = []
-    for g in group_files:
-        args += ["-i", str(g)]
+    for gfile in group_files:
+        args += ["-i", str(gfile)]
     args += [
         "-filter_complex",
         ";".join(fc_parts),
@@ -414,25 +414,50 @@ def loudnorm_measure(src: Path) -> dict | None:
         return None
     try:
         data = _json.loads(m.group(0))
-        return data if "input_i" in data else None
     except _json.JSONDecodeError:
         return None
+    if "input_i" not in data:
+        return None
+    # 静音/近静音源会测出 "-inf"/"inf" —— linear 模式参数越界会让 filter 直接报错，
+    # 此时退化单 pass 动态模式（正确性优先）
+    import math
+
+    try:
+        vals = [
+            float(data.get(k, 0))
+            for k in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
+        ]
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in vals):
+        return None
+    return data
 
 
 def loudnorm_filter(measured: dict | None) -> str:
-    """按测量结果拼两 pass linear loudnorm；无测量值退化单 pass 动态模式。"""
+    """按测量结果拼两 pass linear loudnorm；无有效测量值退化单 pass 动态模式。"""
     base = "loudnorm=I=-16:TP=-1.5:LRA=11"
     if not measured:
         return base
-    return (
-        base
-        + f":measured_I={measured.get('input_i', -16)}"
-        + f":measured_TP={measured.get('input_tp', -1.5)}"
-        + f":measured_LRA={measured.get('input_lra', 11)}"
-        + f":measured_thresh={measured.get('input_thresh', -27)}"
-        + f":offset={measured.get('target_offset', 0)}"
-        + ":linear=true"
+    import math
+
+    mapping = (
+        ("measured_I", "input_i"),
+        ("measured_TP", "input_tp"),
+        ("measured_LRA", "input_lra"),
+        ("measured_thresh", "input_thresh"),
+        ("offset", "target_offset"),
     )
+    parts: list[str] = []
+    try:
+        for pname, mkey in mapping:
+            v = float(measured.get(mkey, 0))
+            if not math.isfinite(v):
+                return base
+            parts.append(f"{pname}={v}")
+    except (TypeError, ValueError):
+        return base
+    return base + ":" + ":".join(parts) + ":linear=true"
 
 
 def final_master(

@@ -102,6 +102,21 @@ def test_create_run_spawns_cli(client, outdir):
     assert cmd[cmd.index("--run-id") + 1] == run_id
 
 
+def test_create_run_defaults_to_real_mode(client, outdir):
+    """不带 fake 字段的请求必须默认真实生成（此前默认 True，Web 运行静默走占位演示）。"""
+    from fastvideo3.app.api import RunCreate
+
+    assert RunCreate(topic="x").fake is False
+    r = client.post("/api/runs", json={"topic": "默认值验证"})
+    assert r.status_code == 201
+    run_id = r.json()["run_id"]
+    meta = json.loads((outdir / run_id / "run_meta.json").read_text(encoding="utf-8"))
+    assert meta["fake"] is False
+    assert "--fake" not in client.spawned[-1]
+    # budget=0 → meta 落 .env 实际生效值（此前落 0.0 → resume 熔断恒触发）
+    assert meta["budget_limit_cny"] > 0
+
+
 def test_create_run_validation(client):
     assert client.post("/api/runs", json={}).status_code == 422  # 缺 topic
     bad = client.post("/api/runs", json={"topic": "x", "aspect": "4:3"})  # 非法画幅
