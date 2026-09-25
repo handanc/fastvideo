@@ -6,11 +6,11 @@ const result = ref(null)
 const error = ref('')
 const loading = ref(false)
 
-async function load() {
+async function load(probe = false) {
   loading.value = true
   error.value = ''
   try {
-    result.value = await api.doctor()
+    result.value = await api.doctor(probe)
   } catch (e) {
     error.value = e.message
   } finally {
@@ -29,7 +29,9 @@ onMounted(load)
       <span v-if="result" class="badge" :class="result.all_ok ? 'ok' : 'warn'">
         {{ result.all_ok ? '全部通过' : '存在异常项' }}
       </span>
-      <button class="btn sm" :disabled="loading" @click="load">⟳ 重新检查</button>
+      <button class="btn sm" :disabled="loading" @click="load(false)">⟳ 重新检查</button>
+      <button class="btn sm" :disabled="loading" @click="load(true)"
+              title="真实调用一次最小文本请求验证账户状态（≈¥0.001）">🔑 KEY 探活</button>
     </div>
 
     <div v-if="error" class="alert err">{{ error }}</div>

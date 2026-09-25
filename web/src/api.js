@@ -21,7 +21,7 @@ function post(url, body) {
 
 export const api = {
   health: () => fetch('/api/health').then(unwrap),
-  doctor: () => fetch('/api/doctor').then(unwrap),
+  doctor: (probe = false) => fetch(probe ? '/api/doctor?probe=1' : '/api/doctor').then(unwrap),
   listRuns: () => fetch('/api/runs').then(unwrap),
   createRun: (payload) => post('/api/runs', payload),
   runDetail: (id) => fetch(`/api/runs/${encodeURIComponent(id)}`).then(unwrap),

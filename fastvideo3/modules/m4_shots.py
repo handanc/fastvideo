@@ -40,6 +40,7 @@ async def generate_shots(
     vlm: VLMProvider | None = None,
     r2v: I2VProvider | None = None,
     assets: dict[str, Asset] | None = None,
+    fallback: I2VProvider | None = None,
 ) -> dict[str, str]:
     """返回 shot_id → 片段路径（成功者）。
 
@@ -66,14 +67,24 @@ async def generate_shots(
                 storage.log_event("m4_shots", "resume_skip", shot=shot.shot_id)
                 return
             n = max(1, cfg.candidates_per_shot if vlm is not None else 1)
-            candidates: list[Path] = []
-            for cand in range(n):
-                cdest = (
-                    dest if cand == 0 else storage.path("clips", f"shot_{shot.shot_id}_c{cand}.mp4")
-                )
-                if await _gen_one(shot, cdest, cand):
-                    candidates.append(cdest)
+            cand_sem = asyncio.Semaphore(2)  # 候选并行（此前串行延迟×N）；内层限流防超供应商配额
+
+            async def _gen_cand(cand: int) -> Path | None:
+                async with cand_sem:
+                    cdest = (
+                        dest
+                        if cand == 0
+                        else storage.path("clips", f"shot_{shot.shot_id}_c{cand}.mp4")
+                    )
+                    return cdest if await _gen_one(shot, cdest, cand) else None
+
+            produced = await asyncio.gather(*(_gen_cand(c) for c in range(n)))
+            candidates = [p for p in produced if p is not None]
             if not candidates:
+                # 全部候选失败 → 首帧静帧兜底：宁可降级观感也不让成片缺镜头（叙事完整优先）
+                _still_fallback(cfg, shot, frames, dest, storage)
+                if dest.exists():
+                    results[shot.shot_id] = str(dest)
                 return
             best = candidates[0]
             if len(candidates) > 1:
@@ -100,6 +111,13 @@ async def generate_shots(
         ):
             provider = r2v
             use_r2v = True
+        # i2v 用 motion 专属提示词（动作+运镜+节奏）；首帧已定静态画面，
+        # 重复静帧描述会引起画面漂移。此前直接复用 m3 的 visual_prompt。
+        prompt = (
+            _r2v_prompt(cfg, script, shot, char_map)
+            if use_r2v
+            else _motion_prompt(cfg, script, shot)
+        )
         last_err: Exception | None = None
         for attempt in range(cfg.retry_per_shot + 1):
             try:
@@ -108,7 +126,7 @@ async def generate_shots(
                     run_id=storage.run_id,
                     capability="i2v",
                     provider=provider.name,
-                    params={"shot_id": shot.shot_id, "prompt": shot.visual_prompt},
+                    params={"shot_id": shot.shot_id, "prompt": prompt},
                 )
                 if jobs.get(job.job_id) is None:  # 重跑时复用旧行, 避免主键冲突
                     jobs.submit(job)
@@ -118,7 +136,6 @@ async def generate_shots(
                         for cid in shot.characters[:2]
                         if (a := assets.get(f"char_{cid}")) is not None
                     ]
-                    prompt = _r2v_prompt(cfg, script, shot, char_map)
                     ext_id = await provider.submit(
                         dest=cdest,
                         refs=refs,
@@ -131,7 +148,7 @@ async def generate_shots(
                     ext_id = await provider.submit(
                         dest=cdest,
                         image=Path(frames[shot.shot_id]),
-                        prompt=shot.visual_prompt,
+                        prompt=prompt,
                         resolution=cfg.i2v_resolution,
                         duration=int(shot.duration_sec),
                     )
@@ -160,6 +177,58 @@ async def generate_shots(
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 jobs.update(job.job_id, status=JobStatus.FAILED, error=str(e))
+        if fallback is not None and not use_r2v:
+            # 主供应商耗尽 → 备选保交付（yaml 的 i2v fallback 此前是死配置，从未接线）。
+            # r2v 通道无等价备选，不降级；跨供应商画风可能跳变，事件+台账标注供人工复核。
+            from fastvideo3.providers.base import poll_until_done
+
+            fb_job_id = f"i2v_{shot.shot_id}_fb{'_c%d' % cand if cand else ''}"
+            fb_job = jobs.get(fb_job_id)
+            if fb_job is not None and fb_job.status is JobStatus.SUCCEEDED and cdest.exists():
+                return True  # 续跑跳过：备选产物已在盘
+            try:
+                if fb_job is None:
+                    jobs.submit(
+                        RunJob(
+                            job_id=fb_job_id,
+                            run_id=storage.run_id,
+                            capability="i2v",
+                            provider=fallback.name,
+                            params={"shot_id": shot.shot_id, "fallback": True},
+                        )
+                    )
+                ext_id = await fallback.submit(
+                    dest=cdest,
+                    image=Path(frames[shot.shot_id]),
+                    prompt=prompt,
+                    resolution=cfg.i2v_resolution,
+                    duration=int(shot.duration_sec),
+                )
+                jobs.update(fb_job_id, status=JobStatus.RUNNING, output_uri=ext_id)
+                status = await poll_until_done(
+                    fallback.poll,
+                    ext_id,
+                    timeout_sec=cfg.i2v_poll_timeout_min * 60,
+                    fast_interval=2 if cfg.fake else 5,
+                    slow_interval=5 if cfg.fake else 15,
+                )
+                if status.status == "succeeded" and status.output_uri:
+                    jobs.update(fb_job_id, status=JobStatus.SUCCEEDED, output_uri=str(cdest))
+                    ledger.record(
+                        "i2v",
+                        fallback.name,
+                        fallback.model,
+                        quantity=shot.duration_sec,
+                        note=f"shot:{shot.shot_id}#fallback",
+                    )
+                    storage.log_event(
+                        "m4_shots", "fallback_used", shot=shot.shot_id, provider=fallback.name
+                    )
+                    return True
+                last_err = ProviderError(status.error or "fallback i2v failed")
+                jobs.update(fb_job_id, status=JobStatus.FAILED, error=str(last_err))
+            except Exception as e:  # noqa: BLE001
+                last_err = e
         storage.log_event("m4_shots", "failed", shot=shot.shot_id, error=str(last_err))
         return False
 
@@ -182,22 +251,67 @@ def _r2v_prompt(cfg: AppConfig, script: Script, shot, char_map) -> str:
     )
 
 
+def _motion_prompt(cfg: AppConfig, script: Script, shot) -> str:
+    """i2v 运动提示词：只描述运动/运镜/节奏（静态画面由首帧锁定）。
+
+    与 _r2v_prompt 同一拼装范式：动作 + 镜头语言 + 运动质量锚 + 风格锚。
+    """
+    camera = shot.camera or "中景固定镜头"
+    tail = "，".join(x for x in (script.base_info.style, cfg.style_suffix) if x)
+    return (
+        f"{shot.action}。镜头语言：{camera}。"
+        f"运动节奏自然流畅，动作连贯发力自然，画面稳定无闪烁。{tail}"
+    )
+
+
+def _still_fallback(cfg: AppConfig, shot, frames: dict[str, str], dest: Path, storage) -> None:
+    """候选全部失败 → 首帧静帧兜底镜头（淡入淡出的准静帧，保叙事完整）。
+
+    此前失败镜头从 results 静默缺席 → m7 missing_shot 直接跳过 → 成片少一镜。
+    对白镜头的音轨由 m7 的 clips 通道自动叠加。
+    """
+    frame = frames.get(shot.shot_id)
+    if not frame or not Path(frame).exists():
+        return
+    try:
+        from fastvideo3.utils import ffmpeg as ff
+
+        ff.image_to_video(
+            Path(frame),
+            dest,
+            duration=max(2.0, float(shot.duration_sec)),
+            fade_in=0.3,
+            fade_out=0.3,
+            preset=cfg.encode_preset,
+            crf=min(cfg.encode_crf, 18),
+        )
+        storage.log_event("m4_shots", "still_fallback", shot=shot.shot_id)
+    except Exception as e:  # noqa: BLE001
+        storage.log_event(
+            "m4_shots", "still_fallback_failed", shot=shot.shot_id, error=str(e)[:200]
+        )
+
+
 async def _pick_best(vlm: VLMProvider, candidates: list[Path], shot, storage) -> Path:
-    """best-of-N 选优：抽帧送 VLM 按写实/一致/构图打分，取最高分（商业"抽卡"的工程化）。"""
+    """best-of-N 选优：每候选抽 3 帧（首/中/尾）评运动连贯性，取最高分。
+
+    此前每候选只抽 1 帧——静帧评不出闪帧/漂移/卡顿，"抽卡"选优形同掷硬币。
+    """
     from fastvideo3.utils import ffmpeg as ff
 
+    rubric = (
+        "这 3 帧来自同一段视频的首/中/尾。评估：①运动连贯（帧间无闪变/畸变/漂移，"
+        "主体一致）②真人写实质感 ③角色外貌服装准确 ④构图与光影。"
+        '只输出 JSON：{"passed": true/false, "score": 0到1的小数}'
+    )
     best, best_score = candidates[0], -1.0
     for c in candidates:
         try:
             qdir = storage.dir("clips") / f"_qc_{c.stem}"
-            frames_ = ff.extract_frames(c, qdir, count=1)
+            frames_ = ff.extract_frames(c, qdir, count=3)
             if not frames_:
                 continue
-            r = await vlm.review(
-                frames_,
-                rubric="评估该帧：真人写实质感、角色外貌服装准确、构图与光影水平。"
-                '只输出 JSON：{"passed": true/false, "score": 0到1的小数}',
-            )
+            r = await vlm.review(frames_, rubric=rubric)
             score = r.score
         except Exception:  # noqa: BLE001
             score = 0.5

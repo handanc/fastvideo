@@ -141,6 +141,7 @@ class ReviewResult(BaseModel):
     score: float = 0.9
     feedback: str = ""
     rubric: str = ""
+    review_error: bool = False  # 评审自身异常被放行（欠费/抽帧失败等）——UI 黄标警示
 
 
 class CostEntry(BaseModel):

@@ -17,6 +17,8 @@ generation:
   use_reference_keyframes: true   # 首帧带角色立绘参考图（硬锁脸）
   use_r2v_for_characters: true
   candidates_per_shot: 2
+  asset_candidates: 2            # 角色立绘抽卡选优（源头闸门，<¥1/片）
+  script_review: true            # auto 模式剧本 critic 评审（生成性量表把关）
   storyboard_sample_rate: 1.0    # VLM 一致性全检
   style_suffix: >-
     真人写实电影剧照，院线级画质，自然皮肤纹理，电影级三点布光，
@@ -38,3 +40,4 @@ models:
   dashscope_t2i27: wan2.7-image
   dashscope_i2v27: wan2.7-i2v
   dashscope_r2v: wan2.7-r2v
+  dashscope_vlm: qwen-vl-max     # 兑现"抽卡打分取优"设计（此前静默继承 plus 档）

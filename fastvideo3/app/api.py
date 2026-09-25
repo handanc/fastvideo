@@ -49,7 +49,9 @@ class RunCreate(BaseModel):
     topic: str = Field(min_length=1, max_length=200)
     style: str = Field(default="都市轻喜剧", max_length=100)
     duration: int = Field(default=30, ge=5, le=600)
-    fake: bool = True
+    # fake 默认 False（真实生成）：此前默认 True，Web 面板发起的运行在未察觉时
+    # 全走占位色块演示模式（.env 的 FV3_FAKE=0 被请求体覆盖）
+    fake: bool = False
     review: Literal["auto", "gated"] = "auto"
     talk_mode: Literal["s2v_direct", "v2v_overlay", "audio_overlay"] = "s2v_direct"
     quality: Literal["economy", "high", "cinema"] = "economy"
@@ -186,8 +188,8 @@ def health() -> dict:
 
 
 @app.get("/api/doctor")
-def doctor() -> dict:
-    """环境自检（与 CLI doctor 同源逻辑，返回 JSON）。"""
+def doctor(probe: int = 0) -> dict:
+    """环境自检（与 CLI doctor 同源逻辑，返回 JSON）。?probe=1 时真实 KEY 探活。"""
     checks: list[dict] = []
 
     def row(item: str, ok: bool, detail: Any = "") -> None:
@@ -220,6 +222,18 @@ def doctor() -> dict:
         bool(cfg.dashscope_api_key) or cfg.fake,
         "已配置" if cfg.dashscope_api_key else "未配置",
     )
+
+    if probe and cfg.dashscope_api_key:
+        import asyncio
+
+        from fastvideo3.providers.dashscope import probe_account
+
+        status, detail = asyncio.run(
+            probe_account(cfg.dashscope_api_key, cfg.model_name("dashscope_text", "qwen3.7-plus"))
+        )
+        row("DASHSCOPE 账户探活", status == "ok", f"[{status}] {detail}")
+    elif probe:
+        row("DASHSCOPE 账户探活", False, "未配置 KEY，跳过")
 
     from fastvideo3.core.config import MODELS_DIR
     from fastvideo3.utils.yolo import WEIGHT_NAME
@@ -285,7 +299,8 @@ def create_run(req: RunCreate) -> dict:
         profile=cfg.profile,  # type: ignore[arg-type]
         review_mode=req.review,
         talk_mode=req.talk_mode,
-        budget_limit_cny=req.budget,
+        # budget=0 表示"跟随 .env"：meta 落实际生效值（此前落 0.0 → resume 时熔断恒触发）
+        budget_limit_cny=req.budget if req.budget > 0 else cfg.budget_limit_cny,
         fake=req.fake,
         quality=req.quality,
     )
@@ -339,6 +354,13 @@ def run_detail(run_id: str) -> dict:
         for stage in ("clips", "talk")
     }
     final = root / "final" / "final.mp4"
+    review: dict | None = None
+    rp = root / "final_review.json"
+    if rp.is_file():
+        try:
+            review = json.loads(rp.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            review = None
     return {
         "run_id": run_id,
         "status": _run_status(root),
@@ -347,6 +369,7 @@ def run_detail(run_id: str) -> dict:
         "cost": _read_cost(root),
         "images": images,
         "videos": videos,
+        "review": review,  # 终审结果（含 review_error 标识：异常放行不再静默）
         "final_video": f"/api/files/{run_id}/final/final.mp4" if final.is_file() else None,
     }
 

@@ -38,11 +38,15 @@ async def review_final(
     storage: RunStorage,
     ledger: CostLedger,
 ) -> ReviewResult:
-    """成片终审：抽代表帧送 VLM。评审失败放行并告警。"""
+    """成片终审：抽代表帧送 VLM。评审失败放行并告警（review_error=True 供 UI 辨识）。"""
     try:
         frames = extract_frames(final_video, storage.dir("review") / "frames", count=3)
         if not frames:
-            return ReviewResult(passed=True, score=0.6, feedback="抽帧失败，放行", rubric="final")
+            result = ReviewResult(
+                passed=True, score=0.6, feedback="抽帧失败，放行", rubric="final", review_error=True
+            )
+            storage.save_json("final_review.json", result.model_dump(mode="json"))
+            return result
         rubric = render("final_critic.v1", summary=script.base_info.topic)
         result = await vlm.review(frames, rubric=rubric)
         ledger.record("vlm", vlm.name, vlm.model, note="review_final")
@@ -50,4 +54,12 @@ async def review_final(
         return result
     except Exception as e:  # noqa: BLE001
         storage.log_event("m8_review", "final_review_error", error=str(e))
-        return ReviewResult(passed=True, score=0.6, feedback=f"评审异常放行: {e}", rubric="final")
+        result = ReviewResult(
+            passed=True,
+            score=0.6,
+            feedback=f"评审异常放行: {e}",
+            rubric="final",
+            review_error=True,  # 欠费/网络等异常不再静默（8/30 实测欠费终审被吞）
+        )
+        storage.save_json("final_review.json", result.model_dump(mode="json"))
+        return result

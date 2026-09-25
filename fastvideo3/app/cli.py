@@ -88,7 +88,7 @@ def run(
     review: str = typer.Option("auto", help="auto=全自动 | gated=人工审片"),
     talk_mode: str = typer.Option("s2v_direct", help="s2v_direct | v2v_overlay | audio_overlay"),
     budget: float = typer.Option(
-        0.0, help="成本熔断阈值(元); 0=跟随 .env 的 FV3_BUDGET_LIMIT_CNY(默认50)"
+        0.0, help="成本熔断阈值(元); 0=跟随 .env 的 FV3_BUDGET_LIMIT_CNY(默认120)"
     ),
     aspect: str = typer.Option("9:16", help="画幅: 9:16 | 16:9 | 1:1"),
     quality: str = typer.Option(
@@ -105,10 +105,15 @@ def run(
         cfg.budget_limit_cny = budget
     cfg.aspect_ratio = aspect
     if cfg.quality == "cinema" and not cfg.fake:
+        est_lo, est_hi = duration * 1.2, duration * 2.2  # 含 best-of-2 抽卡/口型/重拍的实测区间
         console.print(
-            f"[yellow]⚠ cinema 档多模态生成约 ¥1/秒，本次熔断 ¥{cfg.budget_limit_cny}。"
-            "教学/演示请用 economy 或 --fake。[/]"
+            f"[yellow]⚠ cinema 档多模态生成约 ¥1-2/秒：{duration}s 成片预估 ¥{est_lo:.0f}-{est_hi:.0f}，"
+            f"本次熔断 ¥{cfg.budget_limit_cny}。教学/演示请用 economy 或 --fake。[/]"
         )
+        if cfg.budget_limit_cny < est_lo:
+            console.print(
+                f"[yellow]  熔断低于预估下限，可能中途停跑；建议 --budget {est_hi + 40:.0f} 或降低时长/档位。[/]"
+            )
 
     run_id = run_id or _new_run_id()
     from fastvideo3.core.schema import BaseInfo, ProjectConfig
@@ -290,7 +295,11 @@ async def _run_stage(cfg: AppConfig, name: str, run_id: str, topic: str) -> None
 
 
 @app.command()
-def doctor():
+def doctor(
+    probe: bool = typer.Option(
+        False, "--probe", help="真实 KEY 探活：一次最小文本调用验证账户状态（≈¥0.001）"
+    ),
+):
     """环境自检：依赖 / FFmpeg / KEY / 模型 / 数据库。"""
     table = Table(title="FastVideo3 doctor")
     table.add_column("检查项")
@@ -330,6 +339,22 @@ def doctor():
         bool(cfg.dashscope_api_key) or cfg.fake,
         "已配置" if cfg.dashscope_api_key else "未配置",
     )
+
+    if probe:
+        # KEY 探活：「KEY 存在」≠「账户可用」（8/30 与 9/25 两次欠费都在烧钱阶段才暴露）
+        if cfg.dashscope_api_key:
+            import asyncio
+
+            from fastvideo3.providers.dashscope import probe_account
+
+            status, detail = asyncio.run(
+                probe_account(
+                    cfg.dashscope_api_key, cfg.model_name("dashscope_text", "qwen3.7-plus")
+                )
+            )
+            row("DASHSCOPE 账户探活", status == "ok", f"[{status}] {detail}")
+        else:
+            row("DASHSCOPE 账户探活", False, "未配置 KEY，跳过")
 
     from fastvideo3.core.config import MODELS_DIR
     from fastvideo3.utils.yolo import WEIGHT_NAME

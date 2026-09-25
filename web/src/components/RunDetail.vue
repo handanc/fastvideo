@@ -46,6 +46,14 @@ async function decide(decision) {
 }
 
 const base = computed(() => detail.value?.meta?.base_info || {})
+const reviewBadge = computed(() => {
+  const r = detail.value?.review
+  if (!r) return null
+  const fb = r.feedback ? ' · ' + String(r.feedback).slice(0, 60) : ''
+  if (r.review_error) return { cls: 'warn', label: `⚠ 终审异常，已放行${fb}` }
+  if (r.passed === false) return { cls: 'err', label: `✘ 终审未通过 (${Number(r.score || 0).toFixed(2)})${fb}` }
+  return { cls: 'ok', label: `✔ 终审通过 (${Number(r.score || 0).toFixed(2)})` }
+})
 const images = computed(() => [
   ...(detail.value?.images?.assets || []).map((u) => ({ url: u, cap: 'assets' })),
   ...(detail.value?.images?.storyboard || []).map((u) => ({ url: u, cap: 'storyboard' })),
@@ -79,6 +87,8 @@ onUnmounted(() => clearInterval(timer))
           风格：{{ base.style || '—' }} · 时长：{{ base.target_duration_sec || '—' }}s ·
           画幅：{{ base.aspect_ratio || '—' }} · 档位：{{ detail.meta.quality }} ·
           {{ detail.meta.fake ? 'Fake 模式' : '真实生成' }}
+          <span v-if="detail.meta.fake" class="badge warn">占位演示产物</span>
+          <span v-if="reviewBadge" class="badge" :class="reviewBadge.cls">{{ reviewBadge.label }}</span>
         </p>
 
         <div v-if="detail.status !== 'done'" class="toolbar" style="margin-top: 8px">
@@ -101,7 +111,7 @@ onUnmounted(() => clearInterval(timer))
           <h2>事件流 <span class="muted">(最近 {{ detail.events.length }} 条)</span></h2>
           <div v-if="detail.events.length" class="timeline">
             <div v-for="(e, i) in detail.events" :key="i" class="ev"
-                 :class="{ fail: ['failed', 'error'].includes(String(e.status).toLowerCase()) }">
+                 :class="{ fail: /fail|error|gate|missing/i.test(String(e.status || '')) }">
               <span class="ts">{{ e.ts }}</span>
               <span>{{ e.node }}:{{ e.status }}<template v-if="e.name"> · {{ e.name }}</template></span>
             </div>

@@ -16,7 +16,7 @@ from langgraph.types import interrupt
 from fastvideo3.core.config import AppConfig
 from fastvideo3.core.cost import CostLedger
 from fastvideo3.core.jobs import JobStore
-from fastvideo3.core.schema import Asset, BaseInfo, Script
+from fastvideo3.core.schema import Asset, BaseInfo, Script, ShotType
 from fastvideo3.core.storage import RunStorage
 from fastvideo3.providers.base import Capability, Provider, ProviderError
 from fastvideo3.providers.factory import make_fallback, make_provider
@@ -62,13 +62,21 @@ def build_nodes(ctx: GraphContext) -> dict[str, Any]:
         from fastvideo3.modules.m1_scripting import generate_script
 
         base = BaseInfo(**state["base_info"])
+        # auto 模式剧本评审（script_review 开关，high/cinema 默认开）：
+        # m1 既有 _critic_review→_revise 带意见重写回路，此前 critic=None 从未激活
+        critic = None
+        if ctx.cfg.script_review:
+            try:
+                critic = ctx.provider(Capability.TEXT)
+            except ProviderError:
+                critic = None
         script = await generate_script(
             ctx.cfg,
             ctx.provider(Capability.TEXT),  # type: ignore[arg-type]
             base,
             ctx.storage,
             ctx.ledger,
-            critic=None,  # 评审回路在图级 script_gate 体现；此处保持单轮快速
+            critic=critic,
             external_feedback=state.get("script_feedback") or None,
         )
         return {"script": script.model_dump(mode="json"), "script_feedback": ""}
@@ -92,12 +100,20 @@ def build_nodes(ctx: GraphContext) -> dict[str, Any]:
         from fastvideo3.modules.m2_assets import build_assets
 
         script = Script.model_validate(state["script"])
+        vlm = None
+        if ctx.cfg.asset_candidates > 1:  # 立绘抽卡选优（cinema）
+            try:
+                vlm = ctx.provider(Capability.VLM)
+            except ProviderError:
+                vlm = None
         assets = await build_assets(
             ctx.cfg,
             ctx.provider(Capability.T2I),
             script,
             ctx.storage,
             ctx.ledger,  # type: ignore[arg-type]
+            vlm=vlm,
+            fallback=make_fallback(Capability.T2I, ctx.cfg),  # type: ignore[arg-type]
         )
         return {"assets": {k: a.model_dump() for k, a in assets.items()}}
 
@@ -106,6 +122,18 @@ def build_nodes(ctx: GraphContext) -> dict[str, Any]:
 
         script = Script.model_validate(state["script"])
         assets = {k: Asset(**v) for k, v in state["assets"].items()}
+        # 一致性抽查 VLM：此前从未接线 → storyboard_sample_rate（cinema=1.0 全检）是死配置
+        vlm = None
+        if ctx.cfg.storyboard_sample_rate > 0:
+            try:
+                vlm = ctx.provider(Capability.VLM)
+            except ProviderError:
+                vlm = None
+        # 提示词蒸馏 TEXT：元提示词 → 纯画面描述（失败自动退化原文）
+        try:
+            text = ctx.provider(Capability.TEXT)
+        except ProviderError:
+            text = None
         frames = await build_storyboard(
             ctx.cfg,
             ctx.provider(Capability.T2I),
@@ -113,6 +141,9 @@ def build_nodes(ctx: GraphContext) -> dict[str, Any]:
             assets,  # type: ignore[arg-type]
             ctx.storage,
             ctx.ledger,
+            vlm=vlm,
+            text=text,
+            fallback=make_fallback(Capability.T2I, ctx.cfg),  # type: ignore[arg-type]
         )
         return {"frames": frames}
 
@@ -128,6 +159,10 @@ def build_nodes(ctx: GraphContext) -> dict[str, Any]:
                 vlm = ctx.provider(Capability.VLM)  # type: ignore[assignment]
             except ProviderError:
                 vlm = None
+        r2v = make_r2v_provider(ctx.cfg)
+        if ctx.cfg.use_r2v_for_characters and r2v is None:
+            # cinema 的角色一致性引擎不可用不再静默（此前 make_r2v_provider 失败无告警）
+            ctx.storage.log_event("shots", "r2v_unavailable", hint="角色动作镜头退化为普通 i2v")
         clips = await generate_shots(
             ctx.cfg,
             ctx.provider(Capability.I2V),
@@ -137,8 +172,9 @@ def build_nodes(ctx: GraphContext) -> dict[str, Any]:
             ctx.ledger,
             ctx.jobs,
             vlm=vlm,  # type: ignore[arg-type]
-            r2v=make_r2v_provider(ctx.cfg),  # type: ignore[arg-type]
+            r2v=r2v,  # type: ignore[arg-type]
             assets=assets,
+            fallback=make_fallback(Capability.I2V, ctx.cfg),  # type: ignore[arg-type]
         )
         return {"clips": clips}
 
@@ -208,7 +244,13 @@ def build_nodes(ctx: GraphContext) -> dict[str, Any]:
         try:
             vlm = ctx.provider(Capability.VLM)
         except ProviderError:
-            return {"final_review": {"passed": True, "feedback": "无 VLM，跳过终审"}}
+            return {
+                "final_review": {
+                    "passed": True,
+                    "feedback": "无 VLM，跳过终审",
+                    "review_error": True,  # 放行但可辨识（UI 黄标）
+                }
+            }
         script = Script.model_validate(state["script"])
         result = await review_final(
             vlm, Path(state["final_video"]), script, ctx.storage, ctx.ledger
@@ -216,8 +258,23 @@ def build_nodes(ctx: GraphContext) -> dict[str, Any]:
         return {"final_review": result.model_dump(mode="json")}
 
     async def final_gate(state) -> dict:
-        if ctx.cfg.review_mode != "gated" or state.get("final_rejected"):
+        review = state.get("final_review") or {}
+        if ctx.cfg.review_mode != "gated":
+            # auto 模式：默认直通；auto_reshoot 开启且终审未过 → 走一轮重拍（默认关，防成本失控）
+            if (
+                ctx.cfg.auto_reshoot
+                and not state.get("final_rejected")
+                and not state.get("final_rerun")
+                and review.get("passed") is False
+            ):
+                fb = str(review.get("feedback", ""))
+                ctx.storage.log_event("final_gate", "auto_reshoot", feedback=fb[:200])
+                return {"final_rejected": True, "final_feedback": fb}
             return {}
+        # gated 模式：已驳回并重拍过一轮 → 第二次过门不再询问（防 edit↔gate 无限循环，
+        # 旧实现依赖未声明的 _final_rerun 键，LangGraph 不持久化 → GraphRecursionError）
+        if state.get("final_rejected"):
+            return {"final_rerun": True}
         decision = interrupt(
             {
                 "phase": "final",
@@ -226,15 +283,56 @@ def build_nodes(ctx: GraphContext) -> dict[str, Any]:
         )
         text = str(decision or "approve")
         if text.lower().startswith("reject"):
-            return {"final_rejected": True}
+            feedback = text.split(":", 1)[1].strip() if ":" in text else ""
+            ctx.storage.log_event("final_gate", "rejected", feedback=feedback[:200])
+            return {"final_rejected": True, "final_feedback": feedback}
         return {}
+
+    async def reshoot(state) -> dict:
+        """驳回重拍：删除 ≤2 个问题镜头的产物文件 → shots/talk 经 resume-skip 只重生成它们。
+
+        利用「job SUCCEEDED 且产物在盘」的双条件跳过机制（m4 _find_done_job /
+        m6 _s2v_one），删文件即强制重跑，无需动数据库层。
+        """
+        script = Script.model_validate(state["script"])
+        feedback = str(state.get("final_feedback") or "")
+        if ctx.ledger.exceeded():
+            ctx.storage.log_event("reshoot", "budget_skip", feedback=feedback[:200])
+            return {"reshoot_shots": []}
+        picks = _pick_reshoot_shots(script, feedback)
+        removed = 0
+        for sid in picks:
+            for stage in ("clips", "talk"):
+                p = ctx.storage.path(stage, f"shot_{sid}.mp4")
+                if p.exists():
+                    p.unlink()
+                    removed += 1
+            for extra in ctx.storage.dir("clips").glob(f"shot_{sid}_c*.mp4"):
+                extra.unlink()  # 候选残片一并清掉，防 best-of-N 复用旧产物
+        ctx.storage.log_event(
+            "reshoot", "start", shots=picks, removed=removed, feedback=feedback[:200]
+        )
+        return {"reshoot_shots": picks}
 
     async def finalize(state) -> dict:
         summary = ctx.ledger.summary()
+        review = state.get("final_review") or {}
         ctx.storage.save_json(
             "run_summary.json",
-            {"cost": summary, "final_video": state.get("final_video", "")},
+            {
+                "cost": summary,
+                "final_video": state.get("final_video", ""),
+                "final_review": review,
+                "final_feedback": state.get("final_feedback", ""),
+                "reshoot_shots": state.get("reshoot_shots", []),
+            },
         )
+        if review.get("passed") is False:
+            ctx.storage.log_event(
+                "finalize", "review_not_passed", feedback=str(review.get("feedback", ""))[:200]
+            )
+        if review.get("review_error"):
+            ctx.storage.log_event("finalize", "review_error_flagged")
         meta_path = ctx.storage.root / "run_meta.json"
         if meta_path.exists():
             meta = ctx.storage.load_json("run_meta.json")
@@ -255,6 +353,7 @@ def build_nodes(ctx: GraphContext) -> dict[str, Any]:
         "edit": edit,
         "final_review": final_review,
         "final_gate": final_gate,
+        "reshoot": reshoot,
         "finalize": finalize,
     }
 
@@ -267,6 +366,34 @@ def route_after_script_gate(state) -> str:
 
 
 def route_after_final_gate(state) -> str:
-    if state.get("final_rejected") and not state.get("_final_rerun"):
-        return "edit"
+    if state.get("final_rejected") and not state.get("final_rerun"):
+        return "reshoot"  # 驳回 → 删产物重拍 ≤2 镜 → shots → talk → edit → 二次过门 finalize
     return "finalize"
+
+
+def _pick_reshoot_shots(script: Script, feedback: str, limit: int = 2) -> list[str]:
+    """从驳回意见选重拍镜头：优先动作/风景镜头中 action/镜头语言命中意见关键词者。
+
+    对白镜头不入选（talk 重生成本高且有 I2V 叠音降级）；无命中回退前 limit 个
+    动作/风景镜头（简单可预测）。
+    """
+    action_shots = [
+        s for s in script.all_shots() if s.type in (ShotType.ACTION, ShotType.SCENERY)
+    ]
+    tokens = _feedback_tokens(feedback)
+    if tokens:
+        hits = [
+            s.shot_id
+            for s in action_shots
+            if any(t in f"{s.action} {s.camera or ''}" for t in tokens)
+        ]
+        if hits:
+            return hits[:limit]
+    return [s.shot_id for s in action_shots[:limit]]
+
+
+def _feedback_tokens(fb: str) -> list[str]:
+    import re
+
+    toks = re.split(r"[\s,，。;；:：!！?？、.]+", fb.strip())
+    return [t for t in toks if len(t) >= 2]

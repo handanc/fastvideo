@@ -33,7 +33,13 @@ def make_r2v_provider(cfg: AppConfig) -> Provider | None:
         return None
     try:
         return _make_real(route.default, Capability.I2V, cfg)
-    except ProviderError:
+    except ProviderError as e:
+        # 此前静默返回 None：cinema 的角色一致性引擎挂了无任何告警
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "r2v 供应商构造失败，角色一致性退化为普通 i2v: %s", e
+        )
         return None
 
 

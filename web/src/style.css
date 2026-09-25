@@ -154,6 +154,7 @@ video.final { width: 100%; max-width: 420px; border-radius: var(--radius); backg
 .alert { padding: 10px 14px; border-radius: 8px; margin: 10px 0; font-size: 13px; }
 .alert.err { color: var(--err); background: color-mix(in srgb, var(--err) 10%, transparent); }
 .alert.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.alert.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
 .muted { color: var(--muted); font-size: 13px; }
 .mono { font-family: Consolas, "Courier New", monospace; }
 .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }

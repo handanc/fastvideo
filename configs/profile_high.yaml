@@ -25,6 +25,7 @@ generation:
   encode_crf: 20
   encode_preset: veryfast
   bgm_volume: 0.12
+  script_review: true            # auto 模式剧本 critic 评审（≈¥0.06-0.12/片）
 
 models:
   dashscope_t2i: wanx2.1-t2i-plus     # plus 档：构图/质感/提示词遵循度显著优于 turbo

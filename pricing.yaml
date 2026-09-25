@@ -18,16 +18,20 @@ models:
   qwen-vl-max: {unit: call, price_cny: 0.05}
   # 文生图
   wanx2.1-t2i-turbo: {unit: call, price_cny: 0.18}
+  wanx2.1-t2i-plus: {unit: call, price_cny: 0.20}   # high/cinema 档主力（缺失时曾回退 0.18 低估）
   wan2.6-t2i: {unit: call, price_cny: 0.20}
+  wan2.7-image: {unit: call, price_cny: 0.25}       # cinema 档参考图锁脸首帧（估算，以控制台为准）
   black-forest-labs/FLUX.1-dev: {unit: call, price_cny: 0.10}
   # 图生视频（480P 价；720P≈0.24/秒）
   wan2.2-i2v-flash: {unit: second, price_cny: 0.11}
+  wan2.2-i2v-plus: {unit: second, price_cny: 0.70}  # 1080P 交付档（缺失时曾按 0.11 记账，低估约 6 倍）
   Wan-AI/Wan2.2-I2V-A14B: {unit: second, price_cny: 0.35}
   # 万相 2.7 商业级档（1080P 估算价，以控制台账单为准）
   wan2.7-i2v: {unit: second, price_cny: 1.00}
   wan2.7-r2v: {unit: second, price_cny: 1.00}
   # 数字人口型（480P 价；720P=0.9/秒；新账号送 100 秒）
   wan2.2-s2v: {unit: second, price_cny: 0.50}
+  videoretalk: {unit: second, price_cny: 0.50}      # v2v_overlay 口型替换
   kling-v2-master: {unit: second, price_cny: 0.90}
   # 语音（¥2/万字符）
   cosyvoice-v2: {unit: char, price_cny: 0.0002}

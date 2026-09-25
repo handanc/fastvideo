@@ -44,6 +44,7 @@ def _jwt_hs256(access_key: str, secret_key: str, exp_sec: int = 1800) -> str:
 
 class KlingTalkProvider(TalkProvider):
     name = "kling_lipsync"
+    prefers_16k_audio = True  # 口型输入沿用 16k 规格（m6 提交前现场转副本）
 
     def __init__(self, access_key: str, secret_key: str, model: str = "kling-v2-master"):
         if not access_key or not secret_key:

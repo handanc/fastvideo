@@ -106,6 +106,74 @@ def _data_uri(path: Path, mime: str) -> str:
     return f"data:{mime};base64,{b64}"
 
 
+async def probe_account(api_key: str, model: str = "qwen3.7-plus") -> tuple[str, str]:
+    """KEY 探活：一次最小文本请求判定账户状态（成本 ≈¥0.001，doctor --probe 用）。
+
+    背景：8/30 与 9/25 两次真实运行都到烧钱阶段才暴露 Arrearage（欠费/模型未开通），
+    「KEY 存在」≠「账户可用」。返回 (status, detail)：
+    ok | arrears(欠费/未开通) | invalid_key | unreachable
+    """
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{COMPAT_BASE}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+    except httpx.TransportError as e:
+        return "unreachable", f"网络不可达: {str(e)[:120]}"
+    if resp.status_code < 400:
+        return "ok", f"KEY 有效，账户正常（{model}）"
+    try:
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        data = {}
+    err = data.get("error") or {}
+    text = str(err.get("message") or data.get("message") or resp.text[:200])
+    lowered = (text + str(err.get("type") or "") + str(data.get("code") or "")).lower()
+    if any(k in lowered for k in ("arrearage", "good standing", "overdue", "欠费")):
+        return "arrears", f"账户欠费或模型未开通：到百炼控制台充值/开通后重试。{text[:120]}"
+    if resp.status_code in (401, 403):
+        return "invalid_key", f"KEY 无效或无权限（HTTP {resp.status_code}）: {text[:120]}"
+    return "invalid_key", f"HTTP {resp.status_code}: {text[:120]}"
+
+
+def _image_data_uri(path: Path, max_side: int = 1280, quality: int = 85) -> str:
+    """VLM 送审图片预缩放：1080×1920 PNG 直发 base64 达 2-4MB/张（服务端照样降采样）。
+
+    最长边 > max_side 时缩至 JPEG q{quality}——payload 降一个量级，评审信息无损。
+    缩放失败（PIL 缺失/损坏图）退化原图直发。
+    """
+    try:
+        import io
+
+        from PIL import Image
+
+        with Image.open(path) as im:
+            w, h = im.size
+            if max(w, h) <= max_side:
+                mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+                return _data_uri(path, mime)
+            scale = max_side / max(w, h)
+            im2 = im.convert("RGB").resize(
+                (max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS
+            )
+            buf = io.BytesIO()
+            im2.save(buf, format="JPEG", quality=quality)
+            return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:  # noqa: BLE001
+        mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+        return _data_uri(path, mime)
+
+
 # ───────────────────────── T2I ─────────────────────────
 class DashScopeT2IProvider(DashScopeBase, T2IProvider):
     name = "dashscope_wan26"
@@ -121,7 +189,7 @@ class DashScopeT2IProvider(DashScopeBase, T2IProvider):
         negative_prompt: str = "",
         seed: int | None = None,
     ) -> ImageResult:
-        params: dict[str, Any] = {"size": size, "n": 1}
+        params: dict[str, Any] = {"size": size, "n": 1, "watermark": False}
         if negative_prompt:
             params["negative_prompt"] = negative_prompt
         if seed is not None:
@@ -135,7 +203,6 @@ class DashScopeT2IProvider(DashScopeBase, T2IProvider):
             f"{API_BASE}/services/aigc/text2image/image-synthesis", body
         )
         self._job_dest[task_id] = dest
-        status = await self.poll(task_id)
         # 图像任务直接轮询至完成
         from fastvideo3.providers.base import poll_until_done
 
@@ -157,7 +224,12 @@ class DashScopeI2VProvider(DashScopeBase, I2VProvider):
         body = {
             "model": self.model,
             "input": {"prompt": prompt, "img_url": _data_uri(image, "image/png")},
-            "parameters": {"resolution": params.get("resolution", "480P")},
+            "parameters": {
+                "resolution": params.get("resolution", "480P"),
+                # m4 按 shot.duration_sec 传时长；此前被 **params 静默吞掉（恒按服务端默认 5s 出片）
+                "duration": int(params.get("duration", 5)),
+                "watermark": False,
+            },
         }
         task_id = await self._submit_task(
             f"{API_BASE}/services/aigc/video-generation/video-synthesis", body
@@ -175,6 +247,7 @@ class DashScopeTalkProvider(DashScopeBase, TalkProvider):
     """
 
     name = "dashscope_wan22_s2v"
+    prefers_16k_audio = True  # 历史验证过的口型输入规格；m6 提交前现场转 16k 副本
 
     async def submit(  # type: ignore[override]
         self, dest: Path, image: Path, audio: Path, **params: Any
@@ -186,6 +259,13 @@ class DashScopeTalkProvider(DashScopeBase, TalkProvider):
         body = {
             "model": self.model,
             "input": {"image_url": image_url, "audio_url": audio_url},
+            # 分辨率必须显式传：此前无 parameters 块，m6 传的 resolution 被吞，
+            # 对白镜头按服务端默认 480P 出片混进 1080P 成片（上采样发糊主因之一）。
+            # 时长由驱动音频决定（s2v 无 duration 参数，不发送防 400）。
+            "parameters": {
+                "resolution": params.get("resolution", "720P"),
+                "watermark": False,
+            },
         }
         task_id = await self._submit_task(
             f"{API_BASE}/services/aigc/video-generation/video-synthesis",
@@ -207,6 +287,7 @@ class DashScopeRetalkProvider(DashScopeBase, TalkProvider):
 
     name = "dashscope_videoretalk"
     supports_video_input = True
+    prefers_16k_audio = True  # 与既有管线行为一致（母带已升 44.1k，提交前转副本）
 
     async def submit(  # type: ignore[override]
         self,
@@ -273,12 +354,14 @@ class DashScopeTTSProvider(TTSProvider):
         audio = await asyncio.to_thread(_call)
         if not audio or len(audio) < 1000:
             raise ProviderError("cosyvoice 返回空音频（账号可能未开通该模型）")
-        # SDK 输出 mp3 → 统一转 16k 单声道 WAV（时长测量/拼接/口型输入一致）
+        # SDK 输出 mp3(22-24kHz) → 母带统一 44.1k 单声道 WAV：
+        # 此前强制 16k 把成片对白带宽锁死在 ~8kHz（audio_overlay/mux 路径直接进成片）。
+        # 口型模型输入仍按 16k（m6 按 prefers_16k_audio 现场转副本，行为与历史一致）。
         tmp = dest.with_suffix(dest.suffix + ".raw")
         tmp.write_bytes(audio)
         from fastvideo3.utils.ffmpeg import run_ffmpeg
 
-        run_ffmpeg(["-i", str(tmp), "-ar", "16000", "-ac", "1", str(dest)])
+        run_ffmpeg(["-i", str(tmp), "-ar", "44100", "-ac", "1", str(dest)])
         tmp.unlink(missing_ok=True)
         return dest
 
@@ -299,13 +382,14 @@ class DashScopeVLMProvider(VLMProvider):
 
         content: list[dict] = []
         for m in media[:4]:
-            mime = "image/png" if m.suffix.lower() == ".png" else "image/jpeg"
-            content.append({"type": "image_url", "image_url": {"url": _data_uri(m, mime)}})
+            content.append({"type": "image_url", "image_url": {"url": _image_data_uri(m)}})
         content.append({"type": "text", "text": rubric + "\n\n只输出 JSON。"})
         body = {
             "model": self.model,
             "messages": [{"role": "user", "content": content}],
             "response_format": {"type": "json_object"},
+            # 评审/打分要确定性：temperature=0（此前默认采样导致 best-of-N 评分抖动）
+            "temperature": 0,
         }
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
@@ -378,6 +462,8 @@ class DashScopeI2V27Provider(DashScopeWan27Base, I2VProvider):
             "resolution": params.get("resolution", "1080P"),
             "duration": int(params.get("duration", 5)),
             "prompt_extend": False,  # 提示词由编剧+风格锚精确控制，关掉模型改写
+            # watermark 不发送：wan2.7 视频族文档不可达，服务端默认即无水印，
+            # 盲加未知参数有 400 阻断全管线风险（探单成本 ¥5/次，留给验收运行验证）
         }
         return await self._submit_media(dest, media, prompt, parameters)
 
@@ -386,6 +472,7 @@ class DashScopeI2V27TalkProvider(DashScopeWan27Base, TalkProvider):
     """口型通道：首帧+对白音频 → wan2.7 原生口型同步（替代 s2v/videoretalk，无账号门控）。"""
 
     name = "dashscope_wan27_audio"
+    prefers_16k_audio = True  # 8/30 实测通过的输入规格是 16k；44.1k 未验证，保守沿用
 
     async def submit(  # type: ignore[override]
         self,
@@ -433,6 +520,9 @@ class DashScopeR2VProvider(DashScopeWan27Base, I2VProvider):
             "resolution": params.get("resolution", "1080P"),
             "duration": int(params.get("duration", 5)),
             "ratio": params.get("ratio", "9:16"),
+            # m4 的 r2v prompt 用"图1/图2"指代参考图 + 外貌逐字注入，最怕服务端改写稀释
+            # （与同端点 i2v27 的既有用法一致）
+            "prompt_extend": False,
         }
         return await self._submit_media(
             dest, [("reference_image", p) for p in sources[:2]], prompt, parameters
@@ -440,9 +530,11 @@ class DashScopeR2VProvider(DashScopeWan27Base, I2VProvider):
 
 
 class DashScopeWan27ImageProvider(DashScopeBase, T2IProvider):
-    """wan2.7-image：messages 协议文生图，支持角色参考图（主体一致性硬锁脸）。
+    """wan2.7-image：messages 协议文生图（**仅同步调用**），支持角色参考图（硬锁脸）。
 
     首帧带角色立绘作参考图生成 → 脸在源头锁住，下游 i2v/口型全部继承一致的脸。
+    2026-09-25 探单：异步任务模式返回 403（current user api does not support
+    asynchronous calls），同步 POST 直接返回图片 URL；size 上限单边 1440。
     """
 
     name = "dashscope_wan27_image"
@@ -466,46 +558,46 @@ class DashScopeWan27ImageProvider(DashScopeBase, T2IProvider):
         if ref_image is not None:
             content.append({"image": await upload_local_file(self.api_key, self.model, ref_image)})
             extra = OSS_RESOLVE_HEADER
+        # seed/negative_prompt 此前被静默丢弃 → cinema 档 m3 稳定种子锁脸与全局防卡通负向词全部失效
+        params: dict[str, Any] = {"size": size, "n": 1, "watermark": False}
+        if negative_prompt:
+            params["negative_prompt"] = negative_prompt
+        if seed is not None:
+            params["seed"] = seed
         body = {
             "model": self.model,
             "input": {"messages": [{"role": "user", "content": content}]},
-            "parameters": {"size": size, "n": 1},
+            "parameters": params,
         }
-        task_id = await self._submit_task(
-            f"{API_BASE}/services/aigc/multimodal-generation/generation",
-            body,
-            extra_headers=extra,
-        )
-        self._job_dest[task_id] = dest
-        from fastvideo3.providers.base import poll_until_done
+        # 2026-09-25 真实探单：该模型仅支持同步调用——带 X-DashScope-Async 头返回
+        # 403 "current user api does not support asynchronous calls"；同步 POST 直接返回图片。
+        headers = self._headers()
+        if extra:
+            headers.update(extra)
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(
+                f"{API_BASE}/services/aigc/multimodal-generation/generation",
+                headers=headers,
+                json=body,
+            )
+        data = resp.json()
+        raise_for_status(resp, data)
+        url = self._extract_image_url(data)
+        if not url:
+            raise ProviderError(f"wan2.7-image 无产物地址: {str(data)[:300]}")
+        await _download(url, dest)
+        return ImageResult(uri=dest, meta={"request_id": data.get("request_id", "")})
 
-        status = await poll_until_done(
-            self.poll, task_id, timeout_sec=300, fast_interval=2, slow_interval=5
-        )
-        if status.status != "succeeded" or status.output_uri is None:
-            raise ProviderError(f"wan2.7-image failed: {status.error}")
-        return ImageResult(uri=status.output_uri, meta={"task_id": task_id})
-
-    async def poll(self, job_id: str) -> VideoJobStatus:
-        """wan2.7-image 产物在 output.choices[].message.content[].image，需自定义解析。"""
-        data = await self._query_task(job_id)
+    @staticmethod
+    def _extract_image_url(data: dict) -> str | None:
+        """同步响应产物在 output.choices[].message.content[].image。"""
         output = data.get("output") or {}
-        status = output.get("task_status", "").upper()
-        dest = self._job_dest.get(job_id)
-        if status == "SUCCEEDED":
-            url: str | None = None
-            for ch in output.get("choices") or []:
-                for c in (ch.get("message") or {}).get("content") or []:
-                    if c.get("image"):
-                        url = c["image"]
-            url = url or _first_media_url(output)
-            if not url or dest is None:
-                return VideoJobStatus(status="failed", error=f"无产物地址: {str(output)[:200]}")
-            await _download(url, dest)
-            return VideoJobStatus(status="succeeded", progress=1.0, output_uri=dest)
-        if status in ("FAILED", "UNKNOWN"):
-            return VideoJobStatus(status="failed", error=output.get("message", "task failed"))
-        return VideoJobStatus(status="running", progress=0.5)
+        url: str | None = None
+        for ch in output.get("choices") or []:
+            for c in (ch.get("message") or {}).get("content") or []:
+                if c.get("image"):
+                    url = c["image"]
+        return url or _first_media_url(output)
 
 
 class DashScopeTextProvider(OpenAICompatTextProvider):

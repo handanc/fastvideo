@@ -65,6 +65,9 @@ class AppConfig(BaseModel):
     use_r2v_for_characters: bool = False  # 角色动作镜头走 wan2.7-r2v 参考生视频（像素级一致）
     use_reference_keyframes: bool = False  # 首帧带角色立绘参考图生成（硬锁脸，wan2.7-image）
     candidates_per_shot: int = 1  # >1 时 best-of-N + VLM 选优（商业管线"抽卡"）
+    asset_candidates: int = 1  # 角色立绘 best-of-N（源头防立绘崩，全链路继承放大）
+    script_review: bool = False  # auto 模式剧本 critic 评审（high/cinema 开启）
+    auto_reshoot: bool = False  # auto 终审未过时自动重拍 ≤2 镜（默认关，防成本失控）
     i2v_resolution: str = "480P"  # wan 系 I2V 档位：480P | 720P | 1080P
     style_suffix: str = ""  # 全局风格锚：追加到所有文生图提示词尾部（统一全片画风）
     negative_prompt: str = ""  # 全局负向提示词（防卡通化/防劣化）
@@ -72,6 +75,8 @@ class AppConfig(BaseModel):
     loudnorm: bool = False  # 交付响度归一 -16 LUFS（竖屏平台标准）
     encode_crf: int = 23  # 中间编码质量（交付档 20）
     encode_preset: str = "ultrafast"
+    output_fps: int = 24  # 成片帧率（此前 ffmpeg 层硬编码 24）
+    intermediate_crf: int = 18  # 中转产物 CRF 上限（normalize/静帧等，减少代际累积损伤）
     bgm_volume: float = 0.15
 
     # ── 路由与模型 ──
@@ -180,6 +185,9 @@ def load_config(
         use_r2v_for_characters=bool(gen.get("use_r2v_for_characters", False)),
         use_reference_keyframes=bool(gen.get("use_reference_keyframes", False)),
         candidates_per_shot=int(gen.get("candidates_per_shot", 1)),
+        asset_candidates=int(gen.get("asset_candidates", 1)),
+        script_review=bool(gen.get("script_review", False)),
+        auto_reshoot=bool(gen.get("auto_reshoot", False)),
         i2v_resolution=gen.get("i2v_resolution", "480P"),
         style_suffix=gen.get("style_suffix", ""),
         negative_prompt=gen.get("negative_prompt", ""),
@@ -187,6 +195,8 @@ def load_config(
         loudnorm=bool(gen.get("loudnorm", False)),
         encode_crf=int(gen.get("encode_crf", 23)),
         encode_preset=gen.get("encode_preset", "ultrafast"),
+        output_fps=int(gen.get("output_fps", 24)),
+        intermediate_crf=int(gen.get("intermediate_crf", 18)),
         bgm_volume=float(gen.get("bgm_volume", 0.15)),
         routing=routing,
         models=yml.get("models", {}),

@@ -36,9 +36,12 @@ def build_graph(ctx: GraphContext, checkpointer: Any | None = None):
     g.add_edge("talk", "edit")
     g.add_edge("edit", "final_review")
     g.add_edge("final_review", "final_gate")
+    # 驳回回路：reshoot 删问题镜头产物 → shots/talk 靠 resume-skip 只重生成被删镜头
+    # → edit 重合成 → 二次过门直接 finalize（防死循环，见 nodes.route_after_final_gate）
     g.add_conditional_edges(
-        "final_gate", route_after_final_gate, {"edit": "edit", "finalize": "finalize"}
+        "final_gate", route_after_final_gate, {"reshoot": "reshoot", "finalize": "finalize"}
     )
+    g.add_edge("reshoot", "shots")
     g.add_edge("finalize", END)
 
     return g.compile(checkpointer=checkpointer)

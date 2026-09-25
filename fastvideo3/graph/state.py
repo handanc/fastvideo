@@ -33,6 +33,9 @@ class ProductionState(TypedDict, total=False):
     final_video: str
     final_review: dict
     final_rejected: bool
+    final_feedback: str  # 成片驳回意见（驱动 reshoot 选镜；此前在 final_gate 被直接丢弃）
+    final_rerun: bool  # 已重拍过一轮的标志（防 edit↔gate 死循环；此前用未声明的 _final_rerun 导致不持久化）
+    reshoot_shots: list[str]  # 本轮重拍的镜头 id（产物已删，shots/talk 靠 resume-skip 只重生成这些）
     # 运行标记
     status: str
     error: str

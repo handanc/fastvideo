@@ -24,26 +24,26 @@ fastvideo3 run --topic "职场新人的第一天" --duration 60
 
 **一把 `DASHSCOPE_API_KEY` 跑通全系统**（2026-08 起默认全百炼栈，性价比选型）：
 
-| 能力 | 模型 | 参考价 |
-|---|---|---|
-| 编剧 | `qwen3.7-plus`（百炼模型市场专属端点，见 `.env`） | 按工作空间计费 |
-| 文生图 | `wanx2.1-t2i-turbo` | ~¥0.18/张 |
-| 图生视频 | `wan2.2-i2v-flash`（480P） | ¥0.11/秒 |
-| 口型 | `wan2.2-s2v`（480P，新账号送 100 秒） | ¥0.5/秒 |
-| 配音 | `cosyvoice-v2`（失败自动降级免费 edge-tts） | ¥2/万字符 |
-| 视觉评审 | `qwen-vl-plus` | ¥1.5/百万 token |
+| 能力     | 模型                                                  | 参考价           |
+| -------- | ----------------------------------------------------- | ---------------- |
+| 编剧     | `qwen3.7-plus`（百炼模型市场专属端点，见 `.env`） | 按工作空间计费   |
+| 文生图   | `wanx2.1-t2i-turbo`                                 | ~¥0.18/张       |
+| 图生视频 | `wan2.2-i2v-flash`（480P）                          | ¥0.11/秒        |
+| 口型     | `wan2.2-s2v`（480P，新账号送 100 秒）               | ¥0.5/秒         |
+| 配音     | `cosyvoice-v2`（失败自动降级免费 edge-tts）         | ¥2/万字符       |
+| 视觉评审 | `qwen-vl-plus`                                      | ¥1.5/百万 token |
 
 ## 常用命令
 
-| 命令 | 说明 |
-|---|---|
-| `fastvideo3 run --topic ... [--fake] [--review gated] [--talk-mode audio_overlay]` | 端到端生成 |
-| `fastvideo3 stage script/assets/storyboard/shots/audio/talk/edit` | 单阶段运行（教学） |
-| `fastvideo3 resume <run_id> --decision approve` | 续跑 / 人工审片回复 |
-| `fastvideo3 doctor` | 环境自检 |
-| `fastvideo3 cost <run_id>` / `fastvideo3 ls-runs` | 成本台账 / 历史运行 |
-| `fastvideo3 serve` | **Vue Web 面板**（FastAPI + Vue3，见下节） |
-| `streamlit run fastvideo3/app/streamlit_app.py` | Streamlit 面板（教学观测用） |
+| 命令                                                                                 | 说明                                             |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| `fastvideo3 run --topic ... [--fake] [--review gated] [--talk-mode audio_overlay]` | 端到端生成                                       |
+| `fastvideo3 stage script/assets/storyboard/shots/audio/talk/edit`                  | 单阶段运行（教学）                               |
+| `fastvideo3 resume <run_id> --decision approve`                                    | 续跑 / 人工审片回复                              |
+| `fastvideo3 doctor`                                                                | 环境自检                                         |
+| `fastvideo3 cost <run_id>` / `fastvideo3 ls-runs`                                | 成本台账 / 历史运行                              |
+| `fastvideo3 serve`                                                                 | **Vue Web 面板**（FastAPI + Vue3，见下节） |
+| `streamlit run fastvideo3/app/streamlit_app.py`                                    | Streamlit 面板（教学观测用）                     |
 
 ## Vue Web 面板
 
@@ -62,12 +62,12 @@ fastvideo3 serve
 
 页面功能（4 个视图，无路由依赖）：
 
-| 视图 | 功能 |
-|---|---|
-| 新建任务 | 主题/风格/时长/审片模式/口型模式/画质/画幅/熔断/Fake 开关 → 后台启动生成 |
-| 运行历史 | 状态徽章（完成/运行中/待审片/失败/停摆）+ 成本摘要，5s 自动刷新 |
+| 视图     | 功能                                                                                           |
+| -------- | ---------------------------------------------------------------------------------------------- |
+| 新建任务 | 主题/风格/时长/审片模式/口型模式/画质/画幅/熔断/Fake 开关 → 后台启动生成                      |
+| 运行历史 | 状态徽章（完成/运行中/待审片/失败/停摆）+ 成本摘要，5s 自动刷新                                |
 | 运行详情 | 事件流时间线（3s 轮询）· 成本明细 · 资产/分镜画廊 · 成片与镜头片段播放 · 审片通过/驳回续跑 |
-| 环境自检 | JSON 版 doctor（依赖/FFmpeg/KEY/权重/数据库） |
+| 环境自检 | JSON 版 doctor（依赖/FFmpeg/KEY/权重/数据库）                                                  |
 
 REST API（Swagger 文档：`/docs`）：`GET/POST /api/runs` · `GET /api/runs/{id}` · `POST /api/runs/{id}/resume` · `GET /api/files/{id}/{stage}/{name}` · `GET /api/doctor` · `GET /api/health`
 

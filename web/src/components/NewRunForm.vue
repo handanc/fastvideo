@@ -1,19 +1,31 @@
 <script setup>
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { api } from '../api'
 
 const emit = defineEmits(['created'])
 
+// fake 默认 false：此前默认 true，Web 面板发起的运行在未察觉时全走占位色块演示模式
 const form = reactive({
   topic: '职场新人的第一天',
   style: '都市轻喜剧',
   duration: 30,
-  fake: true,
+  fake: false,
   review: 'auto',
   talk_mode: 's2v_direct',
-  quality: 'economy',
+  quality: 'cinema',
   aspect: '9:16',
   budget: 0,
+})
+
+// 各档位每秒成本量级（元），用于预估提示
+const QUALITY_RATE = { economy: [0.15, 0.35], high: [0.4, 0.8], cinema: [1.2, 2.2] }
+const costHint = computed(() => {
+  const [lo, hi] = QUALITY_RATE[form.quality] || QUALITY_RATE.economy
+  return {
+    lo: Math.round(form.duration * lo),
+    hi: Math.round(form.duration * hi),
+    fuse: Math.round(form.duration * hi + 40),
+  }
 })
 
 const busy = ref(false)
@@ -102,6 +114,14 @@ async function submit() {
       <input v-model="form.fake" type="checkbox" />
       Fake 模式（零成本离线演示，无需任何 API KEY）
     </label>
+
+    <div v-if="form.fake" class="alert warn">
+      ⚠ Fake 模式产出<b>占位色块图 + 静帧片段 + 静音音轨</b>，仅用于流程演示，不是真实 AI 生成
+    </div>
+    <div v-else class="alert warn">
+      {{ form.quality }} 档预估成本 <b>¥{{ costHint.lo }}-{{ costHint.hi }}</b>（{{ form.duration }}s 成片）；
+      熔断填 0 跟随 .env（默认 ¥120），建议 ≥¥{{ costHint.fuse }} 防中途停跑
+    </div>
 
     <div v-if="error" class="alert err">{{ error }}</div>
 

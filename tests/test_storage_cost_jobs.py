@@ -60,3 +60,26 @@ def test_job_store_crud(tmp_path):
     assert store.list_open("r1") == []
     assert store.get("missing") is None
     store.dispose()
+
+
+def test_pricing_covers_all_configured_models():
+    """定价覆盖一致性：所有档位 yaml 里出现的模型名必须在 pricing.yaml 有条目。
+
+    缺失条目会静默回退到能力默认价（cost.price_of），如 wan2.2-i2v-plus 曾按
+    ¥0.11/s 记账（实际 ≈¥0.7/s），预算熔断严重失真。此测试守住护栏本身。
+    """
+    import yaml
+
+    from fastvideo3.core.config import CONFIGS_DIR, PROJECT_ROOT
+
+    with open(PROJECT_ROOT / "pricing.yaml", encoding="utf-8") as f:
+        priced = set((yaml.safe_load(f).get("models") or {}).keys())
+
+    configured: set[str] = set()
+    for name in ("default.yaml", "profile_high.yaml", "profile_cinema.yaml"):
+        with open(CONFIGS_DIR / name, encoding="utf-8") as f:
+            yml = yaml.safe_load(f) or {}
+        configured.update((yml.get("models") or {}).values())
+
+    missing = configured - priced
+    assert not missing, f"pricing.yaml 缺少模型定价条目（熔断会低估成本）: {sorted(missing)}"
