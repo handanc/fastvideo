@@ -214,8 +214,10 @@ def doctor(probe: int = 0) -> dict:
     cfg = load_config()
     row(
         "DEEPSEEK_API_KEY",
-        bool(cfg.deepseek_api_key) or cfg.fake,
-        "已配置" if cfg.deepseek_api_key else "未配置(Fake 模式可跳过)",
+        bool(cfg.deepseek_api_key) or bool(cfg.dashscope_api_key) or cfg.fake,
+        "已配置"
+        if cfg.deepseek_api_key
+        else "未配置(仅备选文本供应商，全百炼栈可忽略)",
     )
     row(
         "DASHSCOPE_API_KEY",
@@ -239,9 +241,11 @@ def doctor(probe: int = 0) -> dict:
     from fastvideo3.utils.yolo import WEIGHT_NAME
 
     row(
-        "yolov8n-seg.pt(双人同屏)",
-        (MODELS_DIR / WEIGHT_NAME).exists(),
-        "就位" if (MODELS_DIR / WEIGHT_NAME).exists() else "缺失(自动降级拼接)",
+        "yolov8n-seg.pt(备用)",
+        True,  # 信息项：双人镜头已改首帧同框单条 S2V，权重本期未接入管线
+        "就位(分割合成进阶备用)"
+        if (MODELS_DIR / WEIGHT_NAME).exists()
+        else "未下载(管线不依赖；双人镜头走首帧同框方案)",
     )
     try:
         from fastvideo3.core.jobs import JobStore
