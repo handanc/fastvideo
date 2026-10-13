@@ -37,7 +37,6 @@ from fastvideo3.core.prompts import NO_ONSCREEN_TEXT
 from fastvideo3.core.scenegroup import (
     MAX_CLIP_SEC,
     MIN_CLIP_SEC,
-    MODE_FIRST_LAST,
     MODE_REFERENCE,
     RefPlan,
     SceneGroup,
@@ -113,10 +112,10 @@ def scene_duration_sec(group: SceneGroup) -> int:
 
 
 def reference_line(plan: RefPlan | None, char_map: dict, scene_names: dict | None = None) -> str:
-    """参考素材的编号引用段。**串联组（bridging）不发参考素材** → 返回空串。
+    """参考素材的编号引用段。首尾帧形态（plan=None）不发参考素材 → 返回空串。
 
     `first_frame`/`last_frame` 与 `reference_image`/`reference_audio` 官方明写互斥，
-    所以跨场景串联（上一组尾帧当这一组首帧）与锁脸/锁声参考只能二选一。
+    所以首尾帧形态的提示词里不能出现任何 图N/音频N。
     """
     scene_names = scene_names or {}
     if plan is None:
@@ -127,9 +126,12 @@ def reference_line(plan: RefPlan | None, char_map: dict, scene_names: dict | Non
         name = (getattr(ch, "name", "") if ch else "") or cid
         imgs.append(f"{name}的形象参考{label}")
     # 场景图接在立绘后继续编号：官方多主体示例就是"人物图N + 场景图M"混排指名，
-    # 用途在提示词里切清楚，避免特征串位（把场景的配色串到人物衣服上）
+    # 用途在提示词里切清楚，避免特征串位（把场景的配色串到人物衣服上）。
+    # **场景图是空景背景（m2 产的场景概念图里没有人）**，必须明说"图中无人"：
+    # 不说的话模型可能把空景理解成"画面里就该没有人"，或反过来把背景里
+    # 不存在的路人脑补出来；人物长相一律以角色参考图为准。
     for label, sid in plan.scene_images:
-        imgs.append(f"{scene_names.get(sid, sid)}的场景参考{label}")
+        imgs.append(f"{scene_names.get(sid, sid)}的空景背景参考{label}（图中无人）")
     auds = []
     for label, cid in plan.audios:
         ch = char_map.get(cid)
@@ -140,7 +142,8 @@ def reference_line(plan: RefPlan | None, char_map: dict, scene_names: dict | Non
         return ""
     return (
         "参考素材：" + "；".join(parts)
-        + "。严格保持参考人物的长相、服装与音色，严格保持参考场景的空间结构与光线。"
+        + "。严格保持参考人物的长相、服装与音色；场景的空间结构、陈设与光线以背景参考图为准，"
+        + "画面中的人物以角色参考图为准，不要照搬背景图里的人数（背景图是空景）。"
     )
 
 
@@ -150,14 +153,11 @@ def scene_prompt(
     script: Any,
     char_map: dict,
     ref_plan: RefPlan | None = None,
-    *,
-    bridging: bool = False,
 ) -> str:
     """把一个场景组写成官方多镜头模板的提示词。
 
-    `bridging=True` 表示本组用上一组的尾帧当首帧（跨场景串联）：此时**不能**再发
-    reference_image/reference_audio（官方类型互斥），提示词里也不该出现"参考图N"，
-    否则模型会去找不存在的素材。
+    `ref_plan=None`（首尾帧形态）时提示词里不出现任何"图N/音频N"引用：那种形态发不了
+    参考素材（官方类型互斥），写了模型会去找不存在的素材。
     """
     shots = {sh.shot_id: sh for sh in script.all_shots()}
     ordered = [shots[sid] for sid in group.shot_ids if sid in shots]
@@ -176,7 +176,8 @@ def scene_prompt(
         "由下列分镜首尾相接构成一段连贯叙事，镜头之间空间连续、人物走位与上一镜头衔接，"
         "不要跳戏、不要重新布景。",
     ]
-    if bridging:
+    if ref_plan is None:
+        # 首尾帧形态：发不了参考素材（官方互斥），提示词里也不能出现 图N/音频N
         head.append("画面严格从首帧开始、到尾帧结束（首尾帧已锁定起止构图）。")
     else:
         scene_names_map = {
@@ -251,30 +252,37 @@ def scene_prompt(
     return " ".join(p for p in (head + body + tail) if p).strip()
 
 
-def _tail_frame(clip: Path, dest: Path) -> Path | None:
-    """取一段视频的最后一帧（跨场景串联：上一组尾帧 = 这一组首帧）。
+def _ref_path(assets: dict, storage: RunStorage, ov: dict, cid: str) -> Path:
+    """某角色的参考图路径：覆盖选择（界面里换用某张候选立绘）优先，默认 char_{cid}.png。
 
-    失败返回 None：串联是增强项，拿不到尾帧就退成普通场景生成，不值得为它中断整步。
+    覆盖值必须是**盘上已存在的资产相对路径**（endpoint 校验过），这里只做解析：
+    界面只允许"选已有的图"，不允许上传新图或改图 —— 改图是角色页的职责，
+    在这里开放编辑会出现"这条片段锁的脸和角色页显示的脸不是同一张"的分裂。
     """
-    from fastvideo3.utils.ffmpeg import run_ffmpeg
-
-    try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        run_ffmpeg(["-sseof", "-0.25", "-i", str(clip), "-frames:v", "1", str(dest)])
-        return dest if dest.is_file() and dest.stat().st_size > 1024 else None
-    except Exception:  # noqa: BLE001
-        return None
+    rel = str((ov.get("char_images") or {}).get(cid) or f"assets/char_{cid}.png")
+    a = assets.get(f"char_{cid}")
+    if rel and not rel.endswith(f"char_{cid}.png") and a is None:
+        rel = f"assets/char_{cid}.png"
+    return storage.root / rel
 
 
-def _ordered_refs(group: SceneGroup, assets: dict) -> tuple[list[str], list[str]]:
-    """本组实际有文件的立绘角色 id 与场景图 id（顺序 = 上传顺序 = 提示词编号顺序）。"""
+def _ordered_refs(group: SceneGroup, assets: dict, ov: dict | None = None) -> tuple[list[str], list[str]]:
+    """本组实际要发的立绘角色 id 与场景图 id（顺序 = 上传顺序 = 提示词编号顺序）。
+
+    覆盖（界面选择）决定**子集与顺序**；不在覆盖里的按出场顺序。只保留盘上真有文件的。
+    """
+    ov = ov or {}
+    want_chars = [c for c in (ov.get("char_refs") or []) if c in group.characters]
+    want_chars += [c for c in group.characters if c not in want_chars]
     looks = []
-    for cid in group.characters:
+    for cid in want_chars:
         a = assets.get(f"char_{cid}")
         if a is not None and Path(str(a.uri)).exists():
             looks.append(cid)
+    want_scenes = [s for s in (ov.get("scene_refs") or []) if s in group.scene_ids]
+    want_scenes += [s for s in group.scene_ids if s not in want_scenes]
     scenes = []
-    for sid in group.scene_ids:
+    for sid in want_scenes:
         a = assets.get(f"scene_{sid}")
         if a is not None and Path(str(a.uri)).exists():
             scenes.append(sid)
@@ -295,6 +303,7 @@ async def generate_scene_clips(
     groups: list[SceneGroup] | None = None,
     only: set[str] | None = None,
     skip_existing: bool = True,
+    overrides: dict[str, dict] | None = None,
 ) -> dict[str, str]:
     """每个场景组**一次调用**生成连贯多镜头片段 → `clips/scene_{gid}.mp4`。
 
@@ -319,7 +328,6 @@ async def generate_scene_clips(
     )
     char_map = script.character_map()
     out: dict[str, str] = {}
-    prev_clip: Path | None = None
 
     for idx, group in enumerate(groups):
         gid = group.group_id
@@ -333,10 +341,10 @@ async def generate_scene_clips(
         if dest.exists() and skip_existing and not storage.is_stale(rel):
             out[gid] = str(dest)
             storage.log_event("m4_scene", "scene_reuse", group=gid)
-            prev_clip = dest
             continue
 
-        look_cids, scene_sids = _ordered_refs(group, assets)
+        ov = (overrides or {}).get(gid) or {}
+        look_cids, scene_sids = _ordered_refs(group, assets, ov)
         gshots = {sh.shot_id: sh for sh in script.all_shots() if sh.shot_id in set(group.shot_ids)}
         speakers = tuple(dict.fromkeys(
             d.character_id for sid in group.shot_ids for d in (gshots[sid].dialogues if sid in gshots else [])
@@ -364,28 +372,16 @@ async def generate_scene_clips(
 
         first_shot, last_shot = group.shot_ids[0], group.shot_ids[-1]
         first_frame = Path(frames[first_shot]) if frames.get(first_shot) else None
-        bridging = bool(cfg.scene_bridge and idx > 0 and prev_clip is not None)
-        if bridging and first_frame is None and prev_clip is not None:
-            tail = storage.path("clips", f"_bridge_{gid}.png")
-            first_frame = _tail_frame(prev_clip, tail)
-        # 首帧"在盘"不等于"可信"：上游立绘/剧本改过之后血缘会把它标 stale，
-        # 拿一张旧脸画的首帧去锁起止，等于把旧脸焊进新片段。
-        first_stale = bool(frames.get(first_shot)) and storage.is_stale(
-            f"storyboard/shot_{first_shot}.png"
-        )
+        last_frame_path = _last_frame_path(storage, last_shot) if cfg.use_last_frames else None
         mode, why = choose_input_mode(
             group,
-            has_look_cards=bool(img_cids),
-            has_first_frames=first_frame is not None,
             has_dialogue=bool(speakers),
-            first_frame_stale=first_stale,
-            bridging=bridging,
-            forced=cfg.scene_clip_mode,
+            has_first_frames=first_frame is not None,
+            forced=str(ov.get("mode") or cfg.scene_clip_mode or "auto"),
         )
         prompt = scene_prompt(
             cfg, group, script, char_map,
             plan if mode == MODE_REFERENCE else None,
-            bridging=(mode == MODE_FIRST_LAST and bridging),
         )
         duration = scene_duration_sec(group)
         params: dict[str, Any] = {
@@ -395,23 +391,19 @@ async def generate_scene_clips(
         }
         submit_image: Path | None = None
         if mode == MODE_REFERENCE:
-            params["references"] = [Path(str(assets[f"char_{c}"].uri)) for c in img_cids] + [
+            # 参考图路径以覆盖选择为准（界面里可以换用某张候选立绘），默认 char_{cid}.png
+            params["references"] = [_ref_path(assets, storage, ov, c) for c in img_cids] + [
                 Path(str(assets[f"scene_{s}"].uri)) for s in scene_sids
             ]
             params["voice_refs"] = [Path(got_voice[c]) for c in audio_cids]
         else:
             submit_image = first_frame
-            params["last_frame"] = (
-                _last_frame_path(storage, last_shot)
-                if (cfg.use_last_frames and not bridging)
-                else None
-            )
+            params["last_frame"] = last_frame_path
 
         job_id = f"scene_{gid}"
         existing = jobs.get(job_id)
         if existing is not None and existing.status == JobStatus.SUCCEEDED and dest.exists():
             out[gid] = str(dest)
-            prev_clip = dest
             continue
         try:
             ext_id = await provider.submit(dest=dest, image=submit_image, audio=None, video=None, **params)
@@ -527,5 +519,94 @@ async def generate_scene_clips(
             res=billed_res, refs=len(img_cids) + len(scene_sids), voices=len(audio_cids),
         )
         out[gid] = str(dest)
-        prev_clip = dest
     return out
+
+
+def _compose_frame_prompt(cfg: AppConfig, shot: Any, char_map: dict) -> str:
+    """没有蒸馏稿时的首帧提示词兜底：外貌锚 + 动作 + 场景 + 风格，纯画面文本。"""
+    people = []
+    for cid in dict.fromkeys(list(shot.characters) + [d.character_id for d in shot.dialogues]):
+        nm, look = _name_look(char_map.get(cid))
+        if nm:
+            people.append(f"{nm}（{look}）" if look else nm)
+    parts = [
+        (shot.action or "").strip(),
+        f"画面中人物：{'；'.join(people[:4])}。" if people else "",
+        f"镜头语言：{(shot.camera or '').strip() or '中景固定镜头'}。",
+        (cfg.style_suffix or "").strip(),
+        NO_ONSCREEN_TEXT,
+    ]
+    return " ".join(p for p in parts if p).strip()
+
+
+def _first_last_prompts(cfg: AppConfig, group: SceneGroup, script: Any) -> tuple[str, str]:
+    """首尾帧形态的**自动生成**提示词（界面可再编辑）。
+
+    首帧取 m3 已蒸馏的 `visual_prompt`（没有就按外貌锚+动作兜底拼）；尾帧复用 m3 的
+    `_last_frame_prompt` —— 它以同一份蒸馏稿为底、只把动作推进到结束状态。两份提示词
+    同源是刻意的：首尾帧若不是"同一个人、同一个场景"，i2v 会在两张不相干的图之间硬插值。
+    """
+    from fastvideo3.modules.m3_storyboard import _last_frame_prompt
+
+    shots = {sh.shot_id: sh for sh in script.all_shots()}
+    first_sh = shots.get(group.shot_ids[0])
+    last_sh = shots.get(group.shot_ids[-1])
+    if first_sh is None or last_sh is None:
+        return "", ""
+    char_map = script.character_map()
+    p_first = (first_sh.visual_prompt or "").strip() or _compose_frame_prompt(
+        cfg, first_sh, char_map
+    )
+    return p_first, _last_frame_prompt(cfg, last_sh)
+
+
+async def generate_group_frames(
+    cfg: AppConfig,
+    t2i: Any,
+    group: SceneGroup,
+    script: Any,
+    storage: RunStorage,
+    ledger: CostLedger,
+    prompt_first: str,
+    prompt_last: str,
+) -> list[str]:
+    """按提示词生成一组的首帧/尾帧图，落到 m3 的既有约定位置并登记血缘。
+
+    与 m3 同位同血缘是刻意的：换立绘会连带作废它们、重跑 frames 步会补它们、
+    界面删了它们进度会报缺口 —— 一套机制管所有来源的首尾帧，不分"谁画的"。
+    """
+    from fastvideo3.modules.m2_assets import size_for_aspect
+    from fastvideo3.modules.m3_storyboard import _retry_gen, _stable_seed
+
+    size = size_for_aspect(cfg.aspect_ratio, hi_res=cfg.resolution[0] >= 1080)
+    shots = {sh.shot_id: sh for sh in script.all_shots()}
+    made: list[str] = []
+    for shot_id, prompt, suffix in (
+        (group.shot_ids[0], prompt_first, ""),
+        (group.shot_ids[-1], prompt_last, "_last"),
+    ):
+        shot = shots.get(shot_id)
+        if shot is None:
+            continue
+        dest = storage.path("storyboard", f"shot_{shot_id}{suffix}.png")
+        rel = f"storyboard/shot_{shot_id}{suffix}.png"
+        cast = list(group.characters)
+        seed = _stable_seed(shot, cfg.keyframe_seed_scope, cast)
+        used_name, used_model, meta = await _retry_gen(
+            t2i, prompt, dest, ledger, f"scene_frame:{group.group_id}{suffix}",
+            size=size, negative_prompt=cfg.negative_prompt, seed=seed,
+            ref_image=None, fallback=None, storage=storage,
+        )
+        if not dest.exists():
+            continue
+        made.append(rel)
+        storage.record_regeneration(
+            rel, [f"assets/char_{c}.png" for c in cast] + ["script.json"],
+            reason="首尾帧重生成（界面）",
+        )
+        storage.log_event(
+            "m4_scene", "scene_frame_gen", group=group.group_id, shot=shot_id,
+            kind="first" if not suffix else "last", provider=used_name, model=used_model,
+            prompt_chars=len(prompt),
+        )
+    return made

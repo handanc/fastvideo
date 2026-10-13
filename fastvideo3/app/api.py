@@ -922,6 +922,245 @@ def reconcile_run_cost(run_id: str) -> dict:
     return data
 
 
+def _scene_groups_payload(run_id: str, root: Path) -> dict:
+    """分镜视频界面的数据源：每个场景组的模式、可选素材、首尾帧提示词与产物状态。
+
+    素材清单只列**盘上已存在**的图（角色页/场景页的产物，含落选候选）—— 界面只允许
+    "选已有的图"，不允许在这里上传或改图：改图是角色页的职责，在这里开放编辑会出现
+    "这条片段锁的脸和角色页显示的脸不是同一张"的分裂。
+    """
+    from fastvideo3.core.scenegroup import choose_input_mode, group_scenes
+    from fastvideo3.modules.m4_scene import _first_last_prompts
+
+    meta = _load_meta(root) or {}
+    cfg = _cfg_for_run(root)
+    script = _script_or_none(root)
+    if script is None:
+        return {"groups": []}
+    overrides = meta.get("scene_overrides") or {}
+    assets_dir = root / "assets"
+    char_imgs: dict[str, list[Any]] = {}
+    for p in sorted(assets_dir.glob("char_*.png")) if assets_dir.is_dir() else []:
+        if p.name.endswith(".bak.png"):
+            continue
+        cid = p.stem[len("char_"):]
+        char_imgs.setdefault(cid, []).append(_url(run_id, "assets", p.name))
+    cand_imgs: dict[str, list[Any]] = {}
+    cand_rel: dict[str, list[str]] = {}
+    for p in sorted(assets_dir.glob("_cand_char_*.png")) if assets_dir.is_dir() else []:
+        rest = p.stem[len("_cand_char_"):]
+        cid = rest.rsplit("_", 1)[0]
+        cand_imgs.setdefault(cid, []).append(_url(run_id, "assets", p.name))
+        cand_rel.setdefault(cid, []).append(f"assets/{p.name}")
+    scene_imgs: dict[str, str] = {}
+    for p in sorted(assets_dir.glob("scene_*.png")) if assets_dir.is_dir() else []:
+        scene_imgs[p.stem[len("scene_"):]] = _url(run_id, "assets", p.name)
+    frames_dir = root / "storyboard"
+    groups = []
+    for g in group_scenes(script, max_clip_sec=30.0):
+        ov = overrides.get(g.group_id) or {}
+        speakers = {
+            d.character_id
+            for sh in script.all_shots()
+            if sh.shot_id in set(g.shot_ids)
+            for d in sh.dialogues
+        }
+        first_shot, last_shot = g.shot_ids[0], g.shot_ids[-1]
+        first_rel = f"storyboard/shot_{first_shot}.png"
+        last_rel = f"storyboard/shot_{last_shot}_last.png"
+        prompts = _first_last_prompts(cfg, g, script)
+        mode, why = choose_input_mode(
+            g,
+            has_dialogue=bool(speakers),
+            has_first_frames=(frames_dir / f"shot_{first_shot}.png").is_file(),
+            forced=str(ov.get("mode") or cfg.scene_clip_mode or "auto"),
+        )
+        groups.append(
+            {
+                "group_id": g.group_id,
+                "scene_ids": list(g.scene_ids),
+                "shot_ids": list(g.shot_ids),
+                "windows": {k: list(v) for k, v in g.windows.items()},
+                "duration": g.duration,
+                "characters": list(g.characters),
+                "has_dialogue": bool(speakers),
+                "auto_mode": mode if not ov.get("mode") else choose_input_mode(
+                    g, has_dialogue=bool(speakers),
+                    has_first_frames=(frames_dir / f"shot_{first_shot}.png").is_file(),
+                )[0],
+                "mode": mode,
+                "mode_reason": why,
+                "clip": _url(run_id, "clips", f"scene_{g.group_id}.mp4")
+                if (root / "clips" / f"scene_{g.group_id}.mp4").is_file() else None,
+                "clip_stale": bool((root / "clips" / f"scene_{g.group_id}.mp4").is_file())
+                and RunStorage(run_id, root=root.parent).is_stale(f"clips/scene_{g.group_id}.mp4"),
+                "first_frame": _url(run_id, "storyboard", f"shot_{first_shot}.png")
+                if (root / first_rel).is_file() else None,
+                "last_frame": _url(run_id, "storyboard", f"shot_{last_shot}_last.png")
+                if (root / last_rel).is_file() else None,
+                "prompt_first": str(ov.get("prompt_first") or prompts[0]),
+                "prompt_last": str(ov.get("prompt_last") or prompts[1]),
+                "char_options": {
+                    cid: {
+                        "portrait": (char_imgs.get(cid) or [None])[0],
+                        "portrait_rel": f"assets/char_{cid}.png",
+                        "candidates": cand_imgs.get(cid, []),
+                        "candidates_rel": cand_rel.get(cid, []),
+                    }
+                    for cid in g.characters
+                },
+                "scene_options_rel": {sid: f"assets/scene_{sid}.png" for sid in g.scene_ids},
+                "char_refs": list(ov.get("char_refs") or g.characters),
+                "char_images": dict(ov.get("char_images") or {}),
+                "scene_options": {sid: scene_imgs.get(sid) for sid in g.scene_ids},
+                "scene_refs": list(ov.get("scene_refs") or g.scene_ids),
+            }
+        )
+    return {"groups": groups}
+
+
+@app.post("/api/runs/{run_id}/scene-groups/{group_id}/generate", status_code=202)
+def generate_scene_group(run_id: str, group_id: str) -> dict:
+    """只重出**这一个**场景组（界面「生成」按钮）。
+
+    走子进程 + 全局任务锁，与「开始生成」同一套防重复付费机制：场景片段一次调用
+    就是 ¥6–36（720P/1080P × 10–30s），连点两下烧双份钱是不可接受的。
+    不整步重跑：整步会把别的组也按缺口补一遍，而用户此刻只想看他改过的这一组。
+    """
+    root = _safe_run_root(run_id)
+    _require_idle("生成场景片段")
+    from fastvideo3.core import tasklock
+
+    tasklock.acquire(_out(), run_id, "step")
+    cmd = [sys.executable, "-m", "fastvideo3.app.cli", "scene-gen", run_id, "--group", group_id]
+    _spawn(cmd, root / "server_spawn.log")
+    _events_append(root, "web_api", "scene_group_generate", group=group_id)
+    return {"ok": True, "group": group_id, "spawned": cmd[-2:]}
+
+
+@app.get("/api/runs/{run_id}/scene-groups")
+def scene_groups(run_id: str) -> dict:
+    """分镜视频界面：场景组清单 + 每组的模式/素材/首尾帧提示词/产物状态。"""
+    root = _safe_run_root(run_id)
+    return _scene_groups_payload(run_id, root)
+
+
+class SceneGroupPatch(BaseModel):
+    mode: Literal["", "auto", "reference", "first_last"] = ""
+    char_refs: list[str] = Field(default_factory=list, max_length=10)
+    scene_refs: list[str] = Field(default_factory=list, max_length=10)
+    char_images: dict[str, str] = Field(default_factory=dict, max_length=10)
+    prompt_first: str = ""
+    prompt_last: str = ""
+
+
+@app.patch("/api/runs/{run_id}/scene-groups/{group_id}")
+def patch_scene_group(run_id: str, group_id: str, req: SceneGroupPatch) -> dict:
+    """改某一组的 image2video 形态与素材选择，存进 run_meta.scene_overrides。
+
+    校验只做"物理上可能"的事：素材必须是本组角色/场景盘上已有的图（路径穿越与
+    别的角色的图都拒），图片总数 ≤10（官方上限），首尾帧形态的提示词不能为空
+    （空提示词 + 首尾帧 = 服务端 400，官方明写首尾帧模式提示词必填）。
+    """
+    import re as _re
+
+    from fastvideo3.core.scenegroup import MAX_REF_IMAGES, group_scenes
+
+    root = _safe_run_root(run_id)
+    meta = _load_meta(root) or {}
+    script = _script_or_none(root)
+    if script is None:
+        raise HTTPException(status_code=404, detail="剧本尚未生成")
+    group = next((g for g in group_scenes(script) if g.group_id == group_id), None)
+    if group is None:
+        raise HTTPException(status_code=404, detail=f"场景组不存在：{group_id}")
+    ov = dict((meta.get("scene_overrides") or {}).get(group_id) or {})
+    if req.mode:
+        ov["mode"] = req.mode
+    if req.char_refs:
+        bad = [c for c in req.char_refs if c not in group.characters]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"这些角色不在本组：{bad}")
+        ov["char_refs"] = req.char_refs
+    if req.scene_refs:
+        bad = [s for s in req.scene_refs if s not in group.scene_ids]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"这些场景不在本组：{bad}")
+        ov["scene_refs"] = req.scene_refs
+    if req.char_images:
+        for cid, rel in req.char_images.items():
+            if cid not in group.characters:
+                raise HTTPException(status_code=400, detail=f"角色不在本组：{cid}")
+            if not _re.fullmatch(r"assets/(char_|_cand_char_)[A-Za-z0-9_\-]+\.png", rel):
+                raise HTTPException(status_code=400, detail=f"非法素材路径：{rel}")
+            if not (root / rel).is_file():
+                raise HTTPException(status_code=404, detail=f"素材不在盘上：{rel}")
+        ov["char_images"] = req.char_images
+    if req.prompt_first.strip():
+        ov["prompt_first"] = req.prompt_first.strip()
+    if req.prompt_last.strip():
+        ov["prompt_last"] = req.prompt_last.strip()
+    n_imgs = len(ov.get("char_refs") or group.characters) + len(
+        ov.get("scene_refs") or group.scene_ids
+    )
+    if n_imgs > MAX_REF_IMAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"参考图共 {n_imgs} 张，超过官方上限 {MAX_REF_IMAGES} 张",
+        )
+    overrides = dict(meta.get("scene_overrides") or {})
+    overrides[group_id] = ov
+    meta["scene_overrides"] = overrides
+    RunStorage(run_id, root=root.parent).save_json("run_meta.json", meta)
+    _events_append(root, "web_api", "scene_group_patched", group=group_id,
+                   mode=ov.get("mode", ""), n_refs=n_imgs)
+    return _scene_groups_payload(run_id, root)
+
+
+@app.post("/api/runs/{run_id}/scene-groups/{group_id}/frames")
+async def generate_scene_frames(run_id: str, group_id: str) -> dict:
+    """按（可编辑的）提示词生成首帧/尾帧图 —— 首尾帧形态的前置步骤。
+
+    产物落在 storyboard/ 的既有约定位置（`shot_{首镜}.png` / `shot_{末镜}_last.png`），
+    与 m3 的逐镜头产物同位同血缘：换立绘会连带作废它们，重跑 frames 步也会补它们。
+    提示词以 run_meta.scene_overrides 里编辑过的版本为准（没编辑就用自动生成的）。
+    """
+    from fastvideo3.core.cost import CostLedger
+    from fastvideo3.core.scenegroup import group_scenes
+    from fastvideo3.modules import m4_scene
+    from fastvideo3.providers.base import Capability
+    from fastvideo3.providers.factory import make_provider
+
+    root = _safe_run_root(run_id)
+    _require_idle("生成首尾帧")
+    meta = _load_meta(root) or {}
+    cfg = _cfg_for_run(root)
+    script = _script_or_none(root)
+    if script is None:
+        raise HTTPException(status_code=404, detail="剧本尚未生成")
+    group = next((g for g in group_scenes(script) if g.group_id == group_id), None)
+    if group is None:
+        raise HTTPException(status_code=404, detail=f"场景组不存在：{group_id}")
+    ov = (meta.get("scene_overrides") or {}).get(group_id) or {}
+    prompts = m4_scene._first_last_prompts(cfg, group, script)
+    p_first = str(ov.get("prompt_first") or prompts[0]).strip()
+    p_last = str(ov.get("prompt_last") or prompts[1]).strip()
+    if not p_first or not p_last:
+        raise HTTPException(status_code=400, detail="首帧/尾帧提示词不能为空（官方：首尾帧模式提示词必填）")
+    try:
+        t2i = make_provider(Capability.T2I, cfg)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"文生图供应商不可用：{e}") from e
+    storage = RunStorage(run_id, root=root.parent)
+    ledger = CostLedger(storage, budget_limit_cny=float(meta.get("budget_limit_cny") or 0) or 150.0)
+    made = await m4_scene.generate_group_frames(
+        cfg, t2i, group, script, storage, ledger, p_first, p_last
+    )
+    return {"group_id": group_id, "made": made,
+            "first_frame": _url(run_id, "storyboard", f"shot_{group.shot_ids[0]}.png"),
+            "last_frame": _url(run_id, "storyboard", f"shot_{group.shot_ids[-1]}_last.png")}
+
+
 @app.get("/api/runs/{run_id}/board")
 def production_board(run_id: str) -> dict:
     """制作看板：剧本 + 角色定妆照 + 场景概念图 + 逐镜头(首帧/片段/口型/一致性) + 成片。
@@ -1009,7 +1248,7 @@ def production_board(run_id: str) -> dict:
     board["lipsync_coverage"] = lipsync_coverage(_st, script, _mode)
     # 尾帧覆盖率：缺尾帧时 m4 会退回单首帧，而产物照样出得来 —— 完成度判据看不见它，
     # 所以必须在看板上单独说（否则用户的观感就是"首尾帧改造没生效"）。
-    board["last_frame_coverage"] = last_frame_coverage(_st, script, _mode)
+    board["last_frame_coverage"] = last_frame_coverage(_st, script, _mode, _cfg_for_run(root))
     # 技术 QC 见上面初始 dict 的 "tech_qc"（不依赖剧本，所以不在这里补）
     # 被任何镜头（在场或台词）引用过的角色 id：只在清单里出现、没进任何镜头的角色
     # 照样会花一次定妆照的钱，剧本页签必须把这件事说出来

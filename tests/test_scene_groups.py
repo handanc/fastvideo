@@ -151,21 +151,6 @@ def test_group_cast_is_ordered_dedup_of_speakers_and_present_chars():
     assert len(g.characters) <= 10
 
 
-def test_bridging_group_is_marked_and_excludes_references():
-    """`first_frame/last_frame` 与 `reference_*` **互斥** → 串联组不能再发角色参考图。
-
-    这条是官方硬约束，不是取舍：跨场景衔接优先用串联（上一组尾帧当这一组首帧），
-    代价就是这一组不能同时锁脸参考。标记必须显式，否则生成时会撞 400 还以为是模型问题。
-    """
-    script = _script([
-        _scene("scene_1", "街道", "日", [_shot("shot_1_1", 4.0)]),
-        _scene("scene_2", "宫殿", "日", [_shot("shot_2_1", 4.0)]),
-    ])
-    groups = group_scenes(script)
-    assert all(g.bridging is False for g in groups), "默认不串联（串联由生成层按需要打开）"
-
-
-# ─────────────────────── m1：镜头时长钳位 ───────────────────────
 def test_enforce_shot_durations_clamps_into_2_to_5s():
     """官方要求每段 2–5 秒；模型给 6 秒/1.5 秒会让场景时间戳对不上，整段提示词就废了。"""
     from fastvideo3.modules.m1_scripting import enforce_shot_durations
@@ -192,6 +177,68 @@ def test_grouping_uses_clamped_durations(cfg: AppConfig):
 
 
 # ─────────────────────── 参考素材预算（官方硬上限）───────────────────────
+# ─────────────────────── 输入形态自动选路 ───────────────────────
+def test_rule1_dialogue_means_reference_mode():
+    """规则1：组内有对白 → 参考生视频。音色参考只有这条路能发（与首尾帧官方互斥）。"""
+    from fastvideo3.core.scenegroup import MODE_REFERENCE, choose_input_mode
+
+    g = group_scenes(_script([_scene("scene_1", "街道", "日", [
+        _shot("shot_1_1", 4.0, dialogue="甲说"), _shot("shot_1_2", 4.0, dialogue="乙说"),
+    ])]))[0]
+    mode, why = choose_input_mode(g, has_dialogue=True, has_first_frames=True)
+    assert mode == MODE_REFERENCE and "规则1" in why
+    # 单镜头但有台词也一样：丢嗓子比丢构图难发现得多
+    g1 = group_scenes(_script([_scene("scene_1", "街道", "日", [
+        _shot("shot_1_1", 4.0, dialogue="甲说一句话"),
+    ])]))[0]
+    assert choose_input_mode(g1, has_dialogue=True, has_first_frames=True)[0] == MODE_REFERENCE
+
+
+def test_rule2_multi_character_means_reference_mode():
+    """规则2：≥2 个角色 → 参考生视频逐人锁脸（首尾帧只锁两个瞬间，锁不住"每个人是谁"）。"""
+    from fastvideo3.core.scenegroup import MODE_REFERENCE, choose_input_mode
+
+    g = group_scenes(_script([_scene("scene_1", "街道", "日", [
+        _shot("shot_1_1", 4.0, chars=["c1", "c2"]),
+    ])]))[0]
+    assert len(g.characters) == 2
+    mode, why = choose_input_mode(g, has_dialogue=False, has_first_frames=True)
+    assert mode == MODE_REFERENCE and "规则2" in why
+
+
+def test_rule3_single_char_no_dialogue_means_first_last():
+    """规则3：≤1 个角色且无对白 → 首尾帧锁起止构图（没有身份/音色要锁，且更便宜）。"""
+    from fastvideo3.core.scenegroup import MODE_FIRST_LAST, MODE_REFERENCE, choose_input_mode
+
+    g = group_scenes(_script([_scene("scene_1", "街道", "日", [
+        _shot("shot_1_1", 4.0, chars=["c1"]),
+    ])]))[0]  # 单角色、无台词
+    assert len(g.characters) == 1
+    mode, why = choose_input_mode(g, has_dialogue=False, has_first_frames=True)
+    assert mode == MODE_FIRST_LAST and "规则3" in why
+    # 没有首帧时不能两条路都走不了：退回参考（场景图当参考素材）
+    mode, why = choose_input_mode(g, has_dialogue=False, has_first_frames=False)
+    assert mode == MODE_REFERENCE and "首帧" in why
+    # 空镜（0 角色）同样落规则3
+    g0 = group_scenes(_script([_scene("scene_1", "街道", "日", [
+        Shot(shot_id="shot_1_1", scene_id="scene_1", type=ShotType.SCENERY,
+             action="空街", duration_sec=4.0),
+    ])]))[0]
+    assert len(g0.characters) == 0
+    assert choose_input_mode(g0, has_first_frames=True)[0] == MODE_FIRST_LAST
+
+
+def test_forced_override_still_respects_physics():
+    """界面/配置可以覆盖，但物理前提不让步：要首尾帧却没有首帧 → 说明原因后退回参考。"""
+    from fastvideo3.core.scenegroup import MODE_FIRST_LAST, MODE_REFERENCE, choose_input_mode
+
+    g = _one_shot_group()
+    assert choose_input_mode(g, has_first_frames=True, forced=MODE_FIRST_LAST)[0] == MODE_FIRST_LAST
+    mode, why = choose_input_mode(g, has_first_frames=False, forced=MODE_FIRST_LAST)
+    assert mode == MODE_REFERENCE and "首帧" in why
+    assert choose_input_mode(g, has_dialogue=True, forced=MODE_REFERENCE)[0] == MODE_REFERENCE
+
+
 def test_reference_plan_numbers_match_upload_order():
     """提示词按编号引用素材（图1/音频1），编号必须与 media 数组顺序一致。
 
@@ -231,98 +278,67 @@ def test_reference_plan_respects_official_caps():
     assert plan.dropped_audios and "自由发挥" in plan.note
 
 
-# ─────────────────────── 输入形态自动选路 ───────────────────────
 def _one_shot_group():
     return group_scenes(_script([_scene("scene_1", "街道", "日", [_shot("shot_1_1", 4.0)])]))[0]
 
 
-def test_choose_mode_defaults_to_reference_for_multi_shot_groups():
-    """多镜头/有台词的组走参考生视频（主干）：立绘锁脸 + 音色锁声 + 模型组内自切镜头。"""
-    from fastvideo3.core.scenegroup import MODE_REFERENCE, choose_input_mode
-
-    g = group_scenes(_script([_scene("scene_1", "街道", "日", [
-        _shot("shot_1_1", 4.0, dialogue="甲说"), _shot("shot_1_2", 4.0, dialogue="乙说"),
-    ])]))[0]
-    mode, why = choose_input_mode(g, has_look_cards=True, has_first_frames=True)
-    assert mode == MODE_REFERENCE and why
-
-
-def test_choose_mode_bridging_forces_first_last():
-    """串联要拿上一组尾帧当首帧，而 first_frame 与 reference_* 官方互斥 → 必须首尾帧形态。"""
-    from fastvideo3.core.scenegroup import MODE_FIRST_LAST, choose_input_mode
-
-    g = _one_shot_group()
-    mode, why = choose_input_mode(g, has_look_cards=True, has_first_frames=True, bridging=True)
-    assert mode == MODE_FIRST_LAST and "互斥" in why
+# ─────────────────────── 哪些组能交给场景级生成 ───────────────────────
+def _mixed_script():
+    return _script([
+        _scene("scene_1", "街道", "日", [
+            _shot("shot_1_1", 4.0),                                   # 空镜
+            _shot("shot_1_2", 4.0, dialogue="甲说", chars=["c1"]),   # 对白
+        ]),
+        _scene("scene_2", "山顶", "日", [_shot("shot_2_1", 4.0)]),   # 纯空镜组
+    ])
 
 
-def test_choose_mode_single_shot_uses_first_last_when_available():
-    from fastvideo3.core.scenegroup import MODE_FIRST_LAST, MODE_REFERENCE, choose_input_mode
+def test_servable_groups_by_talk_mode_and_i2v_model():
+    """环里得有 wan3.0，且不能和口型链路抢活。"""
+    from fastvideo3.core.scenegroup import group_scenes, servable_groups
 
-    g = _one_shot_group()
-    assert choose_input_mode(g, has_look_cards=True, has_first_frames=True)[0] == MODE_FIRST_LAST
-    # 没有首帧就只能参考生视频（不能两条路都没有）
-    assert choose_input_mode(g, has_look_cards=True, has_first_frames=False)[0] == MODE_REFERENCE
-
-
-def test_choose_mode_no_look_cards_falls_back_to_first_last():
-    """一个立绘都没有 → "锁脸"无从谈起，退回首帧锁构图（有首帧时）。"""
-    from fastvideo3.core.scenegroup import MODE_FIRST_LAST, choose_input_mode
-
-    g = group_scenes(_script([_scene("scene_1", "街道", "日", [
-        _shot("shot_1_1", 4.0, dialogue="甲说"), _shot("shot_1_2", 4.0, dialogue="乙说"),
-    ])]))[0]
-    assert choose_input_mode(g, has_look_cards=False, has_first_frames=True)[0] == MODE_FIRST_LAST
-
-
-def test_choose_mode_forced_override_still_respects_physics():
-    """配置/面板可以覆盖，但物理前提不让步：强制首尾帧却没有首帧 → 说明原因后退回参考。"""
-    from fastvideo3.core.scenegroup import MODE_FIRST_LAST, MODE_REFERENCE, choose_input_mode
-
-    g = _one_shot_group()
-    assert choose_input_mode(g, has_look_cards=True, has_first_frames=True,
-                             forced=MODE_FIRST_LAST)[0] == MODE_FIRST_LAST
-    mode, why = choose_input_mode(g, has_look_cards=True, has_first_frames=False,
-                                  forced=MODE_FIRST_LAST)
-    assert mode == MODE_REFERENCE and ("缺失" in why or "作废" in why), why
+    script = _mixed_script()
+    groups = group_scenes(script)
+    ids = lambda gs: [g.group_id for g in gs]  # noqa: E731
+    # C 链：整组都归场景路径（片段自带台词口型）
+    assert ids(servable_groups(script, groups, talk_mode="scripted_talk",
+                               i2v_model="wan3.0-video")) == ids(groups)
+    # A 链 + wan3.0 i2v：只服务整组无对白的（对白镜头的画面归 m6 用我们的 TTS 驱动）
+    got = ids(servable_groups(script, groups, talk_mode="s2v_direct", i2v_model="wan3.0-video"))
+    assert got == ["scene_2"], got
+    # A 链 + 非 wan3.0 i2v：一组都不服务（场景级生成对 wan2.2 没有意义）
+    assert servable_groups(script, groups, talk_mode="s2v_direct",
+                           i2v_model="wan2.2-i2v-flash") == []
+    # 显式关掉
+    assert servable_groups(script, groups, talk_mode="scripted_talk",
+                           i2v_model="wan3.0-video", scene_mode="off") == []
 
 
-def test_single_shot_with_dialogue_prefers_reference_for_voice_lock():
-    """单镜头但**有台词**：首尾帧能锁构图却发不了音色参考（官方互斥）→ 走参考形态。
+def test_coverage_never_swallows_lipsync_in_ab_chains(storage):
+    """A 链下即使盘上躺着一个含对白镜头的场景片段，也不能把对白镜头算成"已覆盖"。
 
-    否则一个说话镜头会锁住构图却丢嗓子 —— 跨场景换声就是这么来的，
-    而"换声"比"构图差一点"难发现得多（要听出来，不是看出来）。
+    否则 m6 被跳过 → 成片没有口型 —— 本项目踩过多次的"静默交付坏片"形状。
+    判据必须与 stages 的 servable_groups 同一份。
     """
-    from fastvideo3.core.scenegroup import MODE_REFERENCE, choose_input_mode
+    import json as _json
 
-    g = group_scenes(_script([_scene("scene_1", "街道", "日", [
-        _shot("shot_1_1", 4.0, dialogue="甲说一句话"),
-    ])]))[0]
-    mode, why = choose_input_mode(g, has_look_cards=True, has_first_frames=True,
-                                  has_dialogue=True)
-    assert mode == MODE_REFERENCE and "音色" in why
+    from fastvideo3.core.config import AppConfig
+    from fastvideo3.core.progress import scene_covered_shots
 
-
-def test_stale_first_frame_is_not_trusted_as_an_anchor():
-    """首帧是旧立绘画的（血缘已标 stale）→ 不能拿它锁起止，改走参考形态。"""
-    from fastvideo3.core.scenegroup import MODE_FIRST_LAST, MODE_REFERENCE, choose_input_mode
-
-    g = group_scenes(_script([_scene("scene_1", "街道", "日", [_shot("shot_1_1", 4.0)])]))[0]
-    mode, why = choose_input_mode(
-        g, has_look_cards=True, has_first_frames=True, first_frame_stale=True
-    )
-    assert mode == MODE_REFERENCE and "作废" in why
-    # 首帧新鲜时同一条规则不该触发
-    assert choose_input_mode(g, has_look_cards=True, has_first_frames=True)[0] == MODE_FIRST_LAST
-
-
-def test_forced_first_last_on_stale_frame_falls_back_with_reason():
-    """配置强制首尾帧、但首帧已作废 → 说明原因后退回参考（物理前提不让步）。"""
-    from fastvideo3.core.scenegroup import MODE_REFERENCE, choose_input_mode
-
-    g = _one_shot_group()
-    mode, why = choose_input_mode(
-        g, has_look_cards=True, has_first_frames=True, first_frame_stale=True,
-        forced="first_last",
-    )
-    assert mode == MODE_REFERENCE and "作废" in why
+    script = _mixed_script()
+    cfg = AppConfig(fake=True, talk_mode="s2v_direct")
+    cfg.model_overrides = {"i2v": "wan3.0-video"}
+    # 伪造一个覆盖整组（含对白镜头）的场景片段
+    (storage.root / "clips").mkdir(parents=True, exist_ok=True)
+    (storage.root / "clips" / "scene_scene_1.mp4").write_bytes(b"x")
+    (storage.root / "clips" / "scene_scene_1.json").write_text(
+        _json.dumps({"group_id": "scene_1", "shot_ids": ["shot_1_1", "shot_1_2"],
+                     "windows": {}}), encoding="utf-8")
+    covered = scene_covered_shots(storage, script, cfg)
+    assert "shot_1_2" not in covered, "A 链下对白镜头的口型不能被场景片段顶掉"
+    # C 链下同一份产物就该算覆盖（片段自带口型）
+    cfg2 = AppConfig(fake=True, talk_mode="scripted_talk")
+    cfg2.model_overrides = {"i2v": "wan3.0-video"}
+    assert scene_covered_shots(storage, script, cfg2) == {
+        "shot_1_1": "scene_1", "shot_1_2": "scene_1",
+    }

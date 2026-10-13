@@ -843,16 +843,43 @@ class DashScopeI2V27Provider(DashScopeWan27Base, I2VProvider):
 
     name = "dashscope_wan27_i2v"
     supports_last_frame = True
+    # 场景级生成走这个通道时（非 C 链的空镜/动作组）发立绘+场景图锁脸/锁景
+    supports_reference_image = True
+    supports_reference_audio = True
 
     async def submit(  # type: ignore[override]
         self,
         dest: Path,
-        image: Path,
+        image: Path | None = None,
         prompt: str = "",
         audio: Path | None = None,
         **params: Any,
     ) -> str:
-        media: list[tuple[str, Path]] = [("first_frame", image)]
+        refs = list(params.get("references") or [])
+        voice_refs = list(params.get("voice_refs") or [])
+        if (refs or voice_refs) and (image is not None or params.get("last_frame")):
+            # 官方：first/last_frame 与 reference_* 类型互斥，混发必 400。本地先拦，
+            # 别把一次上传 OSS 的机会浪费在注定失败的请求上
+            raise CapabilityMismatchError(
+                f"{self.model}：reference_* 与 first_frame/last_frame 官方互斥，不能同发"
+            )
+        if refs or voice_refs:
+            media: list[tuple[str, Path]] = [("reference_image", Path(p)) for p in refs]
+            media += [("reference_audio", Path(p)) for p in voice_refs]
+            if not str(prompt or "").strip():
+                raise ProviderError(f"{self.model} 参考生视频必须给提示词（官方必填）")
+            parameters = {
+                "resolution": params.get("resolution", "1080P"),
+                "duration": int(params.get("duration", 5)),
+                "prompt_extend": False,
+            }
+            ratio = params.get("ratio")
+            if ratio:
+                parameters["ratio"] = str(ratio)
+            return await self._submit_media(dest, media, prompt, parameters)
+        if image is None:
+            raise CapabilityMismatchError(f"{self.model} 需要首帧图或参考素材之一")
+        media = [("first_frame", image)]
         # 尾帧：锁住镜头的**结束状态**。只在文件真的在盘时才发（缺了就退回单首帧，
         # 绝不为了凑参数发一个不存在的路径 —— 那会变成服务端 400，看起来像模型不支持）
         last = params.get("last_frame")
@@ -1016,6 +1043,13 @@ class DashScopeWan30TalkProvider(DashScopeWan27Base, TalkProvider):
                 f"收到 图{len(refs)}/音频{len(voice_refs)}；超预算的分配应在 scenegroup.plan_references 里裁掉"
             )
         if refs or voice_refs:
+            for p in voice_refs:  # 官方：参考音频单文件 ≤15MB；先查再传，别白跑一趟 OSS
+                pp = Path(p)
+                if pp.is_file() and pp.stat().st_size / (1024 * 1024) > 15.0:
+                    raise CapabilityMismatchError(
+                        f"{self.model} 的参考音频上限 15MB，{pp.name} 为 "
+                        f"{pp.stat().st_size / (1024 * 1024):.1f}MB"
+                    )
             media: list[tuple[str, Path]] = [("reference_image", Path(p)) for p in refs]
             media += [("reference_audio", Path(p)) for p in voice_refs]
         else:
@@ -1049,8 +1083,14 @@ class DashScopeWan30TalkProvider(DashScopeWan27Base, TalkProvider):
             "audio": True,  # 输出必须带音轨：口型就是它自己发的音
             "prompt_extend": False,  # 台词块与风格锚不许服务端改写（改写=音字不符）
         }
+        types = {t for t, _ in media}
         ratio = params.get("ratio")
-        if ratio:
+        if types & {"first_frame", "last_frame"}:
+            # 官方指南：首帧/首尾帧模式 `ratio` **建议 adaptive**（模型自动匹配首帧宽高比）。
+            # 我们的首帧本来就按目标画幅生成，adaptive 与显式画幅等价，但能避免
+            # "首帧宽高比与 ratio 参数不一致"这类 400（报错报文还看不出是谁的错）。
+            parameters["ratio"] = str(ratio or "adaptive")
+        elif ratio:
             parameters["ratio"] = str(ratio)
         seed = params.get("seed")
         if seed is not None:

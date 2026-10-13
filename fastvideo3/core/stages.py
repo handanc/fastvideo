@@ -236,6 +236,73 @@ async def stage_audio(
     return {"audio": [ln.model_dump() for ln in lines]}
 
 
+async def stage_scene_clips(
+    ctx: StageContext,
+    script: Script,
+    frames: dict[str, str],
+    assets: dict[str, Asset],
+    lines: list[Any],
+    *,
+    only: set[str] | None = None,
+) -> dict[str, str]:
+    """场景级生成：一个场景组 = 一次 wan3.0 调用（组内多镜头连贯、自带台词口型）。
+
+    只在 C 链（scripted_talk）且通道支持参考素材时启用 —— 只有 wan3.0 系能"一次调用
+    出带口型的多镜头片段"。其余档位/链路走逐镜头路径（那套首尾帧逻辑保留不动）。
+    每组的输入形态（参考生视频 / 首尾帧）由 `scenegroup.choose_input_mode` 三条规则
+    或界面覆盖决定，见 `m4_scene.generate_scene_clips`。
+    """
+    from fastvideo3.core.scenegroup import group_scenes, servable_groups
+    from fastvideo3.core.talkmode import provider_name
+    from fastvideo3.modules.m4_scene import generate_scene_clips
+
+    cfg = ctx.cfg
+    if getattr(cfg, "scene_clip_mode", "off") == "off":
+        return {}
+    i2v_model = cfg.model_for("i2v", "dashscope_i2v", "")
+    servable = servable_groups(
+        script,
+        group_scenes(script),
+        talk_mode=cfg.talk_mode,
+        i2v_model=i2v_model,
+        scene_mode=getattr(cfg, "scene_clip_mode", "auto"),
+    )
+    if not servable:
+        return {}
+    # C 链：片段自带台词口型，用口型通道（wan3.0 talk provider）。
+    # 非 C 链：场景片段只承担"画面"（空镜/动作组），用 i2v 通道；对白镜头仍归 m6。
+    if cfg.talk_mode == "scripted_talk":
+        capability = Capability.TALK
+    else:
+        capability = Capability.I2V
+    provider = ctx.provider(capability)
+    if not getattr(provider, "supports_reference_image", False):
+        ctx.storage.log_degradation(
+            "scene", "scene_clip_unavailable",
+            f"{provider_name(cfg, cfg.talk_mode)} 不支持参考素材",
+            impact="场景级生成关闭，退回逐镜头路径",
+        )
+        return {}
+    meta = ctx.storage.load_json("run_meta.json") or {}
+    wanted = {g.group_id for g in servable}
+    if only is not None:
+        wanted &= only
+    return await generate_scene_clips(
+        cfg,
+        provider,  # type: ignore[arg-type]
+        script,
+        assets,  # type: ignore[arg-type]
+        ctx.storage,
+        ctx.ledger,
+        ctx.jobs,
+        lines=lines,  # type: ignore[arg-type]
+        frames=frames,  # type: ignore[arg-type]
+        groups=servable,
+        only=wanted or None,
+        overrides=meta.get("scene_overrides") or {},
+    )
+
+
 async def stage_shots(
     ctx: StageContext,
     script: Script,

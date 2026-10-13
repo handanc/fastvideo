@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import { statusOf } from '../status'
 import ProductionBoard from './ProductionBoard.vue'
+import SceneClips from './SceneClips.vue'
 import StepBar from './StepBar.vue'
 
 const props = defineProps({ runId: { type: String, required: true } })
@@ -354,6 +355,7 @@ onUnmounted(() => clearInterval(timer))
 
       <!-- v-show 而非 v-if：切页签不销毁看板，编辑/上传/重生成的本地状态不丢 -->
       <div v-show="pane === 'board'">
+        <SceneClips :run-id="props.runId" />
         <ProductionBoard :run-id="props.runId" :board="board" @changed="load" />
       </div>
 

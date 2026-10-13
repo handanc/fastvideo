@@ -114,17 +114,19 @@ def test_reference_labels_match_plan_order(cfg):
     assert "严格保持参考人物的长相、服装与音色" in p
 
 
-def test_bridging_group_never_mentions_reference_assets(cfg):
-    """跨场景串联用上一组尾帧当首帧，而 first/last_frame 与 reference_* **官方互斥**。
+def test_first_last_mode_never_mentions_reference_assets(cfg):
+    """首尾帧形态的提示词里不能出现 图N/音频N：那种形态发不了参考素材（官方互斥）。
 
-    串联组的提示词里若还写着"参考图1"，模型会去找一个根本没上传的素材；
-    而调用方一旦真把两者一起发，服务端直接 400，看起来像"模型不支持"。
+    写了模型会去找根本没上传的素材；调用方若真把两者一起发，服务端直接 400，
+    看起来还像"模型不支持首尾帧"。
     """
     script = _two_shot_script()
     g = _group(script)
-    p = scene_prompt(cfg, g, script, _char_map(), bridging=True)
-    assert "参考图" not in p and "图1" not in p and "音频1" not in p
+    plan = plan_references(g, speakers=("queen",))
+    p = scene_prompt(cfg, g, script, _char_map(), None)  # ref_plan=None = 首尾帧形态
+    assert "图1" not in p and "音频1" not in p and "参考素材" not in p
     assert "首帧" in p and "尾帧" in p
+    assert "图1" in scene_prompt(cfg, g, script, _char_map(), plan)  # 对照：参考形态才带编号
 
 
 # ─────────────────────── 负向清单与防字幕 ───────────────────────
@@ -275,3 +277,21 @@ async def test_generate_scene_clips_sends_references_in_prompt_order(cfg, storag
     assert meta["ref_images"][0].startswith("图1=queen"), meta["ref_images"]
     assert any(x.startswith("图3=scene:") for x in meta["ref_images"]), meta["ref_images"]
     assert meta["windows"], "时间窗必须落盘（m7 字幕/m9 度量靠它）"
+
+
+def test_scene_reference_is_labeled_as_empty_background(cfg):
+    """场景概念图里**没有人**（m2 产的是空景），提示词必须把两类参考的用途切清楚。
+
+    不写明"图中无人"，模型可能把空景理解成"画面里就该没人"，或把背景里不存在的路人
+    脑补出来；人物长相必须一律以角色参考图为准。官方多主体示例的要求就是
+    "不同素材的用途在提示词里切清楚，避免特征串位"。
+    """
+    script = _two_shot_script()
+    script.scenes[0].title = "女儿国街道"  # 提示词里场景名取 title（location 兜底）
+    g = _group(script)
+    plan = plan_references(g, speakers=("queen",), scene_ids=("scene_1",))
+    assert plan.scene_images and plan.scene_images[0][0] == "图3", plan.scene_images
+    p = scene_prompt(cfg, g, script, _char_map(), plan)
+    assert "空景背景参考图3（图中无人）" in p
+    assert "不要照搬背景图里的人数" in p
+    assert "女儿国国王的形象参考图1" in p

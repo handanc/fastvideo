@@ -169,6 +169,7 @@ def compute_progress(
     )
 
     # ── s4 分镜首帧（付视频钱之前的最后一道人工检查点）──
+    from fastvideo3.core.scenegroup import group_scenes
     from fastvideo3.modules.m4_shots import shots_need_i2v
 
     talk_mode = meta.get("talk_mode", cfg.talk_mode)
@@ -196,7 +197,7 @@ def compute_progress(
 
         last_missing = [
             sh.shot_id
-            for sh in shots_need_last_frame(script, talk_mode)
+            for sh in shots_need_last_frame(script, talk_mode, cfg.scene_clip_mode)
             if not have(f"storyboard/shot_{sh.shot_id}_last.png")
         ]
         frame_missing = sorted(set(frame_missing) | set(last_missing))
@@ -216,9 +217,12 @@ def compute_progress(
         if not have(f"audio/line_{sh.shot_id}_{i}.wav")
     ]
     need_i2v = {sh.shot_id for sh in shots_need_i2v(script, talk_mode)}
+    # 已被**新鲜场景片段**覆盖的镜头不再需要逐镜头产物：场景片段里既有画面也有口型
+    # （参考生视频形态），再要 clips/talk 就是让同一秒画面付两次钱。
+    covered = set(scene_covered_shots(storage, script, cfg))
     clips = [
         sh.shot_id for sh in shots_need_i2v(script, talk_mode)
-        if not have(f"clips/shot_{sh.shot_id}.mp4")
+        if sh.shot_id not in covered and not have(f"clips/shot_{sh.shot_id}.mp4")
     ]
     talks: list[str] = []
     # 判据来自 `core/talkmode.py`（"这个模式要不要口型产物"），不在这里写死模式名 ——
@@ -237,6 +241,7 @@ def compute_progress(
             if (
                 sh.dialogues
                 and sh.shot_id not in waived
+                and sh.shot_id not in covered
                 and not have(f"talk/shot_{sh.shot_id}.mp4")
             ):
                 talks.append(sh.shot_id)
@@ -247,10 +252,18 @@ def compute_progress(
             # **只算本模式真的需要运动片段的那些镜头**：C 链/A 链下有台词的镜头不出片段，
             # 它盘上遗留的旧片段被血缘标 stale 时，m4 按新判据会跳过这个镜头 → 没人清这个标记，
             # videos 步就永久 gap（run_20261011_231024 实测卡死）。遗留产物是垃圾，不是缺口。
-            if sid in need_i2v:
+            if sid in need_i2v and sid not in covered:
                 video_stale.add(sid)
         elif rel.startswith("talk/shot_"):
-            video_stale.add(rel.split("shot_", 1)[1].rsplit(".", 1)[0])
+            sid = rel.split("shot_", 1)[1].rsplit(".", 1)[0]
+            if sid not in covered:  # 场景片段已覆盖的镜头，旧 talk 产物是垃圾不是缺口
+                video_stale.add(sid)
+        elif rel.startswith("clips/scene_"):
+            # 场景片段作废 → 它覆盖的所有镜头重新变成缺口（否则删了片段步骤仍显示完成）
+            gid = rel.split("scene_", 1)[1].rsplit(".", 1)[0]
+            for g in group_scenes(script):
+                if g.group_id == gid:
+                    video_stale.update(g.shot_ids)
         elif rel.startswith("audio/line_"):
             # line_{shot_id}_{i}.wav → 取 shot_id（去掉首尾两段）
             video_stale.add(rel[len("audio/line_"):-len(".wav")].rsplit("_", 1)[0])
@@ -299,7 +312,45 @@ def _finish(
     )
 
 
-def last_frame_coverage(storage: RunStorage, script: Script, talk_mode: str) -> dict:
+def scene_covered_shots(storage: RunStorage, script: Script, cfg: Any) -> dict[str, str]:
+    """哪些镜头已经被**新鲜的场景片段**覆盖（shot_id → group_id）。
+
+    场景片段是"一次调用覆盖整组镜头"的产物：组里每个镜头的画面（C 链还有口型）都在
+    这一段里，所以这些镜头不再需要逐镜头的 clips/talk 产物。判据与 m4_scene 的产物
+    约定同源（`clips/scene_{gid}.mp4` + 映射 json），并且要求片段**不作废** —— 上游
+    立绘/剧本改过之后血缘会标 stale，那时覆盖失效、逐镜头缺口重新出现。
+
+    **必须与 `servable_groups` 同一份判据**：A/B 链下对白镜头的画面归 m6（用我们的
+    TTS 音频驱动），若这里把含对白的组也算覆盖，m6 会被跳过 → 成片没有口型，
+    正是本项目踩过多次的"静默交付坏片"形状。
+    """
+    from fastvideo3.core.scenegroup import group_scenes, servable_groups
+
+    groups = group_scenes(script)
+    servable = {
+        g.group_id
+        for g in servable_groups(
+            script,
+            groups,
+            talk_mode=str(getattr(cfg, "talk_mode", "") or ""),
+            i2v_model=cfg.model_for("i2v", "dashscope_i2v", ""),
+            scene_mode=str(getattr(cfg, "scene_clip_mode", "auto") or "auto"),
+        )
+    }
+    out: dict[str, str] = {}
+    for g in groups:
+        if g.group_id not in servable:
+            continue
+        rel = f"clips/scene_{g.group_id}.mp4"
+        if storage.exists(rel) and not storage.is_stale(rel):
+            for sid in g.shot_ids:
+                out[sid] = g.group_id
+    return out
+
+
+def last_frame_coverage(
+    storage: RunStorage, script: Script, talk_mode: str, cfg: Any = None
+) -> dict:
     """"这条 run 有几个镜头能按**首尾帧**生视频"的权威口径（进度、看板、m4 共用）。
 
     为什么要单独算一遍：尾帧缺失时 m4 会退回单首帧 —— 也就是改造前那条质量不高的
@@ -311,7 +362,8 @@ def last_frame_coverage(storage: RunStorage, script: Script, talk_mode: str) -> 
     """
     from fastvideo3.core.talkmode import shots_need_last_frame
 
-    need = [sh.shot_id for sh in shots_need_last_frame(script, talk_mode)]
+    scene_mode = str(getattr(cfg, "scene_clip_mode", "") or "auto")
+    need = [sh.shot_id for sh in shots_need_last_frame(script, talk_mode, scene_mode)]
     have = [sid for sid in need if storage.exists(f"storyboard/shot_{sid}_last.png")]
     missing = [sid for sid in need if sid not in have]
     return {

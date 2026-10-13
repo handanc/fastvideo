@@ -462,6 +462,7 @@ async def test_missing_last_frames_are_a_frames_step_gap(cfg, outdir):
 
     cfg.fake = True
     cfg.talk_mode = "scripted_talk"  # C 链：对白镜头的画面也由口型通道出 → 同样要尾帧
+    cfg.scene_clip_mode = "off"  # 本用例测逐镜头路径
     cfg.use_last_frames = True
     run_id = "run_last_gap"
     storage = RunStorage(run_id, root=outdir)

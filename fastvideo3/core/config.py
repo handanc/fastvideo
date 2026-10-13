@@ -201,9 +201,6 @@ class AppConfig(BaseModel):
     #   off         = 关掉场景级生成，回到逐镜头路径（economy/A链/B链本来就走那边）
     # 官方硬约束：reference_* 与 first/last_frame **互斥**，所以这是"二选一"不是"叠加"。
     scene_clip_mode: Literal["auto", "reference", "first_last", "off"] = "auto"
-    # 跨场景串联：拿上一组尾帧当这一组首帧（隐形切）。开了之后该组走 first_last 形态，
-    # 代价是这一组发不了参考素材（互斥）—— 身份靠上一组尾帧里已画对的脸继承。
-    scene_bridge: bool = False
     style_suffix: str = ""  # 全局风格锚：追加到所有文生图提示词尾部（统一全片画风）
     negative_prompt: str = ""  # 全局负向提示词（防卡通化/防劣化）
     color_grade: bool = False  # 成片轻度调色（对比/饱和/锐化）
@@ -399,7 +396,6 @@ def load_config(
         i2v_resolution=gen.get("i2v_resolution", "480P"),
         use_last_frames=bool(gen.get("use_last_frames", True)),
         scene_clip_mode=gen.get("scene_clip_mode", "auto"),
-        scene_bridge=bool(gen.get("scene_bridge", False)),
         style_suffix=gen.get("style_suffix", ""),
         negative_prompt=gen.get("negative_prompt", ""),
         color_grade=bool(gen.get("color_grade", False)),

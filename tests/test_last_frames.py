@@ -14,7 +14,7 @@ import json
 from fastvideo3.core.schema import BaseInfo, DialogueLine, Scene, Script, Shot, ShotType
 from fastvideo3.modules.m2_assets import build_assets
 from fastvideo3.modules.m3_storyboard import _last_frame_prompt, build_storyboard
-from fastvideo3.modules.m4_shots import _last_frame_path, generate_shots, shots_need_i2v
+from fastvideo3.modules.m4_shots import _last_frame_path, generate_shots
 from fastvideo3.providers.dashscope import DashScopeI2V27Provider, DashScopeWan27Base
 from fastvideo3.providers.fake import FakeI2VProvider, FakeT2IProvider
 
@@ -64,27 +64,43 @@ async def _frames(cfg, storage, ledger, script):
 
 
 # ─────────────────────────── m3：给"要按首尾帧出片"的镜头产尾帧 ───────────────────────────
-async def test_last_frames_cover_dialogue_shots_in_scripted_mode(cfg, storage, ledger):
-    """C 链：对白镜头**也要**尾帧 —— 它的画面正是口型通道一次调用直出的。
+async def test_scene_mode_decides_who_needs_last_frames(cfg, storage, ledger, tmp_path):
+    """尾帧只在**会被用到**的地方产（每张 ≈¥0.2，产了不用就是白烧）：
 
-    这条以前断言的是反面（"对白镜头不需要运动片段 → 不该产尾帧"）。两个判据不是一回事：
-    不出**运动片段**是为了不白烧钱（m4 的片段会被 m7 弃用），而尾帧是给 wan3.0-video
-    那次调用锁结束态用的，m6 确实会发（`accepts_last_frame=True`）。混用判据的后果是
-    短剧里占比最大的对白镜头一个尾帧都没有 —— 用户看到的就是"还是只按首帧生视频"。
+    - 场景级生成开着（默认 auto）：对白/多角色组走参考形态，模型自己画中间帧 → 不产尾帧；
+      只有规则3（≤1 角色且无对白）的组产末镜尾帧。
+    - 场景级生成关掉（economy/A链/B链/手动 off）：回到逐镜头路径，C 链对白镜头的
+      画面由口型通道直出且吃尾帧 → 照旧产。
     """
-    cfg.use_last_frames = True
-    cfg.talk_mode = "scripted_talk"
-    script = _script_with_dialogue()
-    await _frames(cfg, storage, ledger, script)
-    assert _last_frame_path(storage, "scenery") is not None
-    assert _last_frame_path(storage, "action") is not None
-    assert _last_frame_path(storage, "talk") is not None, "C 链对白镜头由口型通道出片，要吃尾帧"
-    # 但**运动片段**仍然只给不需要口型通道出片的镜头（那份钱确实白花）
-    assert {s.shot_id for s in shots_need_i2v(script, "scripted_talk")} == {"scenery", "action"}
+    from fastvideo3.core.cost import CostLedger
+    from fastvideo3.core.storage import RunStorage
     from fastvideo3.core.talkmode import shots_need_last_frame
 
-    assert {s.shot_id for s in shots_need_last_frame(script, "scripted_talk")} == {
-        "scenery", "action", "talk",
+    cfg.use_last_frames = True
+    cfg.talk_mode = "scripted_talk"
+    cfg.scene_clip_mode = "auto"
+    script = _script_with_dialogue()
+    # 再加一个**独立地点**的空镜场景：它自成一组、无对白单角色 → 规则3 → 要尾帧。
+    # （空镜若与对白镜头同场景，会被并进同一组，整组走参考形态就不产尾帧了）
+    script.scenes.append(
+        Scene(scene_id="s2", title="场二", location="山顶", time_of_day="日", shots=[
+            Shot(shot_id="vista", scene_id="s2", type=ShotType.SCENERY, action="云海空镜",
+                 duration_sec=4.0),
+        ])
+    )
+    await _frames(cfg, storage, ledger, script)
+    assert _last_frame_path(storage, "talk") is None, "参考形态不需要尾帧（模型自画中间帧）"
+    assert _last_frame_path(storage, "scenery") is None, "同组有空镜也随整组走参考形态"
+    assert _last_frame_path(storage, "vista") is not None, "规则3 的独立空镜组要尾帧"
+    assert {s.shot_id for s in shots_need_last_frame(script, "scripted_talk", "auto")} == {"vista"}
+
+    # 关掉场景级生成 → 逐镜头 C 链，对白镜头照旧吃尾帧
+    storage2 = RunStorage("t_run2", root=tmp_path / "r2")
+    cfg.scene_clip_mode = "off"
+    await _frames(cfg, storage2, CostLedger(storage2, budget_limit_cny=100.0), script)
+    assert _last_frame_path(storage2, "talk") is not None, "逐镜头 C 链要吃尾帧"
+    assert {s.shot_id for s in shots_need_last_frame(script, "scripted_talk", "off")} == {
+        "scenery", "action", "talk", "vista",
     }
 
 
@@ -153,6 +169,7 @@ def test_last_frame_prompt_reuses_distilled_visual_prompt():
 async def test_m4_sends_last_frame_when_provider_supports(cfg, storage, ledger, jobs):
     cfg.use_last_frames = True
     cfg.talk_mode = "scripted_talk"
+    cfg.scene_clip_mode = "off"  # 本用例测逐镜头路径
     script = _script_with_dialogue()
     assets, frames = await _frames(cfg, storage, ledger, script)
     i2v = FakeI2VProvider()
@@ -173,6 +190,7 @@ async def test_m4_skips_last_frame_for_r2v_route(cfg, storage, ledger, jobs):
     cfg.use_last_frames = True
     cfg.use_r2v_for_characters = True
     cfg.talk_mode = "scripted_talk"
+    cfg.scene_clip_mode = "off"  # 本用例测逐镜头路径
     script = _script_with_dialogue()
     assets, frames = await _frames(cfg, storage, ledger, script)
     i2v = FakeI2VProvider()
@@ -194,6 +212,7 @@ async def test_m4_falls_back_when_provider_lacks_last_frame(cfg, storage, ledger
 
     cfg.use_last_frames = True
     cfg.talk_mode = "scripted_talk"
+    cfg.scene_clip_mode = "off"  # 本用例测逐镜头路径
     script = _script_with_dialogue()
     assets, frames = await _frames(cfg, storage, ledger, script)
     i2v = _Legacy()
@@ -269,6 +288,7 @@ async def test_last_frames_backfill_when_first_frames_already_exist(cfg, storage
     """
     cfg.use_last_frames = True
     cfg.talk_mode = "scripted_talk"
+    cfg.scene_clip_mode = "off"  # 本用例测逐镜头路径
     script = _script_with_dialogue()
     assets, _frames_map = await _frames(cfg, storage, ledger, script)
     sb = storage.dir("storyboard")

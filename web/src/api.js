@@ -30,6 +30,20 @@ export const api = {
   // 补齐项目内置运行时：ffmpeg 复制进 bin/、身份权重进 models/、缺 .env 时复制模板。
   // 后端只动项目内文件，不回显 .env 内容（自检文本会原样显示在浏览器里）。
   doctorProvision: () => post('/api/doctor/provision'),
+  // 场景级生成（wan3.0 一次调用出一个场景的连贯多镜头片段）
+  sceneGroups: (id) =>
+    fetch(`/api/runs/${encodeURIComponent(id)}/scene-groups`).then(unwrap),
+  patchSceneGroup: (id, gid, payload) =>
+    fetch(`/api/runs/${encodeURIComponent(id)}/scene-groups/${encodeURIComponent(gid)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    }).then(unwrap),
+  genSceneFrames: (id, gid) =>
+    post(`/api/runs/${encodeURIComponent(id)}/scene-groups/${encodeURIComponent(gid)}/frames`),
+  genSceneClip: (id, gid) =>
+    post(`/api/runs/${encodeURIComponent(id)}/scene-groups/${encodeURIComponent(gid)}/generate`),
+  deleteSceneClip: (id, gid) =>
+    fetch(`/api/runs/${encodeURIComponent(id)}/artifacts/clips/scene_${encodeURIComponent(gid)}.mp4`,
+      { method: 'DELETE' }).then(unwrap),
   // 成本预估（单价权威在后端 pricing.yaml + 模式解析出的通道，前端不再手抄量级表）
   costEstimate: (quality, duration, talkMode) =>
     fetch(`/api/cost-estimate?quality=${encodeURIComponent(quality)}&duration=${encodeURIComponent(duration)}&talk_mode=${encodeURIComponent(talkMode || '')}`).then(unwrap),

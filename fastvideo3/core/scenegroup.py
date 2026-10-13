@@ -14,7 +14,7 @@ wan3.0 的原生解法是**多镜头叙事**：一次调用里用「序号 + 时
 - 每个分镜 **2–5 秒**，各镜头首尾相接、不跳段不重叠；
 - `reference_image` ≤10 张、`reference_audio` ≤5 段且总时长 ≤15 秒；
 - `first_frame`/`last_frame` 与 `reference_*` **互斥** —— 所以"锁脸参考"与
-  "跨场景首尾帧串联"二选一，不能同时要（`SceneGroup.bridging` 标明本组走哪条）。
+  "跨场景首尾帧串联"二选一，不能同时要（选哪条由 `choose_input_mode` 决定）。
 
 切分规则（确定性、可测试，不依赖模型自觉）：
 1. **相邻场景合并**的条件：location 与 time_of_day 都相同 —— 同一时空才谈得上连贯。
@@ -63,7 +63,6 @@ class SceneGroup:
     windows: dict[str, tuple[float, float]] = field(default_factory=dict)
     #: True = 本组用上一组的尾帧当首帧（跨场景串联）。与 reference_* 互斥，
     #: 所以串联组**不能**同时发角色参考图 —— 这是官方约束，不是取舍。
-    bridging: bool = False
     #: 被截断/拆分的说明（进事件与看板，别让用户猜为什么这里断开了）
     note: str = ""
 
@@ -175,7 +174,6 @@ def _extend(cur: SceneGroup, scene: Any, shots: list[Any]) -> SceneGroup:
         time_of_day=cur.time_of_day,
         characters=tuple(cast),
         windows=merged,
-        bridging=cur.bridging,
         note=(cur.note + "；" if cur.note else "") + f"并入 {scene.scene_id}（同地点同时段）",
     )
 
@@ -218,7 +216,6 @@ def _split_oversized(g: SceneGroup, max_clip_sec: float) -> list[SceneGroup]:
                 # 远不到这个数，收窄省不下钱，反而可能把"这一段没台词但入画"的人漏掉
                 characters=g.characters,
                 windows=win,
-                bridging=g.bridging,
                 note=f"原组 {g.duration:.0f}s 超 {max_clip_sec:.0f}s 上限，"
                      f"按镜头边界拆成 {len(chunks)} 段（第 {i + 1} 段）",
             )
@@ -324,62 +321,77 @@ MODE_FIRST_LAST = "first_last"  # 首帧(+尾帧) + 提示词（串联/单镜头
 def choose_input_mode(
     group: SceneGroup,
     *,
-    has_look_cards: bool,
-    has_first_frames: bool,
     has_dialogue: bool = False,
-    first_frame_stale: bool = False,
-    bridging: bool = False,
+    has_first_frames: bool = False,
     forced: str = "auto",
 ) -> tuple[str, str]:
-    """自动选这次调用走哪种输入形态，返回 (模式, 理由)。
+    """自动选这次调用走哪种输入形态，返回 (模式, 理由)。三条规则，按顺序判：
 
-    判据是"**这一组最需要锁住什么**"—— 两种形态锁的东西不同：
-    参考生视频锁**身份属性**（脸/服装/音色，整段全程）并让模型拥有组内镜头语言；
-    首尾帧锁**起止两个瞬间的像素构图**，但中段不受控、且发不了音色参考（官方互斥）。
-    按预测力排序的五个信号：
+    1. **组内有对白 → 参考生视频**（角色图+场景图+音色样本）。有台词就需要音色参考，
+       而 `reference_audio` 只有参考形态能发（与首尾帧官方互斥）；脸和声一起锁。
+    2. **角色数 ≥2 → 参考生视频**。多角色同框时首尾帧只能锁两个瞬间的构图，
+       锁不住"每个人是谁"；参考形态按编号逐人锁脸，避免特征串位。
+    3. **其余（≤1 个角色且无对白）→ 首尾帧**。空镜/单人动作镜头没有身份与音色要锁，
+       像素级锁起止构图最直接，也更便宜（少传一堆素材）。
 
-    1. **组内有几个切点**：多镜头组只有参考形态能让中段连贯 —— 首尾帧只能锁两端，
-       中间 3-5 个切点完全不受控，等于放弃组内连续性。
-    2. **要不要与邻组像素级衔接**：要（串联）就只能首尾帧 —— 参考形态表达不了
-       "从上一组尾帧那个像素状态开始"。
-    3. **有没有台词**：有台词就需要音色参考，而 `reference_audio` 只有参考形态能发；
-       单镜头说话镜头走首尾帧会锁住构图却丢嗓子（跨场景换声就是这么来的）。
-    4. **参考素材与首帧哪个新鲜可信**：首帧是旧立绘画的（血缘已标 stale）时，
-       拿它锁起止 = 把旧脸焊进新片段，必须改走参考形态或先重画首帧。
-    5. **失败代价**：首尾帧形态单镜头 2-5s（¥1-6），参考形态整组 10-30s（¥6-36）。
-       代价高不改变选型（前四条更影响成片质量），但超预算时应该**拆组**而不是换形态。
-
-    规则是确定性的（同一剧本同一配置永远选同一条路，结果才可复现、才可对账）。
-    `forced` 允许配置/面板覆盖，但覆盖仍受物理前提约束（强制首尾帧却没有新鲜首帧
-    → 说明原因后退回参考；强制参考而没有立绘 → 场景图也可以当参考，照走）。
+    规则是确定性的（同一剧本同一配置永远选同一条路，结果才可复现、才可对账），
+    不靠 LLM 判断：判据全是剧本里数得出来的事实（有无台词、几个角色）。
+    `forced` 是人工覆盖（分镜视频界面里每组可改），覆盖时仍受物理前提约束：
+    要首尾帧却没有首帧 → 说明原因后退回参考（场景图当参考素材）。
     """
-    fresh_first = has_first_frames and not first_frame_stale
+    char_count = len(group.characters)
     if forced == MODE_FIRST_LAST:
-        if fresh_first:
-            return MODE_FIRST_LAST, "配置指定首尾帧形态"
-        return MODE_REFERENCE, (
-            "配置要首尾帧，但本组首帧"
-            + ("已作废（上游变更）" if first_frame_stale else "缺失")
-            + "，退回参考生视频"
-        )
+        if has_first_frames:
+            return MODE_FIRST_LAST, "人工指定：首尾帧生成"
+        return MODE_REFERENCE, "人工指定首尾帧，但本组还没有首帧 → 退回参考生视频（场景图当参考）"
     if forced == MODE_REFERENCE:
-        return MODE_REFERENCE, "配置指定参考生视频形态"
-    if bridging:
-        return MODE_FIRST_LAST, "跨场景串联：首帧取自上一组尾帧（与参考素材官方互斥）"
-    if first_frame_stale and has_look_cards:
-        return MODE_REFERENCE, "首帧已作废（上游立绘/剧本变更）：拿它锁起止会把旧脸焊进新片段"
-    if has_dialogue and has_look_cards:
-        return MODE_REFERENCE, (
-            "有台词：音色参考只有参考形态能发（与首尾帧互斥），脸与声一起锁"
-            + ("；组内多镜头由模型自切保持连贯" if group.shot_count > 1 else "")
-        )
-    if group.shot_count == 1 and fresh_first:
-        return MODE_FIRST_LAST, "单镜头无台词：像素级锁起止构图最直接，且少传素材更便宜"
-    if has_look_cards:
-        return MODE_REFERENCE, "多镜头无台词：组内连贯靠模型自切，立绘锁脸"
-    if fresh_first:
-        return MODE_FIRST_LAST, "本组没有立绘可参考：用首帧锁构图"
-    return MODE_REFERENCE, "无立绘也无可用首帧：场景图作参考素材（聊胜于无）"
+        return MODE_REFERENCE, "人工指定：角色图+场景图参考生成"
+    if has_dialogue:
+        return MODE_REFERENCE, "规则1：组内有对白 → 参考生成（音色参考只有这条路能发，脸与声一起锁）"
+    if char_count >= 2:
+        return MODE_REFERENCE, f"规则2：{char_count} 个角色同框 → 参考生成逐人锁脸"
+    if has_first_frames:
+        return MODE_FIRST_LAST, "规则3：单角色/无角色且无对白 → 首尾帧锁起止构图"
+    return MODE_REFERENCE, "规则3 命中但本组还没有首帧 → 退回参考生视频（场景图当参考）"
+
+
+def group_has_dialogue(script: Any, group: SceneGroup) -> bool:
+    ids = set(group.shot_ids)
+    return any(bool(sh.dialogues) for sh in script.all_shots() if sh.shot_id in ids)
+
+
+def servable_groups(
+    script: Any,
+    groups: list[SceneGroup],
+    *,
+    talk_mode: str,
+    i2v_model: str,
+    scene_mode: str = "auto",
+) -> list[SceneGroup]:
+    """哪些组可以交给"wan3.0 一次调用直出片段"，其余退回逐镜头路径。
+
+    两个前提，缺一不可：
+
+    1. **环里得有 wan3.0**：口型是 scripted_talk（C 链），或 i2v 模型是 wan3.0 系。
+       480P economy / A 链 s2v / B 链 videoretalk 的镜头视频来自别的模型，
+       场景级生成对它们没有意义（也发不了参考素材）。
+    2. **不能和口型链路抢活**：A/B 链里对白镜头的画面由 m6 用我们的 TTS 音频驱动生成，
+       场景片段若也覆盖这些镜头，m6 照样会跑 → 同一段画面付两次钱，而且成片用的还是
+       m6 那条（m7 口型产物优先）。所以非 C 链时，只服务**整组无对白**的组。
+       C 链的画面本来就是 wan3.0 直出，整组都归场景路径。
+
+    `scene_mode="off"` 时一组都不服务（回到逐镜头路径，economy/老 run 的默认行为）。
+    """
+    if scene_mode == "off":
+        return []
+    wan30_i2v = str(i2v_model or "").startswith("wan3.0")
+    if talk_mode != "scripted_talk" and not wan30_i2v:
+        return []
+    out = []
+    for g in groups:
+        if talk_mode == "scripted_talk" or not group_has_dialogue(script, g):
+            out.append(g)
+    return out
 
 
 def describe(groups: list[SceneGroup]) -> str:

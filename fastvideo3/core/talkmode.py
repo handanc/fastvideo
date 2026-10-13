@@ -156,22 +156,36 @@ def channel(mode: str) -> TalkChannel:
     return TALK_CHANNELS.get(mode or "", TALK_CHANNELS["s2v_direct"])
 
 
-def shots_need_last_frame(script: Any, talk_mode: str) -> list[Any]:
-    """要按**首尾帧**出片的镜头集合（m3 产尾帧、看板算覆盖率都用它）。
+def shots_need_last_frame(script: Any, talk_mode: str, scene_mode: str = "auto") -> list[Any]:
+    """要产尾帧的镜头集合（m3 产尾帧、frames 步缺口、看板覆盖率共用这一个判据）。
 
-    = 需要运动片段的镜头（m4 出片，尾帧跟着发）
-      ∪ 对白镜头里"画面由口型通道自己出、且该通道吃尾帧"的那些（C 链 scripted_talk）。
+    尾帧**只在会被用到的地方产**（每张 ≈¥0.2，产了不用就是白烧）：
 
-    为什么不能只用 `shots_need_i2v`：C 链的对白镜头**不出**运动片段（画面由
-    wan3.0-video 一次调用直出，出片段是白烧钱），于是它们被那个集合排除在外 ——
-    而短剧里对白镜头恰恰是大头。结果就是"首尾帧改造看着没生效"：真正该锁结束态的
-    镜头一个尾帧都没有，m6 照样只拿首帧去调 wan3.0-video。
+    - 场景级生成开着（scripted_talk + scene_mode != off）：只有走**首尾帧形态**的组
+      需要尾帧（规则3：≤1 角色且无对白），取每组的**末镜**（尾帧锁的是结束态）。
+      走参考形态的组由模型自己画中间帧，不需要尾帧。
+    - 场景级生成关着（economy / A 链 / B 链 / 手动 off）：回到逐镜头路径，
+      需要运动片段的镜头都要尾帧（m4 发 last_frame）；C 链对白镜头的画面由口型
+      通道直出且该通道吃尾帧，也要。
     """
+    from fastvideo3.core.scenegroup import MODE_FIRST_LAST, choose_input_mode, group_scenes
     from fastvideo3.modules.m4_shots import shots_need_i2v
 
-    want = {s.shot_id for s in shots_need_i2v(script, talk_mode)}
-    if accepts_last_frame(talk_mode):
-        want |= {s.shot_id for s in script.all_shots() if s.dialogues}
+    want: set[str] = set()
+    scene_active = talk_mode == "scripted_talk" and scene_mode != "off"
+    if scene_active:
+        shots_by_id = {sh.shot_id: sh for sh in script.all_shots()}
+        for g in group_scenes(script):
+            dlg = any(bool(shots_by_id[sid].dialogues) for sid in g.shot_ids if sid in shots_by_id)
+            mode, _why = choose_input_mode(
+                g, has_dialogue=dlg, has_first_frames=True, forced=scene_mode
+            )
+            if mode == MODE_FIRST_LAST and g.shot_ids:
+                want.add(g.shot_ids[-1])
+    else:
+        want |= {s.shot_id for s in shots_need_i2v(script, talk_mode)}
+        if accepts_last_frame(talk_mode):
+            want |= {s.shot_id for s in script.all_shots() if s.dialogues}
     return [s for s in script.all_shots() if s.shot_id in want]
 
 

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -81,6 +82,7 @@ def build_srt(
     min_gap: float = SRT_MIN_GAP,
     tail: float = SRT_TAIL,
     model_audio_shots: set[str] | None = None,
+    scene_windows: dict[str, dict[str, tuple[float, float]]] | None = None,
 ) -> str:
     """按镜头窗口排字幕，并**保证任意两条字幕不重叠**。
 
@@ -105,11 +107,39 @@ def build_srt(
         by_shot.setdefault(ln.shot_id, []).append(ln)
 
     model_audio_shots = model_audio_shots or set()
+    scene_windows = scene_windows or {}
     cues: list[tuple[float, float, str]] = []
     t = 0.0
     prev_end = 0.0
     for i, sid in enumerate(clips_order):
         dur = float(clip_durations.get(sid, 5.0))
+        if sid in scene_windows:
+            # 场景片段：一段视频覆盖组内多个镜头，**每镜头的起止是已知的**（生成时落盘的
+            # windows），所以字幕可以直接落在真实窗口上 —— 比单镜头 C 链的"按字数比例猜"
+            # 更准。窗口内多句仍按字数比例细分（模型发声的句间时刻我们同样拿不到）。
+            seg_start = t
+            for shot_id, (ws, we) in scene_windows[sid].items():
+                w_start, w_end = seg_start + float(ws), seg_start + float(we)
+                lines = by_shot.get(shot_id, [])
+                if not lines:
+                    continue
+                span = max(0.5, w_end - w_start)
+                weights = [max(1, len((ln.text or "").strip())) for ln in lines]
+                total = sum(weights) or 1
+                cursor = w_start
+                for ln, w in zip(lines, weights):
+                    want = span * w / total
+                    start = max(cursor, prev_end + min_gap)
+                    end = min(start + want, w_end)
+                    if end - start < 0.35:
+                        end = start + want
+                    cues.append((start, end, ln.text))
+                    prev_end = end
+                    cursor = end + min_gap
+            t += dur
+            if i < len(clips_order) - 1 and transition_out.get(sid, "cut") != "cut":
+                t -= fade_dur
+            continue
         window_start = t + lead_in
         window_end = t + max(lead_in + 0.5, dur - tail)  # 镜头太短时不能让窗口塌成负数
         cursor = window_start
@@ -193,7 +223,45 @@ async def compose_final(
     scripted_model_track = cfg.talk_mode == "scripted_talk" and cfg.voice_source == "model"
     model_audio: set[str] = set()
     selected: list[tuple[str, Path]] = []
+
+    # ── 场景片段（一次调用覆盖整组镜头）优先于逐镜头产物 ──
+    # 组内镜头的切点是模型自己切的，画面/声音天然连续；把它们拆回逐镜头再拼，
+    # 等于亲手把连贯性剪断。所以整组作为**一个**时间线段进成片，字幕按落盘的
+    # windows 排（比单镜头 C 链的"按字数比例猜"更准）。
+    scene_segs: dict[str, dict] = {}
+    shot_to_scene: dict[str, str] = {}
+    clips_dir = storage.dir("clips")
+    if clips_dir.is_dir():
+        for jp in sorted(clips_dir.glob("scene_*.json")):
+            try:
+                meta_j = json.loads(jp.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            gid = str(meta_j.get("group_id") or jp.stem[len("scene_"):])
+            clip = storage.path("clips", f"scene_{gid}.mp4")
+            if not clip.is_file() or storage.is_stale(f"clips/scene_{gid}.mp4"):
+                continue
+            scene_segs[f"scene:{gid}"] = meta_j
+            for sid in meta_j.get("shot_ids") or []:
+                shot_to_scene[sid] = f"scene:{gid}"
+    scene_windows: dict[str, dict[str, tuple[float, float]]] = {}
+    for key, meta_j in scene_segs.items():
+        scene_windows[key] = {
+            sid: (float(w[0]), float(w[1]))
+            for sid, w in (meta_j.get("windows") or {}).items()
+        }
+
     for shot in shots:
+        seg_key = shot_to_scene.get(shot.shot_id)
+        if seg_key is not None:
+            first_of_group = scene_segs[seg_key]["shot_ids"][0] == shot.shot_id
+            if not first_of_group:
+                continue  # 组内其余镜头随整组进时间线，不单独占位
+            seg_clip = storage.path("clips", f"scene_{seg_key.split(':', 1)[1]}.mp4")
+            selected.append((seg_key, seg_clip))
+            # 场景片段的音轨是模型自己的（参考生视频形态自带发声）→ 字幕走 windows
+            model_audio.update(scene_segs[seg_key]["shot_ids"])
+            continue
         from_talk = shot.shot_id in talk_clips
         if from_talk:  # 有口型产物优先（不依赖类型标签）
             src = Path(talk_clips[shot.shot_id])
@@ -263,6 +331,17 @@ async def compose_final(
         )
         for s in shots
     }
+    # 场景片段的"出点转场"取**组内最后一个镜头**的 transition_out：切点发生在组边界，
+    # 组内部的切点是模型自己切的（那正是场景级生成要保的连贯性），不该被我们再叠一层 xfade
+    shot_trans = {
+        s.shot_id: (s.transition_out.value if isinstance(s.transition_out, TransitionType)
+                    else s.transition_out)
+        for s in shots
+    }
+    for key, meta_j in scene_segs.items():
+        ids = meta_j.get("shot_ids") or []
+        if ids:
+            trans_map[key] = shot_trans.get(ids[-1], "cut")
 
     # 2.5) 片头/片尾标题卡 —— 完整电影形态的必要组成
     from fastvideo3.utils.image import make_title_card
@@ -325,7 +404,8 @@ async def compose_final(
     # 4) SRT 字幕（旁挂产物；烧录失败不阻塞）
     order = [sid for sid, _ in normalized]
     srt_text = build_srt(
-        script, audio_lines, order, durations, trans_map, fade, model_audio_shots=model_audio
+        script, audio_lines, order, durations, trans_map, fade,
+        model_audio_shots=model_audio, scene_windows=scene_windows,
     )
     srt_path = storage.path("final", SUBTITLE_SIDECAR_NAME)
     srt_path.write_text(srt_text, encoding="utf-8")

@@ -645,7 +645,7 @@ async def _build_last_frames(
     # 工作集 = 需要运动片段的镜头 ∪ C 链里"画面由口型通道自己出"的对白镜头。
     # 只用 shots_need_i2v 会漏掉后者，而短剧里对白镜头是大头 —— 于是"首尾帧改造"
     # 看着没生效：真正该锁结束态的镜头一个尾帧都没有。
-    need = {s.shot_id for s in shots_need_last_frame(script, cfg.talk_mode)}
+    need = {s.shot_id for s in shots_need_last_frame(script, cfg.talk_mode, cfg.scene_clip_mode)}
     out: dict[str, str] = {}
     # 尾帧的"该不该做"由**尾帧自己**的状态决定，不能被 `only` 卡住。
     # `only` 是 frames 步按**首帧**缺口算出来的续跑名单：一旦某镜头的首帧在早前某次

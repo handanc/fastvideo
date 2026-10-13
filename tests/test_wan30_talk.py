@@ -349,6 +349,7 @@ async def test_scripted_talk_sends_first_and_last_frame(cfg, storage, ledger, jo
     m6 只能拿首帧去调 wan3.0-video —— 界面上看就是"改了没生效"。
     """
     cfg.voice_source = "model"
+    cfg.scene_clip_mode = "off"  # 本用例测逐镜头 C 链：auto 下对白组的尾帧由场景路径负责
     talk, talks, _fb = await _run_talk(cfg, storage, ledger, jobs, _duo_script())
     assert talks, "C 链要出片"
     sent = talk.seen[0]

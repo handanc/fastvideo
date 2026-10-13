@@ -386,17 +386,35 @@ async def _run_step(ctx, storage, cfg, meta, st) -> list[str]:
                 if not (storage.root / rel).is_file() or storage.is_stale(rel):
                     talk_only.add(sh.shot_id)
         frames = stages.collect_shot_products(storage, "storyboard", ".png")
-        # 顺序：片段(m4) → 配音(m5) → 口型(m6)。m4 只依赖首帧，先跑完它，
-        # 这样单句 TTS 失败（edge-tts 限流很常见）不会连累动作/空镜镜头白等一轮
+        # 顺序：配音(m5) → **场景片段(m4_scene)** → 逐镜头片段(m4) → 口型(m6)。
+        # 配音提到场景片段之前：音色参考样本就是从台词母带里切的，没有母带就没有锁声。
+        # 单句 TTS 失败（edge-tts 限流很常见）不连累别的镜头：m5 内部 skip_existing。
+        await stages.stage_audio(ctx, script)
+        produced += [f"audio/line_{m}.wav" for m in sorted(line_only)]
+        tasklock.heartbeat(out_dir)
+        lines = (
+            [AudioLine(**ln) for ln in storage.load_json("audio_map.json")]
+            if storage.exists("audio_map.json")
+            else []
+        )
+        scene_clips = await stages.stage_scene_clips(ctx, script, frames, assets, lines)
+        if scene_clips:
+            produced += [f"clips/scene_{g}.mp4" for g in sorted(scene_clips)]
+            tasklock.heartbeat(out_dir)
+        # 场景片段覆盖到的镜头不再逐镜头出片/出口型：同一段画面付两次钱是纯浪费。
+        # 覆盖在**场景片段落盘之后**才算（progress 算缺口时片段还不存在）。
+        from fastvideo3.core import progress as prog
+
+        covered = set(
+            prog.scene_covered_shots(storage, script, cfg)
+        )
+        clip_only -= covered
+        talk_only -= covered
         if clip_only:
             await stages.stage_shots(ctx, script, frames, assets, only=clip_only)
             produced += [f"clips/shot_{s}.mp4" for s in sorted(clip_only)]
             tasklock.heartbeat(out_dir)
-        await stages.stage_audio(ctx, script)  # 内部 skip_existing，不重 TTS
-        produced += [f"audio/line_{m}.wav" for m in sorted(line_only)]
-        tasklock.heartbeat(out_dir)
         if talk_only:
-            lines = [AudioLine(**ln) for ln in storage.load_json("audio_map.json")]
             await stages.stage_talk(ctx, script, frames, assets, lines, only=talk_only)
             produced += [f"talk/shot_{s}.mp4" for s in sorted(talk_only)]
             tasklock.heartbeat(out_dir)
@@ -1062,6 +1080,68 @@ def provision(
     else:
         console.print("[green]✔ 运行时齐备，这份目录可以独立上线：[/]"
                       "fastvideo3 serve --host 0.0.0.0 --port 8710")
+
+
+@app.command("scene-gen")
+def scene_gen(
+    run_id: str = typer.Argument(...),
+    group: str = typer.Option("", "--group", help="只生成这一个场景组（界面单组「生成」按钮用）"),
+):
+    """场景级生成：一个场景组 = 一次 wan3.0 调用（组内多镜头连贯、自带台词口型）。
+
+    与「开始生成」的 videos 步走同一条代码（stages.stage_scene_clips），这里只是把它
+    单独暴露出来：界面里改完某组的形态/素材/首尾帧提示词后，点「生成」只重出这一组，
+    不必整步重跑（整步重跑会把别的组也按缺口补一遍）。
+    """
+    import asyncio
+
+    from fastvideo3.core import tasklock
+    from fastvideo3.core.schema import Asset, AudioLine, Script
+    from fastvideo3.core.stages import build_context, stage_scene_clips
+    from fastvideo3.core.storage import RunStorage
+
+    storage = RunStorage(run_id)
+    meta = storage.load_json("run_meta.json") or {}
+    cfg = _cfg_from_meta(meta)
+    # 与 step 命令同一把锁：一次只跑一个生成任务，防重复付费
+    ok, st_lock = tasklock.acquire(OUTPUT_DIR, run_id, "scene-gen", adopt_same_run=True)
+    if not ok:
+        console.print(
+            f"[red]✘ 已有任务在跑（{st_lock.get('run_id')} / {st_lock.get('kind')}）。[/]"
+        )
+        raise typer.Exit(code=4)
+    try:
+        data = storage.load_json("script.json")
+        if not data:
+            console.print("[red]✘ 还没有剧本（script.json 不存在），先跑「生成剧本」步[/]")
+            raise typer.Exit(code=1)
+        script = Script.model_validate(data)
+        registry = (
+            storage.load_json("asset_registry.json")
+            if storage.exists("asset_registry.json") else {}
+        )
+        assets = {k: Asset(**v) for k, v in registry.items()}
+        frames = {
+            p.stem.replace("shot_", ""): str(p)
+            for p in storage.dir("storyboard").glob("shot_*.png")
+            if "_last" not in p.name
+        }
+        lines = (
+            [AudioLine(**ln) for ln in storage.load_json("audio_map.json")]
+            if storage.exists("audio_map.json") else []
+        )
+        ctx = build_context(cfg, storage)
+        got = asyncio.run(
+            stage_scene_clips(ctx, script, frames, assets, lines, only={group} if group else None)
+        )
+        if not got:
+            console.print("[yellow]没有生成任何场景片段（事件/降级台账里有原因）[/]")
+            raise typer.Exit(code=1)
+        console.print(
+            f"[green]✔ 场景片段：{', '.join(sorted(got))}[/]  累计成本: ¥{ctx.ledger.total()}"
+        )
+    finally:
+        tasklock.release(OUTPUT_DIR, run_id)
 
 
 @app.command("refresh-prices")
