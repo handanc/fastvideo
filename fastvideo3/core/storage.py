@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -21,6 +22,15 @@ def _atomic_write_json(path: Path, data: Any) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     os.replace(tmp, path)
+
+
+_MERGE_LOCKS: dict[str, "threading.Lock"] = {}
+_MERGE_LOCKS_GUARD = threading.Lock()
+
+
+def _merge_lock(key: str) -> "threading.Lock":
+    with _MERGE_LOCKS_GUARD:
+        return _MERGE_LOCKS.setdefault(key, threading.Lock())
 
 
 def safe_unlink(path: Path, attempts: int = 4, delay: float = 0.4) -> bool:
@@ -71,6 +81,27 @@ class RunStorage:
 
     def exists(self, name: str) -> bool:
         return (self.root / name).exists()
+
+    def merge_json(self, name: str, updates: dict) -> None:
+        """把 `updates` 合并进一个 JSON 映射表：读-改-写互斥 + 原子落盘。
+
+        为什么需要：并行生成角色图与场景图时，两边各自"开头读全表、结尾整体覆写"，
+        后写完的那路会把先写完的整批抹掉 —— 表现是"图明明在盘上、登记表里没有它"，
+        而下游只信登记表。合并写只增改自己那几个键，互斥锁保证两个协程不会
+        同时读到旧表再先后覆写。
+        """
+        path = self.root / name
+        with _merge_lock(str(path)):
+            data: dict = {}
+            if path.is_file():
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        data = raw
+                except (OSError, ValueError):
+                    data = {}
+            data.update(updates)
+            _atomic_write_json(path, data)
 
     # ── 事件流（可观测性）──
     def log_event(self, node: str, status: str, **data: Any) -> None:
@@ -146,11 +177,22 @@ class RunStorage:
     def _save_lineage(self, edges: dict) -> None:
         _atomic_write_json(self.root / self.LINEAGE, {"edges": edges})
 
+    def _lineage_lock(self) -> "threading.Lock":
+        """血缘的读-改-写互斥锁。
+
+        并行生成角色图与场景图时，两路都会各自 `_lineage()` 读全表、改一条、再整表覆写 ——
+        后写的把先写那条边的更新抹掉，表现是"下游没被作废、旧片段仍显示完成"。
+        只锁最里层的三个改写口（`record_lineage`/`mark_stale`/`clear_stale`），外层组合
+        调用不重复取锁，避免自锁。
+        """
+        return _merge_lock(str(self.root / self.LINEAGE))
+
     def record_lineage(self, produced: str, inputs: list[str]) -> None:
         """登记"produced 这个产物由 inputs 生成"。重做同一产物即覆盖其上游。"""
-        edges = self._lineage()
-        edges[produced] = {"inputs": list(inputs), "stale": False, "reason": ""}
-        self._save_lineage(edges)
+        with self._lineage_lock():
+            edges = self._lineage()
+            edges[produced] = {"inputs": list(inputs), "stale": False, "reason": ""}
+            self._save_lineage(edges)
 
     def is_stale(self, rel: str) -> bool:
         return bool(self._lineage().get(rel, {}).get("stale"))
@@ -177,6 +219,10 @@ class RunStorage:
 
     def mark_stale(self, rels: Iterable[str], reason: str) -> int:
         """标记作废，并**自动传递到全部下游**（改场景图 → 帧 → 片段 → 成片）。"""
+        with self._lineage_lock():
+            return self._mark_stale_locked(rels, reason)
+
+    def _mark_stale_locked(self, rels: Iterable[str], reason: str) -> int:
         edges = self._lineage()
         targets: set[str] = set()
         for rel in rels:
@@ -209,12 +255,13 @@ class RunStorage:
         return self.mark_stale(self.dependents_of(produced), reason or f"{produced} 已重生成")
 
     def clear_stale(self, rel: str) -> None:
-        edges = self._lineage()
-        meta = edges.get(rel)
-        if meta and meta.get("stale"):
-            meta["stale"] = False
-            meta["reason"] = ""
-            self._save_lineage(edges)
+        with self._lineage_lock():
+            edges = self._lineage()
+            meta = edges.get(rel)
+            if meta and meta.get("stale"):
+                meta["stale"] = False
+                meta["reason"] = ""
+                self._save_lineage(edges)
 
     def upstream_of(self, rel: str) -> list[str]:
         return list(self._lineage().get(rel, {}).get("inputs") or [])

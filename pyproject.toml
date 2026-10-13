@@ -21,6 +21,8 @@ dependencies = [
     "imageio-ffmpeg>=0.5",
     "sqlalchemy>=2.0",
     "aiosqlite>=0.20",
+    "langgraph>=1.2",
+    "langgraph-checkpoint-sqlite>=2.0",
     "edge-tts>=7.0",
     "dashscope>=1.20",
 ]
@@ -35,7 +37,7 @@ full = [
     "librosa>=0.10",
     "soundfile>=0.12",
 ]
-postgres = ["psycopg[binary]>=3.1"]  # prod-postgres：JobStore 的异步任务台账走 PG
+postgres = ["psycopg[binary]>=3.1", "langgraph-checkpoint-postgres>=2.0"]  # prod-postgres：JobStore 的异步任务台账走 PG
 web = [
     "fastapi>=0.111",
     "uvicorn>=0.30",

@@ -136,6 +136,15 @@ async def build_assets(
         storage.load_json("asset_registry.json") if storage.exists("asset_registry.json") else {}
     )
     registry: dict[str, Asset] = {k: Asset(**v) for k, v in old_registry.items()}
+
+    def _publish(a: Asset) -> None:
+        """登记一张资产：本地表 + **合并写**落盘。
+
+        整体覆写会让"角色图与场景图并行生成"互相抹掉对方的条目（各自开头读全表、
+        结尾写全表）。合并写只动自己那一个键，两条路可以安全并发。
+        """
+        registry[a.asset_id] = a
+        storage.merge_json("asset_registry.json", {a.asset_id: a.model_dump()})
     size = size_for_aspect(cfg.aspect_ratio, hi_res=cfg.resolution[0] >= 1080)
     n_cand = max(1, cfg.asset_candidates) if vlm is not None else 1
     # 人工上传的资产是"用户意图"，重跑本阶段绝不能覆盖（否则换定妆照毫无意义）
@@ -173,7 +182,7 @@ async def build_assets(
             continue
         reused = _reuse(f"char_{ch.character_id}.png", ch.character_id, "character")
         if reused is not None:
-            registry[f"char_{ch.character_id}"] = reused
+            _publish(reused)
             continue
         prompt = render(
             "char_portrait.v1",
@@ -218,7 +227,7 @@ async def build_assets(
             uri=str(dest),
             meta=meta,
         )
-        registry[asset.asset_id] = asset
+        _publish(asset)
         # 血缘：立绘 ← 剧本指纹；重画立绘 → 所有消费过它的帧/片段/成片自动作废
         storage.record_regeneration(
             f"assets/char_{ch.character_id}.png", [fp], reason="定妆照重生成"
@@ -232,7 +241,7 @@ async def build_assets(
             continue
         reused = _reuse(f"scene_{scene.scene_id}.png", scene.scene_id, "scene")
         if reused is not None:
-            registry[f"scene_{scene.scene_id}"] = reused
+            _publish(reused)
             continue
         prompt = scene_background_prompt(cfg, script, scene)
         dest = storage.path("assets", f"scene_{scene.scene_id}.png")
@@ -254,12 +263,11 @@ async def build_assets(
             uri=str(dest),
             meta={"location": scene.location},
         )
-        registry[asset.asset_id] = asset
+        _publish(asset)
         storage.record_regeneration(
             f"assets/scene_{scene.scene_id}.png", [fp], reason="场景图重生成"
         )
 
-    storage.save_json("asset_registry.json", {k: a.model_dump() for k, a in registry.items()})
     storage.log_event("m2_assets", "done", count=len(registry))
     return registry
 

@@ -1182,6 +1182,65 @@ def scene_gen(
         tasklock.release(OUTPUT_DIR, run_id)
 
 
+@app.command("graph")
+def graph_cmd(
+    run_id: str = typer.Argument(...),
+    resume: bool = typer.Option(False, "--resume", help="续跑：补人审门的决定，或从崩溃点接着跑"),
+    redo: str = typer.Option("", "--redo", help="人审决定重出的场景组，逗号分隔（如 scene_1,scene_3）"),
+    finish: bool = typer.Option(False, "--finish", help="人审决定收片"),
+    limit: int = typer.Option(40, "--limit", help="图递归上限（人审回边每多一轮 +2）"),
+):
+    """用 LangGraph 执行图跑完整任务。
+
+    与 `step` / `run` 的区别**只在编排**：顺序、角色图‖场景图的并行、人审中断与崩溃恢复由图
+    负责；每一步做什么仍然走 `core/stages.py` 与 `_run_step` 那唯一一份执行器。所以同一条 run
+    可以两种编排混用（先用图跑到成片、再逐步点按钮重出某一组），不会出现"面板显示 A、实际跑 B"。
+
+    示例：
+
+        fastvideo3 graph run_x            # 跑到人审门停下
+        fastvideo3 graph run_x --resume --redo scene_2
+        fastvideo3 graph run_x --resume --finish
+    """
+    import asyncio
+
+    from fastvideo3.core import tasklock
+    from fastvideo3.graph import run_graph
+
+    ok, lock = tasklock.acquire(OUTPUT_DIR, run_id, "graph", adopt_same_run=True)
+    if not ok:
+        console.print(f"[red]✘ 已有任务在跑（{lock.get('run_id')} / {lock.get('kind')}）。[/]")
+        raise typer.Exit(code=4)
+    decision: dict | None = None
+    if redo.strip():
+        decision = {"redo_groups": [x.strip() for x in redo.split(",") if x.strip()]}
+    elif finish:
+        decision = {"finish": True}
+    elif resume:
+        decision = {}  # 崩溃恢复：不带决定，让图从未完成的节点继续
+    try:
+        cfg = load_config()
+        result = asyncio.run(
+            run_graph(cfg, run_id, resume_value=decision, recursion_limit=limit, root=OUTPUT_DIR)
+        )
+        interrupts = result.get("__interrupt__") or []
+        if interrupts:
+            payload = getattr(interrupts[0], "value", None) or {}
+            console.print("[yellow]⏸ 停在人审门[/]  成片: final/final.mp4  已花: ¥"
+                          f"{payload.get('spent_cny', 0.0):.2f}")
+            console.print(f"   可重出的组: {', '.join(payload.get('groups') or []) or '（无）'}")
+            console.print(f"   续跑：fastvideo3 graph {run_id} --resume --redo <组>  或  --resume --finish")
+            return
+        produced = result.get("produced") or []
+        console.print(
+            f"[green]✔ 图跑完[/]  产物 {len(produced)} 项 · 累计成本 ¥{result.get('spent_cny', 0.0):.2f}"
+        )
+        if result.get("last_error"):
+            console.print(f"[yellow]这一步失败（已留痕，未继续）：{result['last_error']}[/]")
+    finally:
+        tasklock.release(OUTPUT_DIR, run_id)
+
+
 @app.command("refresh-prices")
 def refresh_prices(
     url: str = typer.Option("", "--url", help="价目页地址（默认百炼「模型调用价格」页）"),

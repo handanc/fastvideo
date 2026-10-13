@@ -464,8 +464,21 @@ async def generate_scene_clips(
         if existing is not None and existing.status == JobStatus.SUCCEEDED and dest.exists():
             out[gid] = str(dest)
             continue
+        # **已提交但在途的任务：接着轮询，绝不重新提交。**
+        # 服务重启、图恢复、或人工再点一次「生成」都会走到这里；重新提交等于为同一秒
+        # 画面付第二次钱（场景片段一次 ¥5–17，这是本项目最贵的一类误操作）。
+        resumed = str(existing.output_uri or "") if (
+            existing is not None and existing.status == JobStatus.RUNNING
+        ) else ""
         try:
-            ext_id = await provider.submit(dest=dest, image=submit_image, audio=None, video=None, **params)
+            ext_id = resumed or await provider.submit(
+                dest=dest, image=submit_image, audio=None, video=None, **params
+            )
+            if resumed:
+                storage.log_event(
+                    "m4_scene", "scene_job_resume", group=gid, ext_id=resumed[:40],
+                    hint="续跑：轮询已提交的任务，不重复提交",
+                )
             jobs.update(job_id, status=JobStatus.RUNNING, output_uri=ext_id)
             status = await poll_until_done(
                 provider.poll,
