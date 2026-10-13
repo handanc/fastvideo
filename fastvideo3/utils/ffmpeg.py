@@ -789,6 +789,34 @@ def grade_filter() -> str:
     return "eq=contrast=1.06:saturation=1.10:brightness=0.015,unsharp=5:5:0.6:5:5:0.0"
 
 
+def frame_at(video: Path, ts: float, dest: Path) -> Path | None:
+    """在指定时刻抽**一帧**（场景片段按镜头时间窗回捞画面，给一致性度量用）。
+
+    场景级生成不再产分镜首帧，度量的原料因此没了：脸漂不漂必须量**实际拍到的画面**，
+    也就是从 `clips/scene_*.mp4` 的镜头时间窗里抽帧，而不是去量一张从没进过成片的首帧图。
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dur = probe_duration(video)
+    t = max(0.0, float(ts))
+    if dur > 0:
+        # 请求时刻落在片长之外时 ffmpeg **不报错、只是不吐帧**（模型交付的片段常比计划短
+        # 两秒，按时间窗抽帧必然踩到这一步）→ 夹到片内，宁可量到邻近画面也不静默没样本。
+        t = min(t, max(0.0, dur - 0.05))
+    try:
+        run_ffmpeg(["-ss", f"{t:.2f}", "-i", str(video), "-frames:v", "1", str(dest)])
+    except RuntimeError:
+        return None
+    if dest.is_file():
+        return dest
+    if dur > 0:  # 还不行就退回全片中点
+        try:
+            run_ffmpeg(["-ss", f"{dur / 2:.2f}", "-i", str(video), "-frames:v", "1", str(dest)])
+        except RuntimeError:
+            return None
+        return dest if dest.is_file() else None
+    return None
+
+
 def extract_frames(video: Path, out_dir: Path, count: int = 3) -> list[Path]:
     """均匀抽帧（成片终审送 VLM 用）。"""
     out_dir.mkdir(parents=True, exist_ok=True)

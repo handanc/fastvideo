@@ -105,68 +105,6 @@ def test_edge_tts_emotion_maps_to_prosody(tmp_path, monkeypatch):
     assert int(captured["rate"].rstrip("%")) > 0 and int(captured["pitch"].rstrip("Hz")) > 0
 
 
-async def test_two_person_default_overlay_not_merged_s2v(cfg, storage, ledger, jobs, tmp_path):
-    """双人对白默认不喂单音轨口型：错口型（没说话的人动嘴）比无口型更糟。"""
-    from fastvideo3.core.schema import BaseInfo
-    from fastvideo3.modules.m6_talk import make_talk_clips
-    from fastvideo3.providers.fake import FakeI2VProvider, FakeTalkProvider, fake_script
-
-    class SpyTalk(FakeTalkProvider):
-        def __init__(self):
-            super().__init__()
-            self.submits = 0
-
-        async def submit(self, dest, image=None, audio=None, **params):
-            self.submits += 1
-            return await super().submit(dest, image=image, audio=audio, **params)
-
-    from fastvideo3.core.schema import DialogueLine, Shot, ShotType
-
-    script = fake_script(BaseInfo(topic="t"))
-    duo = Shot(
-        shot_id="duo_1", scene_id=script.scenes[0].scene_id, type=ShotType.DIALOGUE,
-        action="两人对白", characters=[c.character_id for c in script.characters[:2]],
-        dialogues=[
-            DialogueLine(character_id=script.characters[0].character_id, text="你先说"),
-            DialogueLine(character_id=script.characters[1].character_id, text="我再说"),
-        ],
-    )
-    script.scenes[0].shots.append(duo)
-    frame = storage.path("storyboard", f"shot_{duo.shot_id}.png")
-    frame.parent.mkdir(parents=True, exist_ok=True)
-    from PIL import Image
-
-    Image.new("RGB", (16, 28), (9, 9, 9)).save(frame)
-    lines = [
-        AudioLine(line_id=f"{duo.shot_id}_{i}", shot_id=duo.shot_id, character_id=d.character_id,
-                  text=d.text, wav_uri=str(_wav(storage.path("audio", f"line_{duo.shot_id}_{i}.wav"))),
-                  duration_sec=0.2)
-        for i, d in enumerate(duo.dialogues)
-    ]
-    talk = SpyTalk()
-    cfg.two_person_talk = "overlay"
-    talks, fallbacks = await make_talk_clips(
-        cfg, talk, FakeI2VProvider(), script, {duo.shot_id: str(frame)}, {}, lines,
-        storage, ledger, jobs,
-    )
-    assert talk.submits == 0, "overlay 策略下不应调用口型模型"
-    assert duo.shot_id in fallbacks
-    assert any(e.get("status") == "two_person_overlay_by_policy" for e in storage.read_events())
-
-    # 显式切回合并音轨时，口型模型应被调用
-    cfg.two_person_talk = "s2v_merged"
-    talk2 = SpyTalk()
-    for p in storage.dir("talk").glob("*.mp4"):
-        p.unlink()
-    for p in storage.dir("clips").glob("*.mp4"):
-        p.unlink()
-    talks2, _ = await make_talk_clips(
-        cfg, talk2, FakeI2VProvider(), script, {duo.shot_id: str(frame)}, {}, lines,
-        storage, ledger, jobs,
-    )
-    assert talk2.submits >= 1
-
-
 def test_fallback_provider_ignores_env_override(cfg):
     """.env 的 FV3_TALK_MODEL 不能污染兜底通道：否则主备同一个坏模型，换道无效。"""
     from fastvideo3.core.config import ProviderRouting

@@ -30,15 +30,19 @@ from fastvideo3.core.schema import Script
 from fastvideo3.core.storage import RunStorage
 from fastvideo3.core.talkmode import lipsync_required
 
-STEP_ORDER = ["script", "chars", "scenes", "frames", "videos", "compose"]
+#: 五步流水线（对齐小云雀形态）：剧本 → 角色图 → 场景图 → **场景视频** → 成片。
+#: 旧的"分镜首帧"与"镜头视频+口型"两步合并进"场景视频"：首尾帧只是场景视频的内部
+#: 输入（规则3 的组才需要），口型由 wan3.0 在生成场景片段时自带，不再是独立一步。
+STEP_ORDER = ["script", "chars", "scenes", "scene_videos", "compose"]
 STEP_LABELS = {
     "script": "生成剧本",
     "chars": "生成角色图",
     "scenes": "生成场景图",
-    "frames": "生成分镜图",
-    "videos": "生成镜头视频",
+    "scene_videos": "生成场景视频",
     "compose": "拼接成片",
 }
+#: 老 run 的 run_meta/事件里还是六步命名，读旧盘时映射过来（续跑不炸）
+_LEGACY_STEP_ALIAS = {"frames": "scene_videos", "videos": "scene_videos"}
 
 
 @dataclass
@@ -111,6 +115,81 @@ def _last_step_error(storage: RunStorage) -> dict[str, str]:
     return {k: v for k, v in failed.items() if k not in done}
 
 
+def frame_needs(
+    script: Script,
+    cfg: Any,
+    talk_mode: str,
+    *,
+    storage: Any = None,
+    overrides: dict | None = None,
+) -> tuple[set[str], set[str]]:
+    """首帧/尾帧的需求面（progress 算缺口与 cli 决定"这趟画哪些帧"共用同一份）。
+
+    两处各算一遍必然分叉：progress 说缺、cli 说无事可做 → 步骤永久 gap（死锁）。
+
+    规则（场景级生成是唯一正常路径）：
+    - **参考形态的组一张首帧都不画**：wan3.0 从立绘/空景图起画，再画首帧就是白烧 t2i 钱，
+      而且那正是"首帧→分镜片段"老逻辑的入口，必须堵死；
+    - **首尾帧形态的组**（规则3 命中，或盘上没有角色图/场景图可发）画首镜首帧 + 末镜尾帧；
+    - `scene_clip_mode="off"`（仅历史 run）才回到逐镜头需求面。
+
+    `storage` + `overrides` 用来判断"这组盘上到底有没有参考图"：人工上传的图不在登记表里，
+    只看登记表会把参考形态误判成不可用，进而去画一堆本不需要的首帧。
+    """
+    from fastvideo3.core.assets import refs_on_disk
+    from fastvideo3.core.scenegroup import (
+        MODE_FIRST_LAST,
+        choose_input_mode,
+        group_has_dialogue,
+        group_scenes,
+        servable_groups,
+    )
+    from fastvideo3.core.talkmode import shots_need_last_frame
+    from fastvideo3.modules.m4_shots import shots_need_i2v
+
+    overrides = overrides or {}
+    scene_mode = str(getattr(cfg, "scene_clip_mode", "auto") or "auto")
+    need_i2v_shots = {sh.shot_id for sh in shots_need_i2v(script, talk_mode)}
+    last_frame_shots = {
+        sh.shot_id for sh in shots_need_last_frame(script, talk_mode, scene_mode)
+    }
+    groups = group_scenes(script)
+    servable = {
+        g.group_id
+        for g in servable_groups(
+            script, groups,
+            talk_mode=talk_mode,
+            i2v_model=cfg.model_for("i2v", "dashscope_i2v", ""),
+            scene_mode=scene_mode,
+        )
+    }
+    need_first: set[str] = set()
+    need_last: set[str] = set()
+    for g in groups:
+        if g.group_id in servable:
+            ov = overrides.get(g.group_id) or {}
+            has_refs = (
+                bool(refs_on_disk(
+                    storage, characters=g.characters, scene_ids=g.scene_ids, overrides=ov
+                )) if storage is not None else True
+            )
+            mode, _why = choose_input_mode(
+                g,
+                has_dialogue=group_has_dialogue(script, g),
+                has_first_frames=True,
+                has_references=has_refs,
+                forced=str(ov.get("mode") or scene_mode or "auto"),
+            )
+            if mode == MODE_FIRST_LAST and g.shot_ids:
+                need_first.add(g.shot_ids[0])
+                need_last.add(g.shot_ids[-1])
+        else:
+            gids = set(g.shot_ids)
+            need_first |= {sid for sid in gids if sid in need_i2v_shots}
+            need_last |= {sid for sid in gids if sid in last_frame_shots}
+    return need_first, need_last
+
+
 def compute_progress(
     storage: RunStorage, meta: dict, cfg: AppConfig, running: bool = False
 ) -> ProgressReport:
@@ -119,6 +198,7 @@ def compute_progress(
     steps: list[StepState] = []
     nxt: StepState | None = None
     errors = _last_step_error(storage)
+    errors = {_LEGACY_STEP_ALIAS.get(k, k): v for k, v in errors.items()}
 
     # ── s1 剧本 ──
     s1 = StepState("script", STEP_LABELS["script"], "done" if script else "gap")
@@ -129,10 +209,12 @@ def compute_progress(
     if script is None:
         for sid in STEP_ORDER[1:]:
             steps.append(StepState(sid, STEP_LABELS[sid], "pending"))
-        nxt = steps[0]
-        return _finish(steps, nxt, running, root, meta, cfg)
+        return _finish(steps, s1, running, root, meta, cfg)
 
-    have = lambda rel: (root / rel).is_file() and not storage.is_stale(rel)  # noqa: E731
+    def have(rel: str) -> bool:
+        return storage.exists(rel)
+
+    talk_mode = meta.get("talk_mode", cfg.talk_mode)
 
     # ── s2 角色图 ──
     miss_chars = [
@@ -168,48 +250,55 @@ def compute_progress(
         )
     )
 
-    # ── s4 分镜首帧（付视频钱之前的最后一道人工检查点）──
-    from fastvideo3.core.scenegroup import group_scenes
+    # ── s4 场景视频（首尾帧 → 配音 → 场景片段，一步补完）──
+    from fastvideo3.core.scenegroup import group_scenes, servable_groups
     from fastvideo3.modules.m4_shots import shots_need_i2v
 
-    talk_mode = meta.get("talk_mode", cfg.talk_mode)
-    frame_missing = [
-        sh.shot_id for sh in script.all_shots()
-        if not have(f"storyboard/shot_{sh.shot_id}.png")
-    ]
-    # 尾帧（`shot_{id}_last.png`）归到**它所属的镜头**：不剥后缀就会被当成一个叫
-    # "s1_01_last" 的镜头，缺口清单里出现不存在的 shot_id（本步永远补不完）。
-    # 尾帧作废必须由这一步补上，否则它会永久 stale —— 与"clips 遗留 stale 卡死 videos 步"
-    # 是同一类死锁。
+    all_groups = group_scenes(script)
+    scene_mode_s4 = str(getattr(cfg, "scene_clip_mode", "auto") or "auto")
+    servable_s4 = {
+        g.group_id
+        for g in servable_groups(
+            script, all_groups,
+            talk_mode=talk_mode,
+            i2v_model=cfg.model_for("i2v", "dashscope_i2v", ""),
+            scene_mode=scene_mode_s4,
+        )
+    }
+    # 全部组都归场景路径 → 逐镜头产物（clips/shot_*、talk/shot_*）**既不是缺口也不算作废**：
+    # 它们是老逻辑的遗留，再要一遍等于同一秒画面付两次钱。
+    scene_only = bool(all_groups) and servable_s4 == {g.group_id for g in all_groups}
+    need_first, need_last = frame_needs(
+        script, cfg, talk_mode, storage=storage,
+        overrides=meta.get("scene_overrides") or {},
+    )
+    frame_missing = sorted(
+        {sh.shot_id for sh in script.all_shots() if sh.shot_id in need_first
+         and not have(f"storyboard/shot_{sh.shot_id}.png")}
+        | ({sh.shot_id for sh in script.all_shots() if sh.shot_id in need_last
+           and not have(f"storyboard/shot_{sh.shot_id}_last.png")}
+         if getattr(cfg, "use_last_frames", False) else set())
+    )
+    # 尾帧/首帧作废归到所属镜头（不剥 _last 后缀会出现不存在的 shot_id，本步永远补不完）
     frame_stale = sorted(
         _strip_last_suffix(rel.split("shot_", 1)[1].rsplit(".", 1)[0])
         for rel in storage.stale_set()
         if rel.startswith("storyboard/shot_")
     )
-    # 尾帧缺失**也是这一步的缺口**，不是"可选增强"：m3 的尾帧那趟一旦被欠费/审核打断，
-    # 就会出现"首帧在盘、尾帧没有" —— 此时步骤显示"完成"，于是**没有任何一步会再去补它**，
-    # m4/m6 永远退回单首帧，而用户看到的只是"首尾帧改造没生效"。
-    # 2026-10-12 那条 run 就是这个形状（8 个首帧、1 个尾帧）。
-    # 判据与 m3 同源（`talkmode.shots_need_last_frame`），并受 `use_last_frames` 总开关约束：
-    # 关掉时不该把"故意不产尾帧"算成缺口，否则这一步永远补不完（死锁）。
-    if getattr(cfg, "use_last_frames", False):
-        from fastvideo3.core.talkmode import shots_need_last_frame
 
-        last_missing = [
-            sh.shot_id
-            for sh in shots_need_last_frame(script, talk_mode, cfg.scene_clip_mode)
-            if not have(f"storyboard/shot_{sh.shot_id}_last.png")
-        ]
-        frame_missing = sorted(set(frame_missing) | set(last_missing))
-    steps.append(
-        StepState(
-            "frames", STEP_LABELS["frames"],
-            "done" if not frame_missing and not frame_stale else "gap",
-            missing=frame_missing, stale=frame_stale,
+    # ── 场景片段缺口：每个可服务组都要有一段新鲜片段 ──
+    scene_clip_missing = [
+        g.group_id
+        for g in servable_groups(
+            script, group_scenes(script),
+            talk_mode=talk_mode,
+            i2v_model=cfg.model_for("i2v", "dashscope_i2v", ""),
+            scene_mode=str(getattr(cfg, "scene_clip_mode", "auto") or "auto"),
         )
-    )
+        if not have(f"clips/scene_{g.group_id}.mp4")
+    ]
 
-    # ── s5 镜头视频（配音 + 动作/空镜片段 + 口型段，一次补完）──
+    # ── 逐镜头兜底缺口：场景片段没覆盖到的镜头（场景生成失败/被删后重试）──
     lines = [
         f"{sh.shot_id}_{i}"
         for sh in script.all_shots()
@@ -220,14 +309,14 @@ def compute_progress(
     # 已被**新鲜场景片段**覆盖的镜头不再需要逐镜头产物：场景片段里既有画面也有口型
     # （参考生视频形态），再要 clips/talk 就是让同一秒画面付两次钱。
     covered = set(scene_covered_shots(storage, script, cfg))
-    clips = [
+    clips = [] if scene_only else [
         sh.shot_id for sh in shots_need_i2v(script, talk_mode)
         if sh.shot_id not in covered and not have(f"clips/shot_{sh.shot_id}.mp4")
     ]
     talks: list[str] = []
     # 判据来自 `core/talkmode.py`（"这个模式要不要口型产物"），不在这里写死模式名 ——
     # 新增链路（如 C 链 scripted_talk）只要进表，步骤语义自动跟上
-    if lipsync_required(talk_mode):
+    if lipsync_required(talk_mode) and not scene_only:
         # 对白镜头的"完成"= **有口型产物**，不是"有任意一段视频"。
         # 旧规则把 m6 降级出的叠音 clips 当成完成（"clips 在盘即视为该镜头有视频"），
         # 于是口型通道一失败，整片就带着零口型镜头被标成 done 并合成 —— 用户看到的
@@ -247,6 +336,8 @@ def compute_progress(
                 talks.append(sh.shot_id)
     video_stale: set[str] = set()
     for rel in storage.stale_set():
+        if scene_only and rel.startswith(("clips/shot_", "talk/shot_")):
+            continue  # 逐镜头遗留：场景级路径不消费它们，标着 stale 也不该把本步永远吊住
         if rel.startswith("clips/shot_"):
             sid = rel.split("shot_", 1)[1].rsplit(".", 1)[0]
             # **只算本模式真的需要运动片段的那些镜头**：C 链/A 链下有台词的镜头不出片段，
@@ -267,22 +358,32 @@ def compute_progress(
         elif rel.startswith("audio/line_"):
             # line_{shot_id}_{i}.wav → 取 shot_id（去掉首尾两段）
             video_stale.add(rel[len("audio/line_"):-len(".wav")].rsplit("_", 1)[0])
-    s5_missing = sorted(set(lines) | set(clips) | set(talks))
+    # 一步"场景视频"的缺口 = 首尾帧（规则3 的组）+ 场景片段 + 配音 + 未覆盖镜头的兜底产物。
+    # 合并成一步是因为它们在同一次「开始生成」里顺序补完（帧→配音→场景片段→兜底），
+    # 拆成两步只会让用户多点一次按钮、并制造"frames 完成但 videos 没跑"的中间态。
+    s5_missing = sorted(
+        set(frame_missing) | set(scene_clip_missing) | set(lines) | set(clips) | set(talks)
+    )
+    s5_stale = sorted(set(frame_stale) | video_stale)
     steps.append(
         StepState(
-            "videos", STEP_LABELS["videos"],
-            "done" if not s5_missing and not video_stale else "gap",
-            missing=s5_missing, stale=sorted(video_stale),
+            "scene_videos", STEP_LABELS["scene_videos"],
+            "done" if not s5_missing and not s5_stale else "gap",
+            missing=s5_missing, stale=s5_stale,
         )
     )
 
     # ── s5 拼接 ──
+    # 成片**作废也算缺口**：片段/口型段重做之后，旧成片若仍被当成"已完成"，
+    # 用户拿到的就是一部没包含新片段的旧片子（且界面无从察觉）。
     final_ok = have("final/final.mp4")
+    final_stale = final_ok and storage.is_stale("final/final.mp4")
     steps.append(
         StepState(
             "compose", STEP_LABELS["compose"],
-            "done" if final_ok else "gap",
+            "done" if final_ok and not final_stale else "gap",
             missing=[] if final_ok else ["final/final.mp4"],
+            stale=["final/final.mp4"] if final_stale else [],
         )
     )
 

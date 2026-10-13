@@ -27,7 +27,7 @@ from fastvideo3.core.cost import load_pricing
 #: 允许手动选择的能力。口型（talk）也在其中 —— 但它的可选项来自 `core/talkmode.py`，
 #: 且选中后**同时**决定 `talk_mode`（模型与模式一一对应，见 `resolve_talk_choice`）；
 #: tts/vlm/r2v 不开放（改动它们要连带改提示词/度量口径，不是一次点选能说清的）。
-SELECTABLE_CAPS: tuple[str, ...] = ("text", "t2i", "i2v", "talk")
+SELECTABLE_CAPS: tuple[str, ...] = ("text", "t2i", "i2v")
 
 #: 走"通用模型行"渲染的能力（口型单独一行：它还要带模式与音轨来源）
 UI_CAPS: tuple[str, ...] = ("text", "t2i", "i2v")
@@ -82,30 +82,16 @@ CHOICES: dict[str, list[ModelChoice]] = {
     # `img_url` 旧协议（→ `dashscope_wan22_i2v`）；协议由 `providers/protocols.py` 按名字自动
     # 改道，所以两族可以并列在同一个下拉里。旧协议**不支持首尾帧**（那是另一个模型 kf2v 系），
     # 选它时 m4 会退回单首帧并记事件。
+    # 只保留 wan3.0 系：场景级多镜头生成、首尾帧、参考素材、原生台词口型都只有这一族有。
+    # wan2.7/wan2.2 系下线（用户裁定：image2video 只保留 wan3.0，先做最优质量再谈兼容）。
     "i2v": [
-        ModelChoice("wan3.0-video", "wan3.0-video", "全能档：首帧/首尾帧，最长 30s、原生 1080P"),
-        ModelChoice("wan3.0-video-prime", "wan3.0-video-prime", "优速版：更快出片，规格同 3.0"),
-        ModelChoice("wan2.7-i2v", "wan2.7-i2v", "1080P 出厂值：约 ¥1/秒，运动质量商业级"),
-        ModelChoice("wan2.2-i2v-flash", "wan2.2-i2v-flash", "480P 出厂值：¥0.11/秒，最省；不支持首尾帧"),
-        ModelChoice("wan2.2-i2v-plus", "wan2.2-i2v-plus", "720P 出厂值：运动/细节优于 flash；不支持首尾帧"),
+        ModelChoice("wan3.0-video", "wan3.0-video", "全能档：参考生视频/首尾帧，最长 30s、原生 1080P、自带台词口型"),
+        ModelChoice("wan3.0-video-prime", "wan3.0-video-prime", "优速版：更快出片，规格同 3.0（单价 ×1.5）"),
     ],
 }
 
-#: 口型（talk）的可选项**不在这里写死**：它与模式一一对应，唯一来源是 `core/talkmode.py`
-#: （同一条链可能有多个模型，如 wan3.0-video 与其优速版，共用 scripted_talk 语义）。
-#: 这里只把 talkmode 的表转成 ModelChoice 形状，让校验/写回/展示走同一套代码。
-def _talk_choices() -> list[ModelChoice]:
-    from fastvideo3.core.talkmode import ui_models
-
-    out = []
-    for row in ui_models():
-        if not row["model"]:
-            continue  # "不做口型"没有模型名，由前端单独作为一项处理
-        out.append(ModelChoice(row["model"], row["label"], row["note"]))
-    return out
-
-
-CHOICES["talk"] = _talk_choices()
+#: 口型不再是可选能力：wan3.0 生成场景片段时原生带台词口型，独立口型通道已下线。
+#: `talk` 从 SELECTABLE_CAPS 移除；FV3_TALK_MODEL 仍可在 wan3.0-video / -prime 间选模型。
 
 
 def _pricing_known(model: str) -> bool:
@@ -174,7 +160,7 @@ def validate(capability: str, model: str, extra_allowed: Iterable[str] = ()) -> 
 _YAML_MODEL_KEY = {
     "text": ("dashscope_text", "qwen3.7-flash"),
     "t2i": ("dashscope_t2i", "wanx2.1-t2i-turbo"),
-    "i2v": ("dashscope_i2v", "wan2.2-i2v-flash"),
+    "i2v": ("dashscope_i2v", "wan3.0-video"),
 }
 
 

@@ -72,22 +72,12 @@ class RunCreate(BaseModel):
     # fake 默认 False（真实生成）：此前默认 True，Web 面板发起的运行在未察觉时
     # 全走占位色块演示模式（.env 的 FV3_FAKE=0 被请求体覆盖）
     fake: bool = False
-    # 口型模式**自己决定通道**（映射表在 `core/talkmode.py`，前端选项由 GET /api/talk-modes 给）：
-    #   s2v_direct    = wan2.2-s2v：图片 + 我们的语音 → 口型视频（单人、720P 上限）
-    #   v2v_overlay   = videoretalk：wan3.0 先出动作片段 → 再重加口型（两段、1080P 保真）
-    #   scripted_talk = wan3.0-video：图片 + 提示词（台词在里面）→ 口型+动作一体（一条调用）
-    #   audio_overlay = 不做口型，m7 只叠音轨
-    # 以前这里和 configs 的 providers.talk 各写一份、必须人工成对，漂一次就是"钱花了但没口型"。
-    talk_mode: Literal["s2v_direct", "v2v_overlay", "scripted_talk", "audio_overlay"] = "s2v_direct"
-    # 面板的「口型」下拉提交的是**模型名**（wan2.2-s2v / videoretalk / wan3.0-video /
-    # wan3.0-video-prime，空串 = 不做口型）。同一条链可能有多个模型（C 链与其优速版
-    # 共用 scripted_talk 语义），所以只提交 mode 区分不出选了哪个 → 由后端一次解析成
-    # (talk_mode, 模型覆盖)，见 `talkmode.resolve_talk_choice`。
-    # None = 未提供（沿用 talk_mode）；"" = 显式选「不做口型」。
+    # 口型**不再是选项**：wan3.0 生成场景片段时原生带台词口型（音频与嘴型同轨），
+    # 独立口型通道与"不做口型"都已下线。老前端/老脚本若仍提交这三个字段，接受但忽略，
+    # 并在 run_meta 里记一笔 ignored_legacy_fields —— 静默忽略会让老调用方以为生效了。
+    talk_mode: str | None = None
     talk_model: str | None = None
-    # 仅 C 链有意义：master = 音轨换回 m5 的 TTS 母带（默认，保全片语音一致）
-    # | model = 保留模型自发声的音轨（嘴型与声音同轨，跨镜头音色可能漂）
-    voice_source: Literal["master", "model"] = "model"
+    voice_source: str | None = None
     # 面板上的主选择是**分辨率**；给了它就由它映射出内部档位（config.RESOLUTION_TO_QUALITY）。
     # quality 仍保留：CLI/测试/老前端可能只给档位，两者都给时以 resolution 为准。
     resolution: Literal["480P", "720P", "1080P", ""] = ""
@@ -305,28 +295,6 @@ def cost_estimate(quality: str = "economy", duration: float = 30, talk_mode: str
     }
 
 
-@app.get("/api/talk-modes")
-def talk_modes(quality: str = "", duration: float = 30, voice_source: str = "") -> dict:
-    """口型模式清单 —— 前端选项的**唯一来源**（定义在 `core/talkmode.py`）。
-
-    为什么必须后端给：此前前端 JS 里抄了一份通道名与单价表，一漂就等于让用户按假数字
-    填熔断，而熔断中途跳闸的表现恰恰是"成片没有对口型"。这里连档位冲突一起给。
-    """
-    from fastvideo3.core.cost import QUALITY_BASE_RATE_CNY_PER_SEC
-    from fastvideo3.core.talkmode import tier_conflict, ui_channels
-
-    q = quality if quality in QUALITY_BASE_RATE_CNY_PER_SEC else ""
-    return {
-        "modes": ui_channels(),
-        # 每个模式在该档位下的硬冲突提示（无冲突为空串），前端按当前选中的模式显示
-        "conflicts": {
-            m["mode"]: tier_conflict(m["mode"], q, "", voice_source) if q else ""
-            for m in ui_channels()
-        },
-        "quality": q,
-    }
-
-
 @app.get("/api/doctor")
 def doctor(probe: int = 0) -> dict:
     """环境自检（与 CLI doctor 同源逻辑，返回 JSON）。?probe=1 时真实 KEY 探活。"""
@@ -441,69 +409,18 @@ def model_choices(quality: str = "cinema", run_id: str = "") -> dict:
         except Exception:  # noqa: BLE001  # 没配 KEY 时装配不了，退回按配置解析（不影响选择器可用）
             model = cfg.model_for(cap, key, default)
         effective[cap] = model or cfg.model_for(cap, key, default)
-    from fastvideo3.core.talkmode import channel, ui_models
-
-    # 口型也在同一个「模型选择」组件里，但它落盘的字段是 **talk_mode**（不是 model_overrides）：
-    # 通道与输入形态绑死，模式还决定"要不要为对白镜头出运动片段/成片音轨用谁的/字幕按谁排"。
-    # 展示模型名、提交模式名，映射只此一份（core/talkmode.py）。
-    talk_models = ui_models()
-    current_mode = str((meta or {}).get("talk_mode") or cfg.talk_mode)
-    # 当前生效的口型**模型名**（下拉的初始值）：run 点名的 > .env 的 FV3_TALK_MODEL >
-    # 该模式的默认模型。面板去掉"跟随默认"空选项后，这里必须给出一个具体模型。
-    # 例外：audio_overlay（不做口型）**没有模型** —— .env 残留的 FV3_TALK_MODEL 不能当默认
-    # 显示，否则会出现"面板挂着 wan3.0-video-prime、这条 run 一条口型都不做"。
-    if current_mode == "audio_overlay":
-        current_talk_model = ""
-    else:
-        current_talk_model = str(
-            (meta or {}).get("model_overrides", {}).get("talk")
-            or cfg.model_overrides.get("talk")
-            or next((m["model"] for m in talk_models if m["mode"] == current_mode), "")
-        )
-    # 生效模型不在清单里就**补一项**（与通用三行同一规则）：`.env` 可以写任何口型模型名
-    # （例如 fal 的端点 ID），不补就会"默认值显示着它、下拉里没有它、一保存就 400"。
-    if current_talk_model and not any(m["value"] == current_talk_model for m in talk_models):
-        talk_models = [
-            {
-                "value": current_talk_model,
-                "model": current_talk_model,
-                "label": f"{current_talk_model}（配置指定）",
-                "mode": current_mode,
-                "eats": "",
-                "note": "来自 .env / configs 的当前配置，未收录进口型清单；仍可继续使用",
-                "needs_clip_for_dialogue": channel(current_mode).needs_clip_for_dialogue,
-                "voices_script": channel(current_mode).voices_script,
-            },
-            *talk_models,
-        ]
-    # 标签按**模型名**找，不能按模式：scripted_talk 这一条链有两个模型（wan3.0-video 与
-    # -prime），按模式找永远返回排在前面的那个 —— `.env` 配了 prime，面板却显示
-    # wan3.0-video，用户会以为默认值没生效（这正是"默认选项跟随 .env"最容易漏的一处）。
-    current_talk_label = next(
-        (m["label"] for m in talk_models if m["value"] == current_talk_model),
-        current_talk_model or current_mode,
-    )
+    # 口型不再是可选能力：wan3.0 场景片段自带台词口型。这里只回一个说明块，
+    # 让老前端拿到 200 而不是 404，并明确告诉它"没有口型下拉可渲染"。
     return {
         "quality": q,
         "run_id": run_id or "",
+        "talk": {
+            "removed": True,
+            "note": "口型由 wan3.0 场景生成自带，不再是可选项；音轨恒为模型原声",
+        },
         # 这条 run 已点名的模型（详情页的选择器要用它做初始值，否则会显示成"跟随档位"，
         # 让人以为之前的选择没生效）
         "run_overrides": {k: v for k, v in run_chosen.items() if v},
-        "talk": {
-            "field": "talk_model",
-            "current": current_mode,
-            "current_value": current_talk_model,
-            "current_label": current_talk_label,
-            "choices": talk_models,
-            "voice_source": str((meta or {}).get("voice_source") or cfg.voice_source),
-            # 换口型模型的代价必须在选择处就说清楚：已生成的口型产物不会自动重做
-            "switch_note": (
-                "换口型模型只对**之后**生成的对白镜头生效；已经出片的镜头要重做，"
-                "需在看板里删掉它的 talk 产物再点「开始生成」。"
-                "另外 videoretalk 需要先有运动片段（对白镜头会因此多花一份 i2v 钱），"
-                "而从它换走时那份片段就用不上了。"
-            ),
-        },
         **ui_catalog(effective, sources),
     }
 
@@ -575,67 +492,44 @@ async def patch_run_models(run_id: str, request: Request) -> dict:
 
     merged = {**(meta.get("model_overrides") or {}), **chosen}
     merged = {k: v for k, v in merged.items() if k not in cleared and v}
+    # **改 i2v 就是改场景生成/口型模型**：一次 wan3.0 调用同时出画面与口型，只有一个杠杆。
+    # 不同步就会"面板选了 prime、跑的是 .env 里的 video"（实测装配优先级 talk>.env i2v，
+    # 旧的 talk 覆盖永远赢过新选的 i2v）。撤回 i2v 点名时 talk 一起撤回，回到跟随档位。
+    if "i2v" in chosen or "i2v" in cleared:
+        if merged.get("i2v"):
+            merged["talk"] = merged["i2v"]
+        else:
+            merged.pop("talk", None)
     meta["model_overrides"] = merged
 
     # ── 口型模型也可以中途换：它落盘在 talk_mode（不是 model_overrides，理由见 /api/model-choices）──
     from fastvideo3.core.talkmode import (
-        channel,
         provider_name,
-        resolve_talk_choice,
-        tier_conflict,
-        ui_models,
     )
 
     # 面板提交模型名（`talk_model`），CLI/老前端可能提交模式名（`talk_mode`）—— 两者都收，
     # 但都走 `resolve_talk_choice` 这一个解析口，避免"模式与模型各存一份"重新分叉。
-    # 与 `create_run` 同一套语义：**空串是显式的"不做口型"**，只有字段缺席（None）才是"没改"。
-    # 早先写成 `.strip()` 判空，于是面板选「不做口型」点保存 → 后端当没填 → talk_mode 不变，
-    # 用户看到的就是"改了没生效"（而这条 run 后面还在按旧通道花钱出对口型）。
-    want_talk = body.get("talk_model") if isinstance(body, dict) else None
-    if want_talk is None and isinstance(body, dict):
-        want_talk = body.get("talk_mode")
+    # 口型**模型**跟着 `i2v_model` 走（见上），不再是单独一项；**口型模式/音轨来源**
+    # 彻底不再是可改项（wan3.0 场景片段自带口型、音轨恒为模型原声）。老请求体提交
+    # talk_mode/voice_source/talk_model 时记入忽略清单，并说明该改哪个字段。
     talk_changed = ""
-    if want_talk is not None:
-        mode, talk_model_val = resolve_talk_choice(str(want_talk))
-        if not mode:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"未知口型模型 {want_talk!r}；可选："
-                    + "、".join((m["label"] or "不做口型") for m in ui_models())
-                ),
-            )
-        # 分辨率与通道的硬冲突在这里也拦一次（例如 480P 的片段喂不进 videoretalk）：
-        # 中途换比建任务时换更容易踩，因为用户此刻只想着"换个模型试试"
-        warn = tier_conflict(
-            mode,
-            quality,
-            str(meta.get("resolution_tier") or ""),
-            str(body.get("voice_source") or meta.get("voice_source") or ""),
+    ignored: list[str] = []
+    # **口型模型 = 场景生成模型 = `i2v_model`，同一条调用、同一个键。**
+    # 口型不再是一条单独链路（A/B 链已删），场景视频就是 wan3.0 一次调用出的带口型片段。
+    # 此前 `talk_model` 在 POST 被"收下并忽略"、在 PATCH 却写进 model_overrides["talk"]
+    # 并回写 .env —— 同一个字段两个端点两种语义，老前端按 PATCH 的语义就会以为建任务时
+    # 也能单独指定口型模型。现在两边一致：`i2v_model` 决定它，`talk_model` 一律进忽略清单。
+    want_talk = body.get("talk_model") if isinstance(body, dict) else None
+    if want_talk not in (None, ""):
+        ignored.append("talk_model")
+        talk_changed = "talk_model 已忽略：口型与场景视频是同一次 wan3.0 调用，换它请改 i2v_model"
+    for legacy in ("talk_mode", "voice_source"):
+        if isinstance(body, dict) and body.get(legacy) not in (None, ""):
+            ignored.append(legacy)
+    if ignored:
+        meta["ignored_legacy_fields"] = sorted(
+            set((meta.get("ignored_legacy_fields") or []) + ignored)
         )
-        meta["talk_mode"] = mode
-        overrides = {**(meta.get("model_overrides") or {})}
-        if talk_model_val:
-            # 同一条链有多个模型（wan3.0-video / -prime），只有落进 overrides 才区分得出来
-            overrides["talk"] = talk_model_val
-            merged["talk"] = talk_model_val
-            chosen["talk"] = talk_model_val  # 一并写回 .env 的 FV3_TALK_MODEL
-        else:
-            # "不做口型"没有模型名 → 必须**撤掉**旧的 talk 点名。留着它会让面板把
-            # `current_value` 读成那个模型（读取顺序是 overrides 优先于模式默认），
-            # 于是显示"口型 = wan3.0-video-prime"而实际跑的是 audio_overlay。
-            # .env 的 FV3_TALK_MODEL 不动：那是用户的全局偏好，不该被一条 run 清空。
-            overrides.pop("talk", None)
-            merged.pop("talk", None)
-        meta["model_overrides"] = overrides
-        talk_changed = warn
-    want_voice = body.get("voice_source") if isinstance(body, dict) else None
-    if want_voice:
-        if want_voice not in ("master", "model"):
-            raise HTTPException(
-                status_code=400, detail="voice_source 只能是 master（换回我们的配音）或 model（模型原声）"
-            )
-        meta["voice_source"] = want_voice
     env_written: list[str] = []
     env_error = ""
     if not meta.get("fake"):
@@ -664,11 +558,11 @@ async def patch_run_models(run_id: str, request: Request) -> dict:
         "effective": {
             cap: cfg.model_overrides.get(cap, "") for cap in ("text", "t2i", "i2v")
         },
-        # 口型的"生效值"是模式 + 由模式解析出的通道（provider_name 与装配同源）
+        # 口型恒为 wan3.0 场景生成自带；这里只回当前生效的口型**模型**供界面显示
         "talk_mode": cfg.talk_mode,
-        "talk_channel": channel(cfg.talk_mode).label,
         "talk_provider": provider_name(cfg, cfg.talk_mode) or "",
         "voice_source": cfg.voice_source,
+        "ignored_legacy_fields": ignored,
         "talk_warning": talk_changed,
         "hint": "已生效于之后的步骤；已生成的产物不会自动重做",
     }
@@ -808,24 +702,18 @@ def create_run(req: RunCreate) -> dict:
     apply_resolution(cfg, resolution_tier)
     # run 级模型选择：校验后**立刻**盖到 cfg（预估、以及之后每一步都从 run_meta 恢复同一份）
     chosen = _clean_model_overrides(req.model_overrides, quality)
-    # 口型：面板提交的是**模型名**，这里一次解析成 (模式, 模型覆盖)。两者必须同源 ——
-    # 否则会重现"通道已改道到 wan3.0、模式还是 s2v_direct → m6 喂音频 → 全部降级无口型"。
-    from fastvideo3.core.talkmode import resolve_talk_choice, ui_models
-
-    pick = req.talk_model if req.talk_model is not None else req.talk_mode
-    talk_mode_val, talk_model_val = resolve_talk_choice(str(pick or ""))
-    if not talk_mode_val:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"未知口型模型 {pick!r}；可选："
-                + "、".join((m["label"] or "不做口型") for m in ui_models())
-            ),
-        )
-    if req.talk_model is not None and talk_model_val:
-        chosen["talk"] = talk_model_val
-    cfg.talk_mode = talk_mode_val
+    # 口型不再是选项：wan3.0 场景片段自带台词口型。老请求体里的 talk_mode/talk_model/
+    # voice_source 接受但忽略（字段上注明），忽略要留痕 —— 静默丢弃会让老调用方以为生效了。
+    ignored_legacy = [
+        f for f in ("talk_mode", "talk_model", "voice_source")
+        if getattr(req, f, None) not in (None, "")
+    ]
+    cfg.talk_mode = "scripted_talk"
     if chosen:
+        # 同 PATCH：面板点名的 i2v 就是场景生成/口型模型，两边一起落，别让 .env 的旧
+        # FV3_TALK_MODEL 赢过用户刚选的那一档
+        if "i2v" in chosen:
+            chosen = {**chosen, "talk": chosen["i2v"]}
         cfg.model_overrides = {**cfg.model_overrides, **chosen}
     # 并把选择**写回 .env**，成为之后新建任务的默认 —— 多数用户只用面板、不碰 .env，
     # 不写回就会出现"面板选了 A、面板下面跑的是 B"（`.env` 优先级高于 yaml）。
@@ -848,12 +736,10 @@ def create_run(req: RunCreate) -> dict:
         run_id=run_id,
         base_info=base,
         profile=cfg.profile,  # type: ignore[arg-type]
-        # 由口型模型解析而来（不是直接收前端的模式串）；resolve_talk_choice 只返回
-        # TALK_CHANNELS 里的键或空串，空串已在上面 400 掉，所以这里必是合法字面量
-        talk_mode=talk_mode_val,  # type: ignore[arg-type]
-        # 建任务那一刻定死（与 talk_mode 同理）：音轨来源决定 m7 换不换母带，
-        # 事后改配置不该让一条已开工的 run 的听感变掉
-        voice_source=req.voice_source,
+        # 口型恒为 wan3.0 场景生成自带（scripted_talk）；音轨恒为模型原声（嘴型与声音同轨）
+        talk_mode="scripted_talk",  # type: ignore[arg-type]
+        voice_source="model",
+        ignored_legacy_fields=ignored_legacy,
         # budget=0 表示"跟随 .env"：meta 落**实际生效**值。落 0 会让看板的熔断显示 ¥0、
         # 成本红幅永不触发（`exceeded()` 用 `>=`，0 预算还会让第一步就跳闸）
         budget_limit_cny=req.budget if req.budget > 0 else cfg.budget_limit_cny,
@@ -922,6 +808,19 @@ def reconcile_run_cost(run_id: str) -> dict:
     return data
 
 
+def _scene_prompt_preview(cfg: Any, group: Any, script: Any, ov: dict) -> str:
+    """参考形态下"将要发送"的提示词预览（编号与实发素材同序）。"""
+    from fastvideo3.core.scenegroup import plan_references
+    from fastvideo3.modules.m4_scene import scene_prompt
+
+    speakers = tuple(dict.fromkeys(
+        d.character_id for sh in script.all_shots()
+        if sh.shot_id in set(group.shot_ids) for d in sh.dialogues
+    ))
+    plan = plan_references(group, speakers=speakers, scene_ids=tuple(group.scene_ids))
+    return scene_prompt(cfg, group, script, script.character_map(), plan)
+
+
 def _scene_groups_payload(run_id: str, root: Path) -> dict:
     """分镜视频界面的数据源：每个场景组的模式、可选素材、首尾帧提示词与产物状态。
 
@@ -929,6 +828,7 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
     "选已有的图"，不允许在这里上传或改图：改图是角色页的职责，在这里开放编辑会出现
     "这条片段锁的脸和角色页显示的脸不是同一张"的分裂。
     """
+    from fastvideo3.core.assets import refs_on_disk
     from fastvideo3.core.scenegroup import choose_input_mode, group_scenes
     from fastvideo3.modules.m4_scene import _first_last_prompts
 
@@ -956,6 +856,9 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
     for p in sorted(assets_dir.glob("scene_*.png")) if assets_dir.is_dir() else []:
         scene_imgs[p.stem[len("scene_"):]] = _url(run_id, "assets", p.name)
     frames_dir = root / "storyboard"
+    scene_by_id = {s.scene_id: s for s in script.scenes}
+    shot_by_id = {sh.shot_id: sh for sh in script.all_shots()}
+    storage = RunStorage(run_id, root=root.parent)
     groups = []
     for g in group_scenes(script, max_clip_sec=30.0):
         ov = overrides.get(g.group_id) or {}
@@ -969,12 +872,29 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
         first_rel = f"storyboard/shot_{first_shot}.png"
         last_rel = f"storyboard/shot_{last_shot}_last.png"
         prompts = _first_last_prompts(cfg, g, script)
+        # 参考素材的物理前提：**盘上真有图**。只看 asset_registry.json 会把"用户直接上传
+        # 的角色图/场景图"看成不存在 —— 于是界面显示参考形态、生成时却发 0 张素材，
+        # 请求被本地规格守卫拦下，表现就是"点了生成毫无反应"（实测事故）。
+        has_refs = bool(
+            refs_on_disk(storage, characters=g.characters, scene_ids=g.scene_ids, overrides=ov)
+        )
         mode, why = choose_input_mode(
             g,
             has_dialogue=bool(speakers),
             has_first_frames=(frames_dir / f"shot_{first_shot}.png").is_file(),
+            has_references=has_refs,
             forced=str(ov.get("mode") or cfg.scene_clip_mode or "auto"),
         )
+        # 场景标题/地点/氛围挪进场景卡片：这一段戏"是谁在哪干什么"只该出现在它真正的
+        # 生成单元上，逐镜头卡片已经把这件事割裂成"每镜复述一遍场景名"。
+        labels = [
+            f"{scene_by_id[s].title} · {scene_by_id[s].location}"
+            for s in g.scene_ids if s in scene_by_id
+        ]
+        summaries = [
+            scene_by_id[s].summary for s in g.scene_ids
+            if s in scene_by_id and scene_by_id[s].summary
+        ]
         groups.append(
             {
                 "group_id": g.group_id,
@@ -984,9 +904,31 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
                 "duration": g.duration,
                 "characters": list(g.characters),
                 "has_dialogue": bool(speakers),
+                "has_references": has_refs,
+                "scene_label": " ／ ".join(labels),
+                "scene_summary": " ".join(summaries),
+                "location": g.location,
+                "time_of_day": g.time_of_day,
+                "shots": [
+                    {
+                        "shot_id": sid,
+                        "type": shot_by_id[sid].type.value if hasattr(shot_by_id[sid].type, "value") else str(shot_by_id[sid].type),
+                        "duration_sec": shot_by_id[sid].duration_sec,
+                        "characters": list(shot_by_id[sid].characters),
+                        "action": shot_by_id[sid].action,
+                        "camera": shot_by_id[sid].camera,
+                        "dialogues": [
+                            {"who": d.character_id, "text": d.text, "emotion": d.emotion}
+                            for d in shot_by_id[sid].dialogues
+                        ],
+                        "window": list(g.windows.get(sid) or ()),
+                    }
+                    for sid in g.shot_ids if sid in shot_by_id
+                ],
                 "auto_mode": mode if not ov.get("mode") else choose_input_mode(
                     g, has_dialogue=bool(speakers),
                     has_first_frames=(frames_dir / f"shot_{first_shot}.png").is_file(),
+                    has_references=has_refs,
                 )[0],
                 "mode": mode,
                 "mode_reason": why,
@@ -1000,6 +942,8 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
                 if (root / last_rel).is_file() else None,
                 "prompt_first": str(ov.get("prompt_first") or prompts[0]),
                 "prompt_last": str(ov.get("prompt_last") or prompts[1]),
+                # 参考形态的整段提示词也给人看、给人改：机器拼的模板是默认值不是上限
+                "prompt": str(ov.get("prompt") or _scene_prompt_preview(cfg, g, script, ov)),
                 "char_options": {
                     cid: {
                         "portrait": (char_imgs.get(cid) or [None])[0],
@@ -1052,6 +996,7 @@ class SceneGroupPatch(BaseModel):
     char_images: dict[str, str] = Field(default_factory=dict, max_length=10)
     prompt_first: str = ""
     prompt_last: str = ""
+    prompt: str = ""
 
 
 @app.patch("/api/runs/{run_id}/scene-groups/{group_id}")
@@ -1100,6 +1045,8 @@ def patch_scene_group(run_id: str, group_id: str, req: SceneGroupPatch) -> dict:
         ov["prompt_first"] = req.prompt_first.strip()
     if req.prompt_last.strip():
         ov["prompt_last"] = req.prompt_last.strip()
+    if req.prompt.strip():
+        ov["prompt"] = req.prompt.strip()
     n_imgs = len(ov.get("char_refs") or group.characters) + len(
         ov.get("scene_refs") or group.scene_ids
     )

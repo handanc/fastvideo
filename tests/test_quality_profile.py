@@ -24,7 +24,8 @@ def test_load_config_high_profile_overlay(tmp_path, monkeypatch):
     assert cfg.resolution == (1080, 1920)
     assert cfg.i2v_resolution == "1080P"
     assert cfg.models["dashscope_t2i"] == "wanx2.1-t2i-plus"
-    assert cfg.models["dashscope_i2v"] == "wan2.2-i2v-plus"
+    # 图生视频只剩 wan3.0：high 档与 economy 只差分辨率档（1080P vs 480P），不再是另一套模型
+    assert cfg.models["dashscope_i2v"] == "wan3.0-video"
     assert "动漫" in cfg.negative_prompt  # 防卡通化硬约束在档
     assert cfg.style_suffix  # 全局风格锚非空
     assert cfg.color_grade and cfg.loudnorm

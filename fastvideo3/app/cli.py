@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from fastvideo3.core.assets import load_assets
 from fastvideo3.core.config import OUTPUT_DIR, PROJECT_ROOT, AppConfig, load_config
 
 
@@ -38,29 +39,10 @@ def new(
     style: str = typer.Option("都市轻喜剧", help="风格"),
     duration: int = typer.Option(30, help="目标时长(秒)，1~3600"),
     fake: bool = typer.Option(False, "--fake", help="Fake 模式：零成本离线跑通全流程"),
-    talk_mode: str = typer.Option(
-        "s2v_direct",
-        help=(
-            "口型模式（模式即通道，映射表见 core/talkmode.py）："
-            "s2v_direct=wan2.2-s2v(图片+我们的语音→口型视频，单人、720P 上限) | "
-            "v2v_overlay=videoretalk(wan3.0 出动作片段→再重加口型，两段、1080P 保真) | "
-            "scripted_talk=wan3.0-video(图片+提示词，台词写在提示词里→口型+动作一体) | "
-            "audio_overlay=不做口型只叠音轨"
-        ),
-    ),
     talk_model: str = typer.Option(
         "",
-        help=(
-            "口型模型（给了它就由它决定模式，覆盖 --talk-mode）："
-            "wan2.2-s2v | videoretalk | wan3.0-video | wan3.0-video-prime；留空=用 --talk-mode"
-        ),
-    ),
-    voice_source: str = typer.Option(
-        "",
-        help=(
-            "仅 scripted_talk 有意义：master=成片音轨换回我们的配音(默认，保全片语音一致) | "
-            "model=保留模型自发声的音轨(嘴型同轨，跨镜头音色可能漂)；留空=跟随配置"
-        ),
+        help="wan3.0 口型/图生视频模型：wan3.0-video | wan3.0-video-prime；留空=跟随 .env/档位。"
+             "口型由 wan3.0 场景生成自带，不再是独立选项",
     ),
     text_model: str = typer.Option(
         "", help="手动指定编剧/评审文本模型(留空=跟随档位与 .env)；可选见 core/model_catalog.py"
@@ -69,7 +51,7 @@ def new(
         "", help="手动指定文生图模型(立绘/场景/首帧)，如 qwen-image-3.0、wan2.7-image；留空=跟随档位"
     ),
     i2v_model: str = typer.Option(
-        "", help="手动指定图生视频模型，如 wan3.0-video、wan3.0-video-prime、wan2.7-i2v；留空=跟随档位"
+        "", help="手动指定图生视频模型：wan3.0-video | wan3.0-video-prime；留空=跟随档位"
     ),
     budget: float = typer.Option(
         0.0, help="成本熔断阈值(元); 0=跟随 .env 的 FV3_BUDGET_LIMIT_CNY(默认120)"
@@ -118,30 +100,21 @@ def new(
     from fastvideo3.core.config import apply_resolution
 
     cfg.fake = fake or cfg.fake
-    cfg.talk_mode = talk_mode
-    # 模式即通道（映射表 core/talkmode.py）：建任务时就校验，别把非法值留给 pydantic 在
-    # ProjectConfig 里抛 ValidationError —— 那对命令行用户读起来像程序坏了而不是填错参数。
-    from fastvideo3.core.talkmode import TALK_CHANNELS, channel, resolve_talk_choice, tier_conflict
+    # 口型不再是选项：wan3.0 场景片段自带台词口型，音轨恒为模型原声。
+    # `--talk-model` 只负责在 wan3.0-video / -prime 之间选模型（与网页面板同一套校验）。
+    from fastvideo3.core.talkmode import channel
 
-    # `--talk-model` 给了就由它决定模式（与网页面板同一个解析口 `resolve_talk_choice`）：
-    # 同一条链可能有多个模型（wan3.0-video 与其优速版共用 scripted_talk），只传模式区分不出来。
     talk_model_val = ""
     if talk_model.strip():
-        talk_mode, talk_model_val = resolve_talk_choice(talk_model)
-    if talk_mode not in TALK_CHANNELS:
-        raise typer.BadParameter(
-            f"未知口型模式/模型 {talk_mode!r}；可选模式：{', '.join(TALK_CHANNELS)}"
-        )
-    cfg.talk_mode = talk_mode
-    if talk_model_val:
-        # 与网页面板一致：口型模型也进 model_overrides（→ 写回 .env 的 FV3_TALK_MODEL）
-        cfg.model_overrides = {**cfg.model_overrides, "talk": talk_model_val}
-    cfg.voice_source = (voice_source or cfg.voice_source or "master").strip()
-    if cfg.voice_source not in ("master", "model"):
-        raise typer.BadParameter(
-            f"voice_source 只能是 master（换回我们的配音）或 model（保留模型原声），"
-            f"收到 {cfg.voice_source!r}"
-        )
+        want = talk_model.strip()
+        if want not in ("wan3.0-video", "wan3.0-video-prime"):
+            raise typer.BadParameter(
+                f"图生视频/口型模型只保留 wan3.0-video 与 wan3.0-video-prime，收到 {want!r}"
+            )
+        talk_model_val = want
+        cfg.model_overrides = {**cfg.model_overrides, "talk": talk_model_val, "i2v": want}
+    cfg.talk_mode = "scripted_talk"
+    cfg.voice_source = "model"
     # run 级模型选择：与网页表单**同一份目录与同一套校验**（core/model_catalog.py）。
     # 当场拒绝而不是等提交 400：模型名与端点协议是绑定的，名字对但协议解析不出来就是
     # 打错端点（`.env` 换模型时踩过），那时钱已经在路上了。
@@ -173,8 +146,13 @@ def new(
             chosen[cap] = name
     if errs:
         raise typer.BadParameter("；".join(errs))
+    if "i2v" in chosen and not talk_model_val:
+        # `talk` 是 `i2v` 的**镜像**（命令行、网页、run_meta 三处同一套规则）：场景视频与
+        # 口型是同一次 wan3.0 调用，不同步落就会被 .env 里旧的 FV3_TALK_MODEL 压过 ——
+        # "选的 prime、跑的 video"这种分叉只能靠装配层不允许它发生。
+        chosen["talk"] = chosen["i2v"]
     if talk_model_val:
-        # 口型模型也要进 chosen：它同样落 run_meta.model_overrides 并写回 .env
+        # 显式 `--talk-model` 优先：它同样落 run_meta.model_overrides 并写回 .env
         # （漏掉的话命令行选的优速版只在这次生效，下次网页建任务又读回旧值）
         chosen["talk"] = talk_model_val
     env_written: list[str] = []
@@ -217,7 +195,9 @@ def new(
                 f"或降低时长/档位。[/]"
             )
         ch = channel(cfg.talk_mode)
-        console.print(f"  口型通道：[bold]{ch.label}[/] —— {ch.eats}")
+        console.print(
+            f"  口型：[bold]{ch.label}[/] 场景片段自带台词口型（音轨=模型原声）—— {ch.eats}"
+        )
         if chosen:
             # 只说**这次点名**的那些能力；其余跟随档位（完整"实际会打哪个模型"看 doctor --json）
             console.print(
@@ -225,11 +205,6 @@ def new(
                 + "、".join(f"{k}={v}" for k, v in sorted(chosen.items()))
                 + "（已落进 run_meta，续跑原样恢复）"
             )
-        # 模式与档位之间的**真实硬冲突**（供应商规格决定的，如 videoretalk 要片段边长 ≥640）
-        # 必须在这里说出来：让用户先看见代价，比让他花完钱再发现一条口型都没有好
-        warn = tier_conflict(cfg.talk_mode, cfg.quality, cfg.i2v_resolution, cfg.voice_source)
-        if warn:
-            console.print(f"[red]  ⚠ {warn}[/]")
 
     run_id = run_id or _new_run_id()
     from fastvideo3.core.schema import BaseInfo, ProjectConfig
@@ -240,8 +215,8 @@ def new(
         run_id=run_id,
         base_info=base,
         profile=cfg.profile,  # type: ignore[arg-type]
-        talk_mode=talk_mode,  # type: ignore[arg-type]
-        voice_source=cfg.voice_source,  # type: ignore[arg-type]
+        talk_mode="scripted_talk",  # 口型恒为 wan3.0 场景生成自带，不再是选项
+        voice_source="model",
         # 落**实际生效**的熔断值：落 0 会让 `exceeded()`（用 `>=`）一进来就跳闸
         budget_limit_cny=cfg.budget_limit_cny,
         fake=cfg.fake,
@@ -276,14 +251,57 @@ def _cfg_from_meta(meta: dict) -> AppConfig:
     # 后续首帧就不同源了（`apply_run_overrides` 是唯一恢复入口，API 那边也走它）
     apply_run_overrides(cfg, meta)
     cfg.fake = meta.get("fake", cfg.fake)
+    # 老 run 的 meta 里可能还写着 s2v_direct/v2v_overlay/master：原样恢复，续跑不炸；
+    # 新 run 由 load_config/create_run 钉成 scripted_talk + model，这里不会改它们。
     cfg.talk_mode = meta.get("talk_mode", cfg.talk_mode)
-    # 音轨来源与模式一样是**建任务那一刻定死**的：C 链换不换回 TTS 母带直接改变成片听感，
-    # 中途改配置会让一条已开工的 run 前后段音色不一致（比全程用模型原声更糟）
     cfg.voice_source = meta.get("voice_source", cfg.voice_source)
     meta_budget = float(meta.get("budget_limit_cny") or 0)
     if meta_budget > 0:
         cfg.budget_limit_cny = meta_budget
     return cfg
+
+
+async def reshoot_shots(
+    ctx, storage, cfg, script, *, assets, frames, lines, shot_ids: set[str], include_frames: bool
+) -> tuple[set[str], set[str]]:
+    """重拍这些镜头的画面，返回 `(重拍的镜头, 因此整组重出的场景组)`。
+
+    **重拍单位跟着生成形态走**：镜头若在新鲜场景片段里（正常路径），它没有自己的
+    `clips/shot_*.mp4` 可删 —— 一段戏就在一个 mp4 里，只能整组重出；只有逐镜头路径
+    （`scene_clip_mode="off"` 的历史 run）才按镜头删片段/口型重拍。判错过一次：
+    闸门只删不存在的逐镜头产物、删完不重出，事件台账里"已重拍 2 轮"其实什么都没发生。
+
+    `include_frames`：一致性闸门要连首帧一起删（脸漂多源自首帧，留着等于拿旧脸再拍一遍）；
+    终审重拍只关于节奏与表演，首帧留着。
+    """
+    from fastvideo3.core import progress as prog
+    from fastvideo3.core import stages, tasklock
+    from fastvideo3.core.storage import safe_unlink
+
+    covered = prog.scene_covered_shots(storage, script, cfg)
+    groups = {covered[s] for s in shot_ids if s in covered}
+    if groups:
+        own = {s for s, g in covered.items() if g in groups}
+        for gid in sorted(groups):
+            for suffix in (".mp4", ".json"):
+                safe_unlink(storage.root / "clips" / f"scene_{gid}{suffix}")
+            for s in sorted(own):  # 抽帧缓存必须作废，否则下一轮量的还是重拍前的旧脸
+                safe_unlink(storage.root / "qc" / "frames" / f"shot_{s}.jpg")
+        stages.clear_shot_products(storage, own, include_frames=include_frames)
+        if include_frames:
+            await stages.stage_storyboard(ctx, script, assets, only=own)
+        frames = stages.collect_shot_products(storage, "storyboard", ".png")
+        await stages.stage_scene_clips(ctx, script, frames, assets, lines, only=groups)
+        tasklock.heartbeat(storage.root.parent)
+        return own, groups
+    stages.clear_shot_products(storage, shot_ids, include_frames=include_frames)
+    if include_frames:
+        await stages.stage_storyboard(ctx, script, assets, only=shot_ids)
+    frames = stages.collect_shot_products(storage, "storyboard", ".png")
+    await stages.stage_shots(ctx, script, frames, assets, only=shot_ids)
+    await stages.stage_talk(ctx, script, frames, assets, lines, only=shot_ids)
+    tasklock.heartbeat(storage.root.parent)
+    return shot_ids, set()
 
 
 async def _run_step(ctx, storage, cfg, meta, st) -> list[str]:
@@ -331,64 +349,63 @@ async def _run_step(ctx, storage, cfg, meta, st) -> list[str]:
         tasklock.heartbeat(out_dir)
         return produced
 
-    if st.id == "frames":
-        # 分镜首帧独立成步：这是"付视频钱之前"最后的人工检查点，
-        # 用户可以在这里换掉坏帧，而不必连带烧掉片段与口型的钱
-        registry = storage.load_json("asset_registry.json") if storage.exists(
-            "asset_registry.json"
-        ) else {}
-        from fastvideo3.core.schema import Asset
+    if st.id == "scene_videos":
+        # 五步流水线的第 4 步，一次点完三件事（顺序敏感）：
+        #   首尾帧(仅首尾帧形态的组) → 配音(音色参考的原料) → 场景片段(wan3.0 一次一组)
+        # 合并成一步是因为它们天然同一次决策：拆成两步只会多一次点击、并制造
+        # "帧好了但视频没跑"的中间态。人工检查点移到场景片段出完之后（界面可删可重出）。
+        # 「逐镜头片段」不再是本步的正常产物：一段戏切成互不连贯的单镜头短片，正是
+        # "镜头之间像瞬移"的根源；只有 scene_clip_mode="off" 的历史 run 才回到那条路。
+        from fastvideo3.core import progress as prog
+        from fastvideo3.core.scenegroup import group_scenes, servable_groups
+        from fastvideo3.modules.m4_shots import shots_need_i2v
 
-        assets = {k: Asset(**v) for k, v in registry.items()}
-        only = set(st.missing) | set(st.stale)
-        if only:
-            await stages.stage_storyboard(ctx, script, assets, only=only)
-            # 这一步产的是**首帧 + 尾帧**两类产物，produced 要如实反映（首帧复用、
-            # 只补了尾帧的镜头，报"产出了首帧"是假账 —— 日志里对不上盘）
+        assets = load_assets(storage)
+        shot_ids = {sh.shot_id for sh in script.all_shots()}
+        line_only = {
+            m for m in st.missing if m not in shot_ids and m.rsplit("_", 1)[0] in shot_ids
+        }
+        talk_mode = meta.get("talk_mode", cfg.talk_mode)
+        _groups = group_scenes(script)
+        _servable = servable_groups(
+            script, _groups,
+            talk_mode=talk_mode,
+            i2v_model=cfg.model_for("i2v", "dashscope_i2v", ""),
+            scene_mode=str(cfg.scene_clip_mode or "auto"),
+        )
+        scene_only = bool(_groups) and len(_servable) == len(_groups)
+
+        # 1) 首尾帧：需求面与 progress 共用 frame_needs（同一份判据，防死锁）
+        from fastvideo3.core.progress import frame_needs
+
+        need_first, need_last = frame_needs(
+            script, cfg, talk_mode, storage=storage,
+            overrides=meta.get("scene_overrides") or {},
+        )
+        frame_only = set()
+        for sid in need_first:
+            if not (storage.root / "storyboard" / f"shot_{sid}.png").is_file():
+                frame_only.add(sid)
+        if cfg.use_last_frames:
+            for sid in need_last:
+                if not (storage.root / "storyboard" / f"shot_{sid}_last.png").is_file():
+                    frame_only.add(sid)
+        for rel in storage.stale_set():
+            if rel.startswith("storyboard/shot_"):
+                from fastvideo3.core.progress import _strip_last_suffix
+
+                frame_only.add(_strip_last_suffix(rel.split("shot_", 1)[1].rsplit(".", 1)[0]))
+        if frame_only:
+            await stages.stage_storyboard(ctx, script, assets, only=frame_only)
             produced += [
                 f"storyboard/shot_{s}{suf}.png"
-                for s in sorted(only)
+                for s in sorted(frame_only)
                 for suf in ("", "_last")
                 if (storage.root / "storyboard" / f"shot_{s}{suf}.png").exists()
             ]
             tasklock.heartbeat(out_dir)
-        return produced
 
-    if st.id == "videos":
-        registry = storage.load_json("asset_registry.json") if storage.exists(
-            "asset_registry.json"
-        ) else {}
-        from fastvideo3.core.schema import Asset
-        from fastvideo3.modules.m4_shots import shots_need_i2v
-
-        assets = {k: Asset(**v) for k, v in registry.items()}
-        shot_ids = {sh.shot_id for sh in script.all_shots()}
-        line_only: set[str] = set()
-        clip_only: set[str] = set()
-        talk_only: set[str] = set()
-        for m in st.missing:
-            if m in shot_ids:
-                continue  # shot 级缺口按类型重算，这里只收 line 级（{shot}_{i}）
-            if m.rsplit("_", 1)[0] in shot_ids:
-                line_only.add(m)
-        for sh in shots_need_i2v(script, meta.get("talk_mode", cfg.talk_mode)):
-            rel = f"clips/shot_{sh.shot_id}.mp4"
-            if not (storage.root / rel).is_file() or storage.is_stale(rel):
-                clip_only.add(sh.shot_id)
-        if cfg.talk_mode != "audio_overlay":
-            for sh in script.all_shots():
-                if not sh.dialogues:
-                    continue
-                rel = f"talk/shot_{sh.shot_id}.mp4"
-                # 口型缺口只看口型自己的状态。旧条件还要求片段也缺才重做，于是"删掉一条
-                # 口型片段想重出"这一步永远补不上（progress 判 gap、这里判无事可做），
-                # 按钮空转 —— m6 内部本就 skip_existing，多给几个 id 不花钱。
-                if not (storage.root / rel).is_file() or storage.is_stale(rel):
-                    talk_only.add(sh.shot_id)
-        frames = stages.collect_shot_products(storage, "storyboard", ".png")
-        # 顺序：配音(m5) → **场景片段(m4_scene)** → 逐镜头片段(m4) → 口型(m6)。
-        # 配音提到场景片段之前：音色参考样本就是从台词母带里切的，没有母带就没有锁声。
-        # 单句 TTS 失败（edge-tts 限流很常见）不连累别的镜头：m5 内部 skip_existing。
+        # 2) 配音：音色参考样本从台词母带里切，必须在场景片段之前
         await stages.stage_audio(ctx, script)
         produced += [f"audio/line_{m}.wav" for m in sorted(line_only)]
         tasklock.heartbeat(out_dir)
@@ -397,19 +414,46 @@ async def _run_step(ctx, storage, cfg, meta, st) -> list[str]:
             if storage.exists("audio_map.json")
             else []
         )
+        frames = stages.collect_shot_products(storage, "storyboard", ".png")
+
+        # 3) 场景片段：wan3.0 一次调用一组（组内多镜头连贯、自带台词口型）
         scene_clips = await stages.stage_scene_clips(ctx, script, frames, assets, lines)
         if scene_clips:
             produced += [f"clips/scene_{g}.mp4" for g in sorted(scene_clips)]
             tasklock.heartbeat(out_dir)
-        # 场景片段覆盖到的镜头不再逐镜头出片/出口型：同一段画面付两次钱是纯浪费。
-        # 覆盖在**场景片段落盘之后**才算（progress 算缺口时片段还不存在）。
-        from fastvideo3.core import progress as prog
 
-        covered = set(
-            prog.scene_covered_shots(storage, script, cfg)
-        )
-        clip_only -= covered
-        talk_only -= covered
+        if scene_only:
+            # 正常路径到此为止：缺哪一组就在看板上红哪一组，由人工点该组「生成」重出，
+            # 或换形态重出。**不**自动退回逐镜头片段补洞 —— 那等于把同一秒画面再付一次钱，
+            # 还把成片切回"互不连贯的短片串"，正是本次简化要消灭的东西。
+            missing_groups = [
+                g.group_id for g in _groups
+                if not (storage.root / "clips" / f"scene_{g.group_id}.mp4").is_file()
+            ]
+            if missing_groups:
+                storage.log_event(
+                    "step", "scene_groups_pending", groups=sorted(missing_groups)[:12],
+                    hint="场景片段没出来：看该组卡片的红字原因（多为缺角色图/场景图或额度），"
+                         "补好素材后点该组「生成」",
+                )
+            return produced
+
+        # 兜底路径（仅 scene_clip_mode="off" 的历史 run）：逐镜头首帧→片段→口型。
+        covered = set(prog.scene_covered_shots(storage, script, cfg))
+        clip_only: set[str] = set()
+        for sh in shots_need_i2v(script, cfg.talk_mode):
+            rel = f"clips/shot_{sh.shot_id}.mp4"
+            if sh.shot_id not in covered and (
+                not (storage.root / rel).is_file() or storage.is_stale(rel)
+            ):
+                clip_only.add(sh.shot_id)
+        talk_only: set[str] = set()
+        for sh in script.all_shots():
+            if not sh.dialogues or sh.shot_id in covered:
+                continue
+            rel = f"talk/shot_{sh.shot_id}.mp4"
+            if not (storage.root / rel).is_file() or storage.is_stale(rel):
+                talk_only.add(sh.shot_id)
         if clip_only:
             await stages.stage_shots(ctx, script, frames, assets, only=clip_only)
             produced += [f"clips/shot_{s}.mp4" for s in sorted(clip_only)]
@@ -421,12 +465,10 @@ async def _run_step(ctx, storage, cfg, meta, st) -> list[str]:
         return produced
 
     if st.id == "compose":
-        from fastvideo3.core.schema import Asset
+        from fastvideo3.core import progress as prog
+        from fastvideo3.core.storage import safe_unlink
 
-        registry = storage.load_json("asset_registry.json") if storage.exists(
-            "asset_registry.json"
-        ) else {}
-        assets = {k: Asset(**v) for k, v in registry.items()}
+        assets = load_assets(storage)
         lines = [AudioLine(**ln) for ln in storage.load_json("audio_map.json")]
         clips = stages.collect_shot_products(storage, "clips", ".mp4")
         talks = stages.collect_shot_products(storage, "talk", ".mp4")
@@ -450,12 +492,12 @@ async def _run_step(ctx, storage, cfg, meta, st) -> list[str]:
             storage.log_event(
                 "step", "consistency_reshoot", shots=sorted(bad_ids), round=rounds + 1
             )
-            # 连首帧一起删：脸漂/服装变色多源自首帧，只重出片段等于拿旧脸再拍一遍
-            stages.clear_shot_products(storage, bad_ids, include_frames=True)
-            await stages.stage_storyboard(ctx, script, assets, only=bad_ids)
+            # 场景片段里的镜头 → 整组重出；逐镜头路径的才按镜头重拍（同一份实现，见 helper）
+            await reshoot_shots(
+                ctx, storage, cfg, script,
+                assets=assets, frames=frames, lines=lines, shot_ids=bad_ids, include_frames=True,
+            )
             frames = stages.collect_shot_products(storage, "storyboard", ".png")
-            await stages.stage_shots(ctx, script, frames, assets, only=bad_ids)
-            await stages.stage_talk(ctx, script, frames, assets, lines, only=bad_ids)
             clips = stages.collect_shot_products(storage, "clips", ".mp4")
             talks = stages.collect_shot_products(storage, "talk", ".mp4")
             await stages.stage_edit(ctx, script, clips, talks, lines)
@@ -476,18 +518,18 @@ async def _run_step(ctx, storage, cfg, meta, st) -> list[str]:
 
         # 终审不合格 → 可选的自动重拍（auto_reshoot，默认关）。一致性闸门刚重拍过时不叠加：
         # 那轮失败的原因是脸/服装，与终审意见不同源，再拍一轮只是多花钱。
-        reshoot_shots: list[str] = []
+        reshot: list[str] = []
         if not bad_left:
-            reshoot_shots, report2, review2 = await _reshoot_for_final_review(
+            reshot, report2, review2 = await _reshoot_for_final_review(
                 ctx, storage, cfg, script,
                 assets=assets, frames=frames, lines=lines, review=review,
             )
-            if reshoot_shots:
+            if reshot:
                 report = report2 or report
                 review = review2
                 bad_left = gate_failures(report, cfg)
                 verdict = _quality_verdict(report, rounds, bad_left)
-                produced += [f"{d}/shot_{s}.mp4" for s in reshoot_shots for d in ("clips", "talk")]
+                produced += [f"{d}/shot_{s}.mp4" for s in reshot for d in ("clips", "talk")]
 
         from fastvideo3.core.progress import apply_lipsync_verdict, lipsync_coverage
 
@@ -505,7 +547,7 @@ async def _run_step(ctx, storage, cfg, meta, st) -> list[str]:
                 "lipsync_coverage": cov,
                 "final_review": review,
                 "final_feedback": str(review.get("feedback") or ""),
-                "reshoot_shots": reshoot_shots,
+                "reshoot_shots": reshot,
                 # 终审是否**真实执行过**：0.6/0.7 兜底分曾长期被当成评审结论
                 "review_unavailable": bool(review.get("review_error"))
                 or review.get("verified") is False,
@@ -565,11 +607,11 @@ async def _reshoot_for_final_review(
     storage.log_event("step", "auto_reshoot", shots=picks, feedback=feedback[:200])
     if not picks:
         return [], {}, review
-    only = set(picks)
     # 首帧留着：终审意见关于节奏与表演，重画首帧只会让一致性从头再赌一次
-    stages.clear_shot_products(storage, only, include_frames=False)
-    await stages.stage_shots(ctx, script, frames, assets, only=only)
-    await stages.stage_talk(ctx, script, frames, assets, lines, only=only)
+    await reshoot_shots(
+        ctx, storage, cfg, script,
+        assets=assets, frames=frames, lines=lines, shot_ids=set(picks), include_frames=False,
+    )
     clips = stages.collect_shot_products(storage, "clips", ".mp4")
     talks = stages.collect_shot_products(storage, "talk", ".mp4")
     await stages.stage_edit(ctx, script, clips, talks, lines)
@@ -819,15 +861,13 @@ async def _run_stage(cfg: AppConfig, name: str, run_id: str, topic: str) -> None
 
         await build_assets(cfg, ctx.provider(Capability.T2I), _load_script(), storage, ctx.ledger)  # type: ignore[arg-type]
     elif name == "storyboard":
-        from fastvideo3.core.schema import Asset
         from fastvideo3.modules.m3_storyboard import build_storyboard
 
-        registry = storage.load_json("asset_registry.json")
         await build_storyboard(
             cfg,
             ctx.provider(Capability.T2I),
             _load_script(),  # type: ignore[arg-type]
-            {k: Asset(**v) for k, v in registry.items()},
+            load_assets(storage),
             storage,
             ctx.ledger,
         )
@@ -858,10 +898,9 @@ async def _run_stage(cfg: AppConfig, name: str, run_id: str, topic: str) -> None
             ctx.ledger,  # type: ignore[arg-type]
         )
     elif name == "talk":
-        from fastvideo3.core.schema import Asset, AudioLine
+        from fastvideo3.core.schema import AudioLine
         from fastvideo3.modules.m6_talk import make_talk_clips
 
-        registry = storage.load_json("asset_registry.json")
         lines = [AudioLine(**ln) for ln in storage.load_json("audio_map.json")]
         frames = {
             p.stem.replace("shot_", ""): str(p)
@@ -874,7 +913,7 @@ async def _run_stage(cfg: AppConfig, name: str, run_id: str, topic: str) -> None
             ctx.provider(Capability.I2V),
             _load_script(),  # type: ignore[arg-type]
             frames,
-            {k: Asset(**v) for k, v in registry.items()},
+            load_assets(storage),
             lines,
             storage,
             ctx.ledger,
@@ -894,10 +933,8 @@ async def _run_stage(cfg: AppConfig, name: str, run_id: str, topic: str) -> None
         }
         await compose_final(cfg, _load_script(), clips, talks, lines, storage)
     elif name == "metrics":
-        from fastvideo3.core.schema import Asset
         from fastvideo3.modules.m9_metrics import measure_consistency
 
-        registry = storage.load_json("asset_registry.json")
         frames = {
             p.stem.replace("shot_", ""): str(p)
             for p in storage.dir("storyboard").glob("shot_*.png")
@@ -906,7 +943,7 @@ async def _run_stage(cfg: AppConfig, name: str, run_id: str, topic: str) -> None
         report = await measure_consistency(
             cfg,
             _load_script(),  # type: ignore[arg-type]
-            {k: Asset(**v) for k, v in registry.items()},
+            load_assets(storage),
             frames,
             storage,
             ctx.ledger,
@@ -1095,8 +1132,8 @@ def scene_gen(
     """
     import asyncio
 
-    from fastvideo3.core import tasklock
-    from fastvideo3.core.schema import Asset, AudioLine, Script
+    from fastvideo3.core import stages, tasklock
+    from fastvideo3.core.schema import AudioLine, Script
     from fastvideo3.core.stages import build_context, stage_scene_clips
     from fastvideo3.core.storage import RunStorage
 
@@ -1116,21 +1153,22 @@ def scene_gen(
             console.print("[red]✘ 还没有剧本（script.json 不存在），先跑「生成剧本」步[/]")
             raise typer.Exit(code=1)
         script = Script.model_validate(data)
-        registry = (
-            storage.load_json("asset_registry.json")
-            if storage.exists("asset_registry.json") else {}
-        )
-        assets = {k: Asset(**v) for k, v in registry.items()}
+        assets = load_assets(storage)
         frames = {
             p.stem.replace("shot_", ""): str(p)
             for p in storage.dir("storyboard").glob("shot_*.png")
             if "_last" not in p.name
         }
+        ctx = build_context(cfg, storage)
+        # 配音是音色参考的原料：单组「生成」也必须先有母带，否则参考形态发不出 音频N，
+        # 锁声这条承诺就落空了（「开始生成」的整步路径里同一件事由 stage_audio 负责）。
+        if not storage.exists("audio_map.json"):
+            asyncio.run(stages.stage_audio(ctx, script))
+            tasklock.heartbeat(OUTPUT_DIR)
         lines = (
             [AudioLine(**ln) for ln in storage.load_json("audio_map.json")]
             if storage.exists("audio_map.json") else []
         )
-        ctx = build_context(cfg, storage)
         got = asyncio.run(
             stage_scene_clips(ctx, script, frames, assets, lines, only={group} if group else None)
         )

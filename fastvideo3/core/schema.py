@@ -185,13 +185,13 @@ class ProjectConfig(BaseModel):
     run_id: str
     base_info: BaseInfo
     profile: Literal["edu-sqlite", "prod-postgres"] = "edu-sqlite"
-    # 取值语义与"该模式调用哪个通道"**同出一表**（`core/talkmode.py`），这里只声明类型与默认值。
-    # 曾经这里和 configs 的 providers.talk 各写一份，两边不同步就会静默降级成"成片没有对口型"
-    # （run_20261002_235904 / run_20261011_164152 两次实测）—— 现在模式自己决定通道，无从错配。
-    talk_mode: Literal["s2v_direct", "v2v_overlay", "scripted_talk", "audio_overlay"] = "s2v_direct"
-    # C 链（wan3.0-video 自发声）的音轨来源：master=换回我们的 TTS 母带（默认，保语音一致）
-    # | model=保留模型音轨（嘴型与声音同轨，跨镜头音色可能漂）
-    voice_source: Literal["master", "model"] = "model"
+    # 口型**不再是可选项**：wan3.0 生成场景片段时原生带台词口型。字段保留两个用途：
+    # ① 读旧 run 的 run_meta（历史值原样反序列化，续跑不炸）；② 新 run 恒写 scripted_talk。
+    talk_mode: str = "scripted_talk"
+    # 音轨同理恒为 model（嘴型与声音同轨；换 TTS 母带实测领先嘴型 0～2.2s 且偏移不固定）
+    voice_source: str = "model"
+    # 老请求体提交过 talk_mode/talk_model/voice_source 时留痕（接受但忽略，不能静默丢）
+    ignored_legacy_fields: list[str] = []
     budget_limit_cny: float = 150.0
     max_parallel_jobs: int = 4
     fake: bool = False

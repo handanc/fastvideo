@@ -46,12 +46,15 @@ def _script(scenes: list[Scene]) -> Script:
     )
 
 
-# ─────────────────────── 同一时空必须合成一组 ───────────────────────
-def test_same_location_scenes_merge_into_one_group():
-    """用户那条 run 的形状：三个场景 location 全是"女儿国街道" → 必须是**一次**生成。
+# ─────────────────── 一个场景 = 一组 = 一段场景视频 ───────────────────
+def test_one_scene_is_one_group_never_merged():
+    """**一个 scene 只出一段场景视频，绝不把多个 scene 合成一段**（用户明确要求）。
 
-    拆成三次独立调用，镜头之间就没有共享的运动状态，硬切看着像瞬移；转场遮不住
-    空间不连续（转场只能遮切点）。
+    曾经的做法是把同 location 同 time_of_day 的相邻 scene 并进一组，一次调用生成 23 秒。
+    删掉它有两个原因：① 剧本里的 scene 才是"一段戏"的天然单位，合并后前端要显示
+    "scene_1+scene_2+scene_3"这种组名，用户对着成片根本对不上号；② 合并会把转场点
+    吞进同一次调用，模型内部怎么切镜头不可控，反而更难修。连贯性靠 m1 的写法规约
+    （同一时空必须写在同一个 scene 里）保证，不靠下游合并。
     """
     script = _script([
         _scene("scene_1", "女儿国街道", "日", [_shot("shot_1_1", 4.0), _shot("shot_1_2", 5.0, dialogue="你听我说")]),
@@ -59,20 +62,18 @@ def test_same_location_scenes_merge_into_one_group():
         _scene("scene_3", "女儿国街道", "日", [_shot("shot_3_1", 5.0, dialogue="菩萨看着呢")]),
     ])
     groups = group_scenes(script)
-    # 9+9+5 = 23s ≤ 30s → 一组
-    assert len(groups) == 1, describe(groups)
-    g = groups[0]
-    assert g.scene_ids == ("scene_1", "scene_2", "scene_3")
-    assert g.shot_ids == ("shot_1_1", "shot_1_2", "shot_2_1", "shot_2_2", "shot_3_1")
-    assert g.duration == 23.0
-    # 时间窗首尾相接、不跳段不重叠（提示词里的时间戳就靠它）
-    prev_end = 0.0
-    for sid in g.shot_ids:
-        s, e = g.windows[sid]
-        assert s == prev_end, f"{sid} 起点 {s} 应接上一镜终点 {prev_end}"
-        assert e > s
-        prev_end = e
-    assert prev_end == g.duration
+    assert [g.group_id for g in groups] == ["scene_1", "scene_2", "scene_3"], describe(groups)
+    assert [g.scene_ids for g in groups] == [("scene_1",), ("scene_2",), ("scene_3",)]
+    assert [g.duration for g in groups] == [9.0, 9.0, 5.0]
+    # 每组自己的时间窗从 0 起算、首尾相接（提示词里的 第N个镜头[起-止秒] 靠它）
+    for g in groups:
+        prev_end = 0.0
+        for sid in g.shot_ids:
+            s, e = g.windows[sid]
+            assert s == prev_end, f"{g.group_id}/{sid} 起点 {s} 应接上一镜终点 {prev_end}"
+            assert e > s
+            prev_end = e
+        assert prev_end == g.duration
 
 
 def test_different_location_or_time_stays_separate():
@@ -143,10 +144,11 @@ def test_group_cast_is_ordered_dedup_of_speakers_and_present_chars():
             _shot("shot_1_1", 4.0, dialogue="甲说话", chars=["c1", "c2"]),
             _shot("shot_1_2", 4.0, dialogue="乙说话", chars=["c2"]),
         ]),
-        _scene("scene_2", "街道", "日", [_shot("shot_2_1", 4.0, dialogue="丙说话", chars=["c3"])]),
+        _scene("scene_2", "河岸边", "黄昏", [_shot("shot_2_1", 4.0, dialogue="丙说话", chars=["c3"])]),
     ])
     g = group_scenes(script)[0]
-    assert g.characters == ("c1", "c2", "c3"), g.characters
+    assert g.characters == ("c1", "c2"), g.characters   # 换时空的 c3 归下一组，不混进来
+    assert group_scenes(script)[1].characters == ("c3",)
     # reference_image 上限 10 张：超了要在生成前就说清楚，不能静默丢参考图（丢=脸漂）
     assert len(g.characters) <= 10
 

@@ -3,7 +3,6 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import { statusOf } from '../status'
 import ProductionBoard from './ProductionBoard.vue'
-import SceneClips from './SceneClips.vue'
 import StepBar from './StepBar.vue'
 
 const props = defineProps({ runId: { type: String, required: true } })
@@ -24,21 +23,12 @@ let timer = null
 // 两个镜头用不同模型、产物不同源），改完只对之后的步骤生效，已落盘的产物不动。
 const modelCaps = ref([])
 const modelPick = ref({ text: '', t2i: '', i2v: '' })
-// 口型模型也在这一栏里换。它落盘的字段是 talk_mode（不是 model_overrides.talk）：
-// 通道与输入形态绑死，模式还决定"要不要为对白镜头出运动片段/成片音轨用谁的/字幕按谁排"，
-// 展示模型名、提交模式名，映射只在后端一份（core/talkmode.py）。
-const talkChoices = ref([])
-const talkPick = ref('')
-const voicePick = ref('model')
-const talkInfo = ref(null)
+// 口型不再是可选项：wan3.0 场景片段自带台词口型，音轨恒为模型原声。
+// 这一栏只剩 文本/文生图/图生视频（wan3.0 两档）三个选择。
 const modelMsg = ref('')
 const modelBusy = ref(false)
 const CAP_TITLE = { text: '文本', t2i: '文生图', i2v: '图生视频' }
 const capTitle = (c) => CAP_TITLE[c] || c
-const isScriptedPick = computed(() => {
-  const row = talkChoices.value.find((t) => t.value === talkPick.value)
-  return (row?.mode || talkPick.value) === 'scripted_talk'
-})
 // 档位 → 分辨率标签（与后端 config.QUALITY_TO_RESOLUTION 同一份映射，仅为老 run 显示用）
 const RES_OF_QUALITY = { economy: '480P', high: '720P', cinema: '1080P' }
 const resOfQuality = computed(
@@ -61,11 +51,6 @@ async function loadModels() {
           opts.includes(cap.effective_model) ? cap.effective_model : (opts[0] || '')
       }
     }
-    talkInfo.value = data?.talk || null
-    talkChoices.value = data?.talk?.choices || []
-    // 下拉值是**模型名**（"不做口型"为空串）；模式由后端从模型名解析
-    talkPick.value = data?.talk?.current_value ?? detail.value?.meta?.talk_model ?? ''
-    voicePick.value = data?.talk?.voice_source || detail.value?.meta?.voice_source || 'model'
   } catch {
     modelCaps.value = []
   }
@@ -78,12 +63,9 @@ async function saveModels() {
   try {
     const r = await api.patchRunModels(props.runId, {
       model_overrides: modelPick.value,
-      talk_model: talkPick.value,
-      voice_source: voicePick.value,
     })
     const written = (r.env_written || []).join('、')
     const parts = [`✔ 已保存${written ? `（并写回 .env：${written}）` : ''}`]
-    if (r.talk_channel) parts.push(`口型通道 → ${r.talk_channel}`)
     parts.push('只对之后的步骤生效；已生成的产物要重出，请在看板里删掉它再点「开始生成」。')
     if (r.talk_warning) parts.push(`⚠ ${r.talk_warning}`)
     modelMsg.value = r.env_error ? `已保存；但 .env 写回失败：${r.env_error}` : parts.join('。')
@@ -262,28 +244,11 @@ onUnmounted(() => clearInterval(timer))
               </option>
             </select>
           </label>
-          <!-- 口型模型：显示模型名，提交 talk_mode（映射只在后端一份） -->
-          <label v-if="talkChoices.length" class="field">
-            <span>口型 <em class="muted">默认 {{ talkInfo?.current_label || talkPick || '—' }}</em></span>
-            <select v-model="talkPick">
-              <option v-for="t in talkChoices" :key="t.value || t.mode" :value="t.value">
-                {{ t.label }}
-              </option>
-            </select>
-          </label>
-          <label v-if="isScriptedPick" class="field">
-            <span>成片音轨（仅 wan3.0-video）</span>
-            <select v-model="voicePick">
-              <option value="model">模型原声（嘴型与声音同轨）</option>
-              <option value="master">我们的配音（音色统一，但嘴不上）</option>
-            </select>
-          </label>
         </div>
         <p v-if="modelMsg" class="muted small">{{ modelMsg }}</p>
         <p class="muted small">
           留空＝跟随分辨率档位。保存后<b>只影响之后的步骤</b>；持锁（正在生成）时后端会拒绝修改。
         </p>
-        <p v-if="talkInfo?.switch_note" class="muted small">{{ talkInfo.switch_note }}</p>
       </div>
 
       <!-- 上一步为什么没出东西：失败原因顶格显示，别让用户猜 -->
@@ -308,11 +273,11 @@ onUnmounted(() => clearInterval(timer))
       <div v-if="lipsyncGap && lipsyncGap.missing.length" class="alert err">
         <b>{{ lipsyncGap.missing.length }} 个对白镜头没有口型</b>
         （{{ lipsyncGap.missing.slice(0, 6).join('、') }}{{ lipsyncGap.missing.length > 6 ? '…' : '' }}）
-        —— 点「开始生成」会补；确实不要口型请改 talk_mode=audio_overlay。
+        —— 点「开始生成」会补（场景片段自带台词口型）。
       </div>
       <div v-if="costRisk" class="alert err">
         ⚠ 成本上限 <b>¥{{ Math.round(board.meta?.budget_limit_cny || 0) }}</b>
-        低于预估 <b>¥{{ Math.round(costRisk.lo) }}</b>：钱用完时对白镜头会<b>没有口型</b>。
+        低于预估 <b>¥{{ Math.round(costRisk.lo) }}</b>：钱用完时场景片段会停出。
         请提高上限，或缩短时长/降低分辨率。
       </div>
       <!-- 单价不确定的金额：成本上限按总额判，所以这部分必须说出来，不能假装精确 -->
@@ -327,7 +292,7 @@ onUnmounted(() => clearInterval(timer))
         }}{{ lastFrameGap.missing.length > 6 ? '…' : '' }}）
         —— 这些镜头会退回<b>单首帧</b>生视频，末尾姿态/构图容易漂、切下一镜接不上。<br />
         <span class="muted">
-          补法：点「开始生成」重跑<b>分镜首帧</b>这一步 —— 尾帧按自己的缺口补，
+          补法：点「开始生成」重跑<b>场景视频</b>这一步 —— 首尾帧按自己的缺口补，
           已有的首帧不会重出（不重复花钱）。
         </span>
       </div>
@@ -355,7 +320,6 @@ onUnmounted(() => clearInterval(timer))
 
       <!-- v-show 而非 v-if：切页签不销毁看板，编辑/上传/重生成的本地状态不丢 -->
       <div v-show="pane === 'board'">
-        <SceneClips :run-id="props.runId" />
         <ProductionBoard :run-id="props.runId" :board="board" @changed="load" />
       </div>
 

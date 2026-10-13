@@ -130,6 +130,7 @@ async def test_last_frames_disabled_produces_nothing(cfg, storage, ledger):
 
 
 async def test_last_frame_reuses_existing_and_records_lineage(cfg, storage, ledger):
+    cfg.scene_clip_mode = "off"  # 逐镜头路径的尾帧复用/血缘语义
     """续跑不重画；血缘登记上游 → 换定妆照会连带作废尾帧（否则首尾帧不同人）。"""
     cfg.use_last_frames = True
     script = _script_with_dialogue()

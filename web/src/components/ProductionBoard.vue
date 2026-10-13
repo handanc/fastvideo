@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { api } from '../api'
+import SceneClips from './SceneClips.vue'
 
 const props = defineProps({
   runId: { type: String, required: true },
@@ -50,7 +51,7 @@ const tabs = computed(() => [
   { id: 'script', label: '剧本', n: counts.value.script },
   { id: 'cast', label: '角色图', n: counts.value.cast },
   { id: 'scenes', label: '场景图', n: counts.value.scenes },
-  { id: 'shots', label: '分镜与镜头视频', n: counts.value.shots },
+  { id: 'shots', label: '场景视频', n: counts.value.shots },
   { id: 'final', label: '成片', n: counts.value.final },
 ])
 
@@ -634,77 +635,12 @@ watch(() => props.board?.script_version, (v, old) => {
         </div>
       </div>
 
-      <!-- ── 分镜与镜头视频 ──────────────────────────────────── -->
+      <!-- ── 场景视频：一个场景 = 一段 wan3.0 视频 ───────────────────
+           逐镜头片段面板已删除：它展示的是"首帧图 → 单镜头短片"那条老路，
+           本项目只保留场景级生成（组内多镜头由模型自己切，口型也是 wan3.0 自带）。
+           镜头的画面描述/镜头语言改在场景卡片里点改（同一套 PUT /script 语义）。 -->
       <div v-if="tab === 'shots'">
-        <div v-for="s in scenes" :key="s.id" class="card">
-          <h2><span class="tag">{{ s.id }}</span> {{ s.title }}
-            <span class="muted">· {{ s.location }} · {{ s.shots.length }} 镜</span></h2>
-          <div class="shot-grid">
-            <article v-for="sh in s.shots" :key="sh.shot_id" class="shot-card">
-              <div class="shot-media">
-                <img v-if="sh.frame" :src="sh.frame" :alt="sh.shot_id" loading="lazy" />
-                <div v-else class="missing">无首帧</div>
-                <label class="upl tiny">
-                  <input type="file" accept="image/png,image/jpeg,image/webp" hidden
-                         @change="onUpload('storyboard', `shot_${sh.shot_id}.png`, $event)" />
-                  {{ uploading === `shot_${sh.shot_id}.png` ? '上传中…'
-                     : (sh.frame_uploaded ? '✔ 已上传 · 再换一张' : '⬆ 替换首帧') }}
-                </label>
-                <button v-if="sh.frame" class="upl tiny del"
-                        @click="delArtifact('storyboard', `shot_${sh.shot_id}.png`, '首帧')">
-                  🗑 删除首帧
-                </button>
-                <video v-if="sh.talk || sh.clip" :src="(sh.talk || sh.clip)" controls muted preload="none"></video>
-                <div v-else class="no-video muted">无片段视频</div>
-                <button v-if="sh.talk || sh.clip" class="upl tiny del"
-                        @click="delArtifact(sh.talk ? 'talk' : 'clips',
-                                  (sh.talk || sh.clip).split('/').pop().split('?')[0],
-                                  sh.talk ? '口型片段' : '镜头片段')">
-                  🗑 删除{{ sh.talk ? '口型片段' : '片段' }}
-                </button>
-              </div>
-              <div class="shot-info">
-                <p class="head">
-                  <span class="mono">{{ sh.shot_id }}</span>
-                  <span class="tag">{{ typeLabel[sh.type] || sh.type }}</span>
-                  <span class="muted">{{ sh.duration_sec }}s · {{ sh.characters.join('、') || '空镜' }}</span>
-                </p>
-                <p
-                  v-if="!editKey('shot', sh.shot_id, 'action')"
-                  class="action editable" title="点击修改画面描述（首帧提示词的原料）"
-                  @click="startInline('shot', sh.shot_id, 'action', sh.action)"
-                >{{ sh.action || '（点击写画面描述）' }}</p>
-                <textarea
-                  v-else class="inline-edit" rows="2" autofocus spellcheck="false"
-                  v-model="inline.text"
-                  @blur="commitInline"
-                  @keydown.esc.prevent="cancelInline"
-                  @keydown.ctrl.enter="commitInline"
-                ></textarea>
-                <p class="muted small">镜头语言：
-                  <span
-                    v-if="!editKey('shot', sh.shot_id, 'camera')"
-                    class="editable" title="点击修改镜头语言"
-                    @click="startInline('shot', sh.shot_id, 'camera', sh.camera)"
-                  >{{ sh.camera || '（点击写）' }}</span>
-                  <input
-                    v-else class="inline-edit one" autofocus
-                    v-model="inline.text"
-                    @blur="commitInline"
-                    @keydown.esc.prevent="cancelInline"
-                    @keydown.enter="commitInline"
-                  />
-                </p>
-                <p v-for="(d, i) in sh.dialogues" :key="i" class="line"><b>{{ d.who }}</b>：{{ d.text }}</p>
-                <p v-if="metricBadges(sh.metric).length" class="metrics">
-                  <span v-for="m in metricBadges(sh.metric)" :key="m.k" class="badge"
-                        :class="m.bad ? 'err' : (m.warn ? 'warn' : (m.ok ? 'ok' : 'idle'))">{{ m.k }}={{ m.v }}</span>
-                </p>
-                <p v-if="sh.metric?.reason" class="muted small">{{ sh.metric.reason }}</p>
-              </div>
-            </article>
-          </div>
-        </div>
+        <SceneClips :run-id="props.runId" @changed="$emit('changed')" />
       </div>
 
       <!-- ── 成片 ────────────────────────────────────────────── -->

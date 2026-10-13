@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from typing import Any
 
 from fastvideo3.core.config import AppConfig
 from fastvideo3.core.cost import CostLedger, llm_meta
@@ -35,6 +37,51 @@ _MAX_RETRY = 2
 # hi_res 供 high/cinema 的 1080P 时间线取最大档，减少上采样细节损失。
 ASPECT_SIZES = {"9:16": "720*1280", "16:9": "1280*720", "1:1": "1024*1024"}
 ASPECT_SIZES_HI = {"9:16": "810*1440", "16:9": "1440*810", "1:1": "1440*1440"}
+
+
+#: 场景概念图的负向清单：人物相关的词一个不留。全局 negative_prompt 管画风劣化，
+#: 这一份管"画面里不该有谁"——两者职责不同，不能合并（合并后改画风会误删禁人词）。
+_SCENE_NEGATIVE = (
+    "人物，人像，人影，人群，群像，角色，行人，路人，脸，面孔，手，手臂，肢体，剪影人形，"
+    "person, people, crowd, face, hands, human figure, silhouette of person"
+)
+
+#: summary 里出现这些字就整句丢掉：场景描述是 LLM 写的，十有八九带着角色名与动作，
+#: 直接拼进提示词等于请模型画人。按子句过滤比整段丢弃保留更多可用的氛围信息。
+_PERSON_HINTS = (
+    "人", "僧", "侠", "王", "后", "娘", "娃", "孩", "众", "群", "他", "她",
+    "角色", "身影", "面孔", "手", "脸", "走", "说", "喊", "笑", "看",
+)
+
+
+def scene_background_prompt(cfg: Any, script: Any, scene: Any) -> str:
+    """纯背景的场景概念图提示词：**空景在前、禁人在后**，summary 先过人物过滤。
+
+    为什么过滤是必须的而不是"加一句无人物"就够：t2i 模型对"画面里有什么"的服从度
+    远高于对"没有什么"的服从度 —— 提示词正文里写着"猪八戒拉着唐僧"，尾缀一句
+    "无人物"压不住它。把带人物的子句从正文里删掉，才是把人物从**正向描述**里移除。
+    """
+    names = [str(c.name or "") for c in script.characters] + [
+        str(c.character_id) for c in script.characters
+    ]
+    clauses = re.split(r"[，。；,;]", str(scene.summary or ""))
+    bg = [
+        c.strip()
+        for c in clauses
+        if c.strip()
+        and not any(n and n in c for n in names)
+        and not any(w in c for w in _PERSON_HINTS)
+    ]
+    mood = "，".join(bg[:3])
+    parts = [
+        "空景场景概念图，画面中没有任何人物、人影或肢体，只画空间本身。",
+        f"地点：{scene.location}。时间：{scene.time_of_day}。",
+    ]
+    if mood:
+        parts.append(f"氛围与陈设：{mood}。")
+    parts.append(f"风格：{script.base_info.style}。{cfg.style_suffix}".strip())
+    parts.append("构图留给演员站位：中景到远景之间的机位，留出人物将要站立的区域。")
+    return " ".join(p for p in parts if p).strip()
 
 
 def size_for_aspect(aspect_ratio: str, hi_res: bool = False) -> str:
@@ -177,7 +224,9 @@ async def build_assets(
             f"assets/char_{ch.character_id}.png", [fp], reason="定妆照重生成"
         )
 
-    # 场景概念图
+    # 场景概念图必须是**纯背景**：它现在是场景级生成的 `reference_image` 之一，
+    # 提示词里写明"空景背景（图中无人）"。若图里带了人，模型会把参考图里的人
+    # 当成场景的一部分画进每个镜头 —— 多出来的路人比缺参考更难查。
     for scene in script.scenes:
         if "scene" not in kinds:
             continue
@@ -185,11 +234,7 @@ async def build_assets(
         if reused is not None:
             registry[f"scene_{scene.scene_id}"] = reused
             continue
-        prompt = (
-            f"短剧场景概念图，竖屏，电影感。地点：{scene.location}，"
-            f"时间：{scene.time_of_day}。氛围：{scene.summary or scene.title}。"
-            f"风格：{script.base_info.style}。{cfg.style_suffix}无人物。"
-        )
+        prompt = scene_background_prompt(cfg, script, scene)
         dest = storage.path("assets", f"scene_{scene.scene_id}.png")
         await _gen_with_retry(
             t2i,
@@ -198,7 +243,7 @@ async def build_assets(
             ledger,
             f"scene:{scene.scene_id}",
             size=size,
-            negative_prompt=cfg.negative_prompt,
+            negative_prompt=_SCENE_NEGATIVE + (f"，{cfg.negative_prompt}" if cfg.negative_prompt else ""),
             fallback=fallback,
             storage=storage,
         )

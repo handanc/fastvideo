@@ -133,5 +133,5 @@ def test_delete_scene_clip_invalidates_downstream(client, outdir):
     st = RunStorage("run_sg", root=root.parent)
     assert st.is_stale("final/final.mp4"), "删了片段，成片必须作废"
     rep = client.get("/api/runs/run_sg/steps").json()
-    videos = next(s for s in rep["steps"] if s["id"] == "videos")
-    assert videos["state"] == "gap", "删了场景片段后 videos 步必须报缺口"
+    videos = next(s for s in rep["steps"] if s["id"] == "scene_videos")
+    assert videos["state"] == "gap", "删了场景片段后「场景视频」步必须报缺口"

@@ -29,12 +29,10 @@ import pytest
 import respx
 from httpx import Response
 
-from fastvideo3.core.config import AppConfig, ProviderRouting, load_config
 from fastvideo3.core.cost import price_of, price_of_provider, price_of_route
 from fastvideo3.core.schema import BaseInfo
 from fastvideo3.modules.m6_talk import plan_talk_groups, talk_for_shot
 from fastvideo3.providers.base import (
-    Capability,
     CapabilityMismatchError,
     clamp_resolution,
     price_key_for,
@@ -151,18 +149,6 @@ async def test_business_space_base_url_used_for_submit_and_poll(tmp_path):
         await p.submit(dest=tmp_path / "o.mp4", image=img, audio=audio, resolution="480P")
         st = await p.poll("t-ws")
         assert poll.called and st.status == "running"
-
-
-def test_factory_threads_video_base_url_from_config():
-    cfg = AppConfig(fake=False, dashscope_api_key="sk-test", dashscope_video_base_url=_WS)
-    cfg.routing = {"talk": ProviderRouting(default="dashscope_wan22_s2v")}
-    from fastvideo3.providers.factory import make_provider
-
-    p = make_provider(Capability.TALK, cfg)
-    assert isinstance(p, DashScopeTalkProvider) and p.api_base == _WS
-    # 默认必须是公共端点（同一把 KEY 已实测可调用其它百炼模型）
-    cfg.dashscope_video_base_url = "https://dashscope.aliyuncs.com/api/v1"
-    assert make_provider(Capability.TALK, cfg).api_base.endswith("/api/v1")
 
 
 # ─────────────────────────── 出参形态 ───────────────────────────
@@ -309,18 +295,6 @@ def test_s2v_pricing_is_tiered_and_matches_official_prices():
     assert price_of_route("dashscope_wan22_s2v", "talk", "1080P") == 0.90
 
 
-def test_s2v_under_the_red_line():
-    """主通道必须过 ¥5/秒 的装配期红线（这是用户的硬约束）。"""
-    from fastvideo3.providers.factory import make_provider
-
-    cfg = AppConfig(fake=False, dashscope_api_key="sk-test", max_video_cost_per_sec=5.0)
-    cfg.routing = {"talk": ProviderRouting(default="dashscope_wan22_s2v")}
-    assert isinstance(make_provider(Capability.TALK, cfg), DashScopeTalkProvider)
-    cfg.max_video_cost_per_sec = 0.6  # 红线压到 480P 与 720P 之间
-    with pytest.raises(Exception, match="超过上限"):
-        make_provider(Capability.TALK, cfg)
-
-
 # ─────────────────── 超长对白：分段生成 + 拼接 ───────────────────
 def test_plan_talk_groups_cuts_only_at_sentence_boundaries():
     """按官方 <20s 上限分组：累计含句间换气，且绝不切断单句。"""
@@ -437,54 +411,6 @@ async def test_long_dialogue_is_split_then_stitched_into_one_shot_clip(
     # 4) 分段按实际发送档计价
     models = {e.model for e in ledger.entries if e.capability == "talk"}
     assert models == {"wan2.2-s2v@720p"}, models
-
-
-@pytest.mark.asyncio
-async def test_single_short_shot_is_not_split(cfg, storage, ledger, jobs, tmp_path):
-    """没超上限时行为与改造前**完全一致**：一次提交、直接落 dest、无分段产物。"""
-    talk = _S2VLike()
-    talk.max_audio_sec = 19.5
-    ln = _mk_line(tmp_path, storage, 0)
-    dest = storage.path("talk", "shot_s1_01.mp4")
-    got = await talk_for_shot(
-        cfg, talk, _png(tmp_path / "f.png"), [ln], dest,
-        ledger, jobs, storage, "s1_01", prompt="",
-    )
-    assert Path(got) == dest and dest.exists()
-    assert len(talk.calls) == 1
-    assert not list(storage.dir("talk").glob("shot_s1_01_g*.mp4"))
-    assert [e.note for e in ledger.entries if e.capability == "talk"] == ["shot:s1_01"]
-
-
-def _mk_line(tmp_path, storage, i: int):
-    from fastvideo3.core.schema import AudioLine
-
-    wav = _wav(tmp_path / f"line_{i}.wav", 1.5)
-    return AudioLine(
-        line_id=f"s1_01_{i}", shot_id="s1_01", character_id="c1",
-        text="你好", wav_uri=str(wav), duration_sec=1.5,
-    )
-
-
-# ─────────────────────────── 兜底通道配对 ───────────────────────────
-def test_v2v_channels_are_the_pair_for_v2v_overlay_mode(tmp_path):
-    """配置层的一致性：只有能吃视频的通道才配 v2v_overlay。
-
-    这条用例守的是**改配置时最容易漏的一半**：把路由换成 s2v 却忘了把 talk_mode 也改，
-    或反过来 —— 那时对白镜头会在"通道拒绝视频"与"没有运动片段"之间两头落空。
-
-    吃 `dotenv_path=none.env`：守的是出厂配置，不能被开发者 .env 的 FV3_TALK_MODEL 带着漂
-    （那个变量现在会**推导** talk_mode，见 core/config.load_config 的注释）。
-    """
-    for quality in ("economy", "high", "cinema"):
-        cfg = load_config(quality=quality, dotenv_path=tmp_path / "none.env")
-        default = cfg.routing["talk"].default
-        if default == "dashscope_wan22_s2v":
-            assert cfg.talk_mode == "s2v_direct", (quality, cfg.talk_mode)
-        fallback = cfg.routing["talk"].fallback
-        if fallback:
-            # 兜底也必须能吃"图片+音频"（s2v_direct 下没有运动片段）
-            assert fallback in ("fal_infinitalk", "dashscope_wan22_s2v"), (quality, fallback)
 
 
 def test_price_key_for_routes_s2v_by_tier_through_m6_helper():

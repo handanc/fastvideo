@@ -80,30 +80,23 @@ def _scene_key(scene: Any) -> tuple[str, str]:
 
 
 def group_scenes(script: Any, *, max_clip_sec: float = MAX_CLIP_SEC) -> list[SceneGroup]:
-    """把剧本的场景切成"一次调用一组"的生成单位。
+    """**一个 scene = 一个场景视频**（用户裁定：不合并多个 scene 成一个片段）。
 
-    合并只在**相邻**场景之间发生：隔着别的场景再回到同一地点，那是叙事上的回访，
-    不该跟前面那组合并（合并了等于把中间那段剧情挪走）。
+    为什么不再做"同地点相邻场景合并"：合并之后界面上"场景2"没有自己的卡片与模式选择，
+    用户看到的是"场景2 的镜头挂在场景1 的片段下面"，顺序与归属都乱了；而连贯性的真正
+    来源是**一次调用内的多镜头**，不是"把两个 scene 塞进一次调用"。把同一时空的剧情
+    写进同一个 scene，是 m1 剧本提示词的职责（见 screenwriter.v1.md 的场景语义规则），
+    不在这里事后合并。
+
+    唯一的例外是**拆**不是**合**：单个 scene 超过 30 秒（官方单次上限）时按镜头边界
+    拆成多段（`scene_2p1`/`scene_2p2`），否则提交必被服务端拒。拆是物理约束，不是选择。
     """
     groups: list[SceneGroup] = []
     for scene in script.scenes:
         shots = list(scene.shots or [])
         if not shots:
             continue
-        key = _scene_key(scene)
-        dur = float(sum(float(sh.duration_sec or 0) for sh in shots))
-        cur = groups[-1] if groups else None
-        # 能与上一组合并：同地点同时段、时长与分镜数都还在预算内
-        if (
-            cur is not None
-            and (cur.location, cur.time_of_day) == key
-            and cur.duration + dur <= max_clip_sec
-            and cur.shot_count + len(shots) <= MAX_SHOTS_PER_CLIP
-        ):
-            groups[-1] = _extend(cur, scene, shots)
-            continue
-        groups.append(_new_group(scene, shots, key, groups))
-    # 单场景自身就超过 30 秒 → 按镜头边界拆成多组（服务端会拒超长请求，不能提交）
+        groups.append(_new_group(scene, shots, _scene_key(scene), groups))
     out: list[SceneGroup] = []
     for g in groups:
         out.extend(_split_oversized(g, max_clip_sec))
@@ -151,30 +144,6 @@ def _new_group(scene: Any, shots: list[Any], key: tuple[str, str], prev: list[Sc
         characters=_cast(scene, shots),
         windows=win,
         note="" if total <= MAX_CLIP_SEC else f"本场景 {total:.0f}s 超过单次上限，将按镜头边界拆分",
-    )
-
-
-def _extend(cur: SceneGroup, scene: Any, shots: list[Any]) -> SceneGroup:
-    # `_windows(start=…)` 返回的 total 是**绝对结束时刻**（已含 cur.duration），
-    # 不能再加一次 —— 加过就变成 9+18=27 这种数，30 秒预算被虚耗掉一半，
-    # 明明能一次生成的场景被拆成两次（连贯性和钱都白花）。
-    win, total = _windows(shots, start=cur.duration)
-    merged = dict(cur.windows)
-    merged.update(win)
-    cast = list(cur.characters)
-    for cid in _cast(scene, shots):
-        if cid not in cast:
-            cast.append(cid)
-    return SceneGroup(
-        group_id=cur.group_id,
-        scene_ids=cur.scene_ids + (scene.scene_id,),
-        shot_ids=cur.shot_ids + tuple(sh.shot_id for sh in shots),
-        duration=round(total, 3),
-        location=cur.location,
-        time_of_day=cur.time_of_day,
-        characters=tuple(cast),
-        windows=merged,
-        note=(cur.note + "；" if cur.note else "") + f"并入 {scene.scene_id}（同地点同时段）",
     )
 
 
@@ -318,11 +287,15 @@ MODE_REFERENCE = "reference"   # 立绘+场景图+音色样本 + 多镜头提示
 MODE_FIRST_LAST = "first_last"  # 首帧(+尾帧) + 提示词（串联/单镜头/无立绘，≈10%）
 
 
+MODE_NONE = "none"
+
+
 def choose_input_mode(
     group: SceneGroup,
     *,
     has_dialogue: bool = False,
     has_first_frames: bool = False,
+    has_references: bool = True,
     forced: str = "auto",
 ) -> tuple[str, str]:
     """自动选这次调用走哪种输入形态，返回 (模式, 理由)。三条规则，按顺序判：
@@ -336,23 +309,39 @@ def choose_input_mode(
 
     规则是确定性的（同一剧本同一配置永远选同一条路，结果才可复现、才可对账），
     不靠 LLM 判断：判据全是剧本里数得出来的事实（有无台词、几个角色）。
-    `forced` 是人工覆盖（分镜视频界面里每组可改），覆盖时仍受物理前提约束：
-    要首尾帧却没有首帧 → 说明原因后退回参考（场景图当参考素材）。
+
+    `forced` 是人工覆盖（分镜视频界面里每组可改），覆盖时仍受**物理前提**约束：
+    - 要首尾帧却没有首帧 → 退回参考；
+    - 要参考却一张参考素材都没有（角色图/场景图在盘上都找不到）→ 退回首尾帧；
+      两边都没有 → 返回 `MODE_NONE`，调用方必须降级并说清原因，**不能**带着空
+      `references` 去撞 wan3.0 的规格守卫（实测那样只会得到"点了生成毫无反应"）。
     """
     char_count = len(group.characters)
     if forced == MODE_FIRST_LAST:
         if has_first_frames:
             return MODE_FIRST_LAST, "人工指定：首尾帧生成"
-        return MODE_REFERENCE, "人工指定首尾帧，但本组还没有首帧 → 退回参考生视频（场景图当参考）"
+        if has_references:
+            return MODE_REFERENCE, "人工指定首尾帧，但本组还没有首帧 → 退回参考生视频（场景图当参考）"
+        return MODE_NONE, "人工指定首尾帧，但既没有首帧也没有参考素材 → 本组无法生成"
     if forced == MODE_REFERENCE:
-        return MODE_REFERENCE, "人工指定：角色图+场景图参考生成"
+        if has_references:
+            return MODE_REFERENCE, "人工指定：角色图+场景图参考生成"
+        if has_first_frames:
+            return MODE_FIRST_LAST, "人工指定参考生成，但盘上没有可用的角色图/场景图 → 改走首尾帧"
+        return MODE_NONE, "人工指定参考生成，但盘上没有参考素材也没有首帧 → 本组无法生成"
     if has_dialogue:
-        return MODE_REFERENCE, "规则1：组内有对白 → 参考生成（音色参考只有这条路能发，脸与声一起锁）"
-    if char_count >= 2:
+        if has_references:
+            return MODE_REFERENCE, "规则1：组内有对白 → 参考生成（音色参考只有这条路能发，脸与声一起锁）"
+        if has_first_frames:
+            return MODE_FIRST_LAST, "规则1 命中但盘上没有参考素材 → 退回首尾帧（口型仍由 wan3.0 自带）"
+        return MODE_NONE, "组内有对白，但既没有参考素材也没有首帧 → 本组无法生成"
+    if char_count >= 2 and has_references:
         return MODE_REFERENCE, f"规则2：{char_count} 个角色同框 → 参考生成逐人锁脸"
     if has_first_frames:
         return MODE_FIRST_LAST, "规则3：单角色/无角色且无对白 → 首尾帧锁起止构图"
-    return MODE_REFERENCE, "规则3 命中但本组还没有首帧 → 退回参考生视频（场景图当参考）"
+    if has_references:
+        return MODE_REFERENCE, "规则3 命中但本组还没有首帧 → 退回参考生视频（场景图当参考）"
+    return MODE_NONE, "规则3 命中，但既没有首帧也没有参考素材 → 本组无法生成"
 
 
 def group_has_dialogue(script: Any, group: SceneGroup) -> bool:
@@ -367,31 +356,31 @@ def servable_groups(
     talk_mode: str,
     i2v_model: str,
     scene_mode: str = "auto",
+    force_scene: bool = True,
 ) -> list[SceneGroup]:
-    """哪些组可以交给"wan3.0 一次调用直出片段"，其余退回逐镜头路径。
+    """哪些组交给"wan3.0 一次调用直出一段场景视频"。
 
-    两个前提，缺一不可：
+    **默认全部服务**（`force_scene=True`）：本项目的图生视频只有 wan3.0 系列，
+    成片的每一段都应当是场景级产物 —— 组内多镜头由模型自己切，空间/服装/光线天然连续，
+    口型也是 wan3.0 自带的。"首帧图 → 逐镜头片段"那条老路不再作为正常路径：
+    它把一段戏切成若干互不连贯的短片，正是"镜头之间像瞬移"的根源。
 
-    1. **环里得有 wan3.0**：口型是 scripted_talk（C 链），或 i2v 模型是 wan3.0 系。
-       480P economy / A 链 s2v / B 链 videoretalk 的镜头视频来自别的模型，
-       场景级生成对它们没有意义（也发不了参考素材）。
-    2. **不能和口型链路抢活**：A/B 链里对白镜头的画面由 m6 用我们的 TTS 音频驱动生成，
-       场景片段若也覆盖这些镜头，m6 照样会跑 → 同一段画面付两次钱，而且成片用的还是
-       m6 那条（m7 口型产物优先）。所以非 C 链时，只服务**整组无对白**的组。
-       C 链的画面本来就是 wan3.0 直出，整组都归场景路径。
-
-    `scene_mode="off"` 时一组都不服务（回到逐镜头路径，economy/老 run 的默认行为）。
+    仍保留两个例外（判据来自 run_meta，老 run 要能续跑）：
+    1. `scene_mode="off"`：一组都不服务（逐镜头兜底，仅历史 run 用）；
+    2. 非 C 链（talk_mode 是历史上的 A/B 链）且环里没有 wan3.0：只服务**整组无对白**的组，
+       否则 m6 与新路径会抢同一秒画面（重复付费）。
     """
     if scene_mode == "off":
         return []
     wan30_i2v = str(i2v_model or "").startswith("wan3.0")
-    if talk_mode != "scripted_talk" and not wan30_i2v:
-        return []
-    out = []
-    for g in groups:
-        if talk_mode == "scripted_talk" or not group_has_dialogue(script, g):
-            out.append(g)
-    return out
+    c_chain = talk_mode in ("", "scripted_talk")
+    if not c_chain and not wan30_i2v:
+        return []  # 环里没有 wan3.0：老 run 的 A/B 链，画面不归场景路径
+    if force_scene and c_chain:
+        return list(groups)
+    # A/B 链（s2v / videoretalk 驱动对白镜头）且环里没有 wan3.0：含对白的组**不能**算覆盖，
+    # 否则 m6 会被跳过 → 成片没有口型。这是"静默交付坏片"的形状，宁可重复付费也不放行。
+    return [g for g in groups if not group_has_dialogue(script, g)]
 
 
 def describe(groups: list[SceneGroup]) -> str:

@@ -430,12 +430,76 @@ async def stage_edit(
     final = await compose_final(ctx.cfg, script, clips, talks, lines, ctx.storage)
     # 成片也进血缘：任何被用进时间线的片段/口型段重做 → 成片自动标 stale，
     # 否则"换了定妆照、重做了片段"之后旧成片会被当成已完成而不再重拼。
+    # 场景片段必须一起列进去：m7 是从盘上扫 `clips/scene_*.json` 取用它们的，
+    # 不列进血缘的话"删/重做一个场景片段"不会作废成片 —— 用户会拿到一部旧成片。
+    scene_rels = [
+        f"clips/{p.name}"
+        for p in sorted((ctx.storage.root / "clips").glob("scene_*.mp4"))
+        if p.is_file()
+    ] if (ctx.storage.root / "clips").is_dir() else []
     ctx.storage.record_regeneration(
         "final/final.mp4",
-        [_rel(ctx.storage, p) for p in list(clips.values()) + list(talks.values())],
+        [_rel(ctx.storage, p) for p in list(clips.values()) + list(talks.values())]
+        + scene_rels,
         reason="成片重拼",
     )
     return {"final_video": str(final)}
+
+
+def scene_shot_frames(storage: RunStorage, script: Script) -> dict[str, str]:
+    """从**场景片段**里按镜头时间窗抽代表帧（shot_id → 帧路径）。
+
+    一致性度量原本只盯分镜首帧 —— 那画的是"打算拍成什么样"，不是"最后拍成了什么"。
+    场景级生成参考形态**根本不产首帧**（模型从立绘/空景图起画），只看首帧的度量会静默
+    变成"什么都没量"，于是"前后人物不一致"这个致命项藏在没人量的地方（实测：闸门 0 轮
+    重做、事件台账一片安静）。度量对象必须是成片真正用到的那段视频。
+
+    时间窗来自 `clips/scene_{gid}.json`（m4 落盘的组内映射）；帧缓存在 `qc/frames/`，
+    片段比缓存新就重抽 —— 拿旧片段里的脸去判新片段合格不合格，是反过来的。
+    """
+    from fastvideo3.utils.ffmpeg import frame_at, probe_duration
+
+    out: dict[str, str] = {}
+    clips_dir = storage.root / "clips"
+    if not clips_dir.is_dir():
+        return {}
+    dest_dir = storage.root / "qc" / "frames"
+    for meta_path in sorted(clips_dir.glob("scene_*.json")):
+        try:
+            import json as _json
+
+            info = _json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        gid = str(info.get("group_id") or meta_path.stem[len("scene_"):])
+        clip = clips_dir / f"scene_{gid}.mp4"
+        if not clip.is_file():
+            continue
+        windows = info.get("windows") or {}
+        span = float(info.get("duration_sec") or 0.0) or sum(
+            float(w[1]) - float(w[0])
+            for w in windows.values()
+            if isinstance(w, (list, tuple)) and len(w) == 2
+        )
+        real = probe_duration(clip)
+        for sid, win in windows.items():
+            try:
+                s, e = float(win[0]), float(win[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            dest = dest_dir / f"shot_{sid}.jpg"
+            if dest.is_file() and dest.stat().st_mtime >= clip.stat().st_mtime:
+                out[sid] = str(dest)
+                continue
+            # 计划时间窗按**比例**映射到实际交付的片段：模型给的秒数常和计划差一点
+            # （计划 10 秒交付 9.6 秒），按绝对秒数抽会抽到片尾黑帧甚至干脆抽不到 ——
+            # 抽不到 = 这一镜没有度量样本 = 脸漂静默通过，正是最坏的失效形状。
+            frac = ((s + e) / 2.0 / span) if span > 0 and real > 0 else None
+            t = frac * real if frac is not None else (s + e) / 2.0
+            got = frame_at(clip, min(max(t, 0.0), max(0.0, real - 0.05) if real > 0 else t), dest)
+            if got is not None:
+                out[sid] = str(got)
+    return out
 
 
 async def stage_metrics(
@@ -445,6 +509,8 @@ async def stage_metrics(
 
     if ctx.cfg.consistency_metric == "off":
         return {}
+    # 场景片段里的帧**优先于**分镜首帧：量的是成品，不是草图
+    frames = {**frames, **scene_shot_frames(ctx.storage, script)}
     vlm = None
     try:
         vlm = ctx.provider(Capability.VLM)

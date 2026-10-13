@@ -3,12 +3,28 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 
 const props = defineProps({ runId: { type: String, required: true } })
+// 产物增删后通知父组件刷新看板计数/步骤条（父层再拉 board/steps）
+const emit = defineEmits(['changed'])
 
 const groups = ref([])
 const error = ref('')
 const msg = ref('')
 const busy = ref({})   // gid -> 'frames' | 'clip' | 'delete'
+const notice = ref('')  // 2 秒自动消失的轻提示（"这段已经有了"这类，不该占着错误条）
 let timer = null
+let noticeTimer = null
+
+function flash(text, ms = 2000) {
+  notice.value = text
+  clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => { notice.value = '' }, ms)
+}
+
+// 镜头文字就地改（画面描述/镜头语言）：与「剧本」页同一套 PUT /script 语义 ——
+// 提交后服务端做校验 + 血缘作废，改完不删图也会重画。
+const editing = ref(null)  // { gid, shot_id, field, text, original }
+
+const typeLabel = { dialogue: '对白', action: '动作', scenery: '空镜' }
 
 async function load() {
   try {
@@ -20,18 +36,28 @@ async function load() {
   }
 }
 
-// 生成是子进程异步的：点完轮询到产物出现（或 90 秒超时），别让用户盯着不动的页面猜
+// 生成是子进程异步的：点完轮询到产物出现（或超时），别让用户盯着不动的页面猜
 function pollUntil(gid, what, ms = 90000) {
   const t0 = Date.now()
   clearInterval(timer)
   timer = setInterval(async () => {
     await load()
     const g = groups.value.find((x) => x.group_id === gid)
-    const done = what === 'clip' ? !!g?.clip : !!g?.first_frame && !!g?.last_frame
+    // **已作废的片段不算完成**：重出过程中文件还在盘上，只看"有没有文件"会秒退轮询，
+    // 于是界面从头到尾没反应（用户报的"点了生成毫无反应"正是这条）。
+    const done = what === 'clip'
+      ? !!g?.clip && !g?.clip_stale
+      : !!g?.first_frame && !!g?.last_frame
     if (done || Date.now() - t0 > ms) {
       clearInterval(timer)
       busy.value = { ...busy.value, [gid]: '' }
-      if (!done) msg.value = `${gid}：${what === 'clip' ? '片段' : '首尾帧'}还没出来，看「事件」页签里的原因`
+      if (done) {
+        flash(`✔ ${gid} ${what === 'clip' ? '场景视频片段' : '首尾帧'}已生成`)
+        emit('changed')
+      } else {
+        msg.value = `${gid}：${what === 'clip' ? '片段' : '首尾帧'}还没出来 —— `
+          + '该组卡片下方的红字/「事件」页签里有原因（缺角色图/场景图、欠费、额度用尽是最常见的几种）'
+      }
     }
   }, 3000)
 }
@@ -67,10 +93,10 @@ async function toggleRef(g, kind, id) {
 async function savePrompts(g) {
   try {
     const d = await api.patchSceneGroup(props.runId, g.group_id, {
-      prompt_first: g.prompt_first, prompt_last: g.prompt_last,
+      prompt_first: g.prompt_first, prompt_last: g.prompt_last, prompt: g.prompt,
     })
     groups.value = d.groups || groups.value
-    msg.value = `${g.group_id}：首尾帧提示词已保存`
+    msg.value = `${g.group_id}：提示词已保存，点「生成」按新提示词出片`
   } catch (e) { error.value = e.message }
 }
 
@@ -85,49 +111,100 @@ async function genFrames(g) {
 }
 
 async function genClip(g) {
-  busy.value = { ...busy.value, [g.group_id]: 'clip' }
   error.value = ''; msg.value = ''
+  // 已经有片段且不作废 → 不重复花钱，只告诉用户"这段已经有了"（2 秒后自动消失）。
+  // 想重出就点「🗑 删除片段」再点生成：删了才会重新提交一次 wan3.0（一段 9 秒 720P 是 ¥5.4 量级）。
+  if (g.clip && !g.clip_stale) {
+    flash(`场景 ${g.group_id} 已有视频片段，无需重复生成；要重出请先点「🗑 删除片段」`)
+    return
+  }
+  busy.value = { ...busy.value, [g.group_id]: 'clip' }
   try {
     await api.genSceneClip(props.runId, g.group_id)
-    pollUntil(g.group_id, 'clip', 600000)
+    pollUntil(g.group_id, 'clip', 900000)
   } catch (e) { error.value = e.message; busy.value = { ...busy.value, [g.group_id]: '' } }
 }
 
 async function delClip(g) {
-  if (!window.confirm(`确定删除场景片段 ${g.group_id}？\n删除后该组镜头回到「待生成」，重出要再花一次钱。`)) return
+  if (!window.confirm(`确定删除场景片段 ${g.group_id}？\n删除后该组回到「待生成」，重出要再花一次钱。`)) return
   busy.value = { ...busy.value, [g.group_id]: 'delete' }
   try {
     await api.deleteSceneClip(props.runId, g.group_id)
     await load()
+    emit('changed')
   } catch (e) { error.value = e.message }
   busy.value = { ...busy.value, [g.group_id]: '' }
 }
 
+// ── 镜头文字：单击进入编辑，blur/Ctrl+Enter 提交，Esc 取消 ──────────────
+function startEdit(g, sh, field, current) {
+  editing.value = { gid: g.group_id, shot_id: sh.shot_id, field, text: current || '', original: current || '' }
+}
+function cancelEdit() { editing.value = null }
+function edit(g, sh, field) {
+  const e = editing.value
+  return !!e && e.gid === g.group_id && e.shot_id === sh.shot_id && e.field === field
+}
+
+async function commitEdit() {
+  const e = editing.value
+  editing.value = null
+  if (!e) return
+  const text = e.text.trim()
+  if (text === (e.original || '').trim()) return  // 没改：不涨版本、不作废、不打扰后端
+  try {
+    const res = await fetch(`/api/runs/${encodeURIComponent(props.runId)}/script`)
+    if (!res.ok) throw new Error(`读取剧本失败 HTTP ${res.status}`)
+    const script = await res.json()
+    const shots = (script.scenes || []).flatMap((s) => s.shots)
+    const target = shots.find((x) => x.shot_id === e.shot_id)
+    if (!target) throw new Error(`剧本里找不到 ${e.shot_id}`)
+    target[e.field] = text
+    const r = await api.putScript(props.runId, script)
+    msg.value = `✔ 已保存「${e.shot_id}」的${e.field === 'action' ? '画面描述' : '镜头语言'}`
+      + `（剧本 v${r.version}），作废 ${r.invalidated?.length || 0} 个产物；点「生成」按新描述重出`
+    await load()
+    emit('changed')
+  } catch (err) { error.value = err.message }
+}
+
+function win(g, sid) {
+  const w = (g.windows || {})[sid] || []
+  return w.length === 2 ? `${w[0]}–${w[1]}s` : ''
+}
+
 onMounted(load)
-onUnmounted(() => clearInterval(timer))
+onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
 </script>
 
 <template>
   <div class="card">
     <div class="cardHead">
-      <h2>场景片段（wan3.0 场景级生成）</h2>
+      <h2>场景视频（wan3.0 场景级生成）</h2>
       <button class="btn sm" @click="load">⟳</button>
     </div>
     <div v-if="error" class="alert err">{{ error }}</div>
+    <div v-if="notice" class="notice">{{ notice }}</div>
     <div v-if="msg" class="muted small">{{ msg }}</div>
     <p class="muted small">
-      一个场景组 = 一次 wan3.0 调用（组内多镜头连贯、自带台词口型）。
-      「角色+场景生成」发立绘/场景图/音色样本锁脸锁声；「首尾帧生成」锁起止构图，
-      两者官方互斥、不能同发。删除片段后点「生成」只重出这一组。
+      <b>一个场景 = 一段场景视频 = 一次 wan3.0 调用</b>：组内多个分镜由模型自己切，
+      空间/服装/光线在组内连续，台词口型也是 wan3.0 自带的（不再有"首帧图 → 单镜头短片"那条路）。
+      卡片按 场景1 → 场景2 → 场景3 顺序排列，点「开始生成」就按这个顺序依次出片。
+      两种输入形态由规则自动判定、也可手动改：<b>角色+场景生成</b>发立绘/空景图/音色样本（锁脸锁声），
+      <b>首尾帧生成</b>锁起止构图 —— 官方规定两者互斥，不能同发。
     </p>
 
-    <div v-for="g in groups" :key="g.group_id" class="sceneGroup">
+    <div v-for="(g, i) in groups" :key="g.group_id" class="sceneGroup">
       <div class="toolbar">
-        <b>{{ g.group_id }}</b>
+        <b>场景{{ i + 1 }} <span class="muted small">{{ g.group_id }}</span></b>
+        <span v-if="g.scene_label" class="scenelabel">{{ g.scene_label }}</span>
+        <span class="badge" :class="g.clip_stale ? 'warn' : (g.clip ? 'ok' : '')">
+          {{ g.clip_stale ? '已作废·待重出' : (g.clip ? '已生成' : '待生成') }}
+        </span>
         <span class="muted small">
-          {{ g.shot_ids.length }} 镜 · {{ g.duration }}s ·
+          {{ g.shots.length }} 镜 · {{ g.duration }}s ·
           {{ g.has_dialogue ? '有对白' : '无对白' }} ·
-          自动判定={{ g.auto_mode }}
+          自动判定={{ g.auto_mode === 'reference' ? '角色+场景' : (g.auto_mode === 'first_last' ? '首尾帧' : g.auto_mode) }}
         </span>
         <div class="spacer"></div>
         <select class="sm" :value="g.mode" @change="setMode(g, $event.target.value)">
@@ -142,9 +219,45 @@ onUnmounted(() => clearInterval(timer))
           {{ busy[g.group_id] === 'clip' ? '生成中…' : '生成' }}
         </button>
       </div>
-      <div class="muted small">当前：{{ g.mode }} — {{ g.mode_reason }}</div>
-      <video v-if="g.clip" :src="g.clip" controls style="max-width: 240px"></video>
+
+      <div class="muted small">当前形态：{{ g.mode === 'reference' ? '角色+场景生成' : (g.mode === 'first_last' ? '首尾帧生成' : '无法生成') }} — {{ g.mode_reason }}</div>
+      <div v-if="g.scene_summary" class="muted small summary">{{ g.scene_summary }}</div>
+      <div v-if="g.mode === 'none'" class="alert err">
+        本组缺输入：既没有可用的角色图/场景图，也没有首帧 → 去「角色图」「场景图」页补图，
+        或点「生成首尾帧」先出帧。
+      </div>
+      <div v-else-if="g.mode === 'reference' && !g.has_references" class="alert err">
+        判定为角色+场景生成，但盘上找不到本组的角色图/场景图文件（见「角色图」「场景图」页）。
+      </div>
+      <video v-if="g.clip" :src="g.clip" controls style="max-width: 260px"></video>
       <div v-if="g.clip_stale" class="alert warn">片段已作废（上游改过），点「生成」重出</div>
+
+      <!-- 组内分镜：这一段戏里按顺序发生什么（文字可点改，改完即作废本组片段） -->
+      <ol class="shots">
+        <li v-for="(sh, j) in g.shots" :key="sh.shot_id">
+          <span class="mono">分镜{{ j + 1 }}</span>
+          <span class="muted small">{{ win(g, sh.shot_id) }} · {{ typeLabel[sh.type] || sh.type }} · {{ sh.duration_sec }}s</span>
+          <span v-if="sh.characters.length" class="muted small">· {{ sh.characters.join('、') }}</span>
+          <template v-if="!edit(g, sh, 'action')">
+            <span class="action editable" title="点击修改画面描述（本组提示词的原料）"
+                  @click="startEdit(g, sh, 'action', sh.action)">{{ sh.action || '（点击写画面描述）' }}</span>
+          </template>
+          <textarea v-else class="inline-edit" rows="2" autofocus spellcheck="false"
+                    v-model="editing.text"
+                    @blur="commitEdit"
+                    @keydown.esc.prevent="cancelEdit"
+                    @keydown.ctrl.enter="commitEdit"></textarea>
+          <div v-if="!edit(g, sh, 'camera')" class="muted small">镜头语言：
+            <span class="editable" title="点击修改镜头语言"
+                  @click="startEdit(g, sh, 'camera', sh.camera)">{{ sh.camera || '（点击写）' }}</span>
+          </div>
+          <input v-else class="inline-edit one" autofocus v-model="editing.text"
+                 @blur="commitEdit"
+                 @keydown.esc.prevent="cancelEdit"
+                 @keydown.enter="commitEdit" />
+          <div v-for="(d, k) in sh.dialogues" :key="k" class="line"><b>{{ d.who }}</b>：{{ d.text }}</div>
+        </li>
+      </ol>
 
       <!-- 参考形态：只允许在**已有**的图里选，不允许在这里改图 -->
       <div v-if="g.mode === 'reference'" class="modelBar">
@@ -158,23 +271,25 @@ onUnmounted(() => clearInterval(timer))
             <img v-if="g.char_options[cid].portrait" :src="g.char_options[cid].portrait"
                  :class="{ picked: (g.char_images[cid] || g.char_options[cid].portrait_rel) === g.char_options[cid].portrait_rel }"
                  title="定妆照" @click="pickCharImage(g, cid, g.char_options[cid].portrait_rel)" />
-            <img v-for="(u, i) in (g.char_options[cid].candidates || [])" :key="u" :src="u"
-                 :class="{ picked: g.char_images[cid] === (g.char_options[cid].candidates_rel || [])[i] }"
-                 title="候选立绘" @click="pickCharImage(g, cid, (g.char_options[cid].candidates_rel || [])[i])" />
+            <img v-for="(u, k) in (g.char_options[cid].candidates || [])" :key="u" :src="u"
+                 :class="{ picked: g.char_images[cid] === (g.char_options[cid].candidates_rel || [])[k] }"
+                 title="候选立绘" @click="pickCharImage(g, cid, (g.char_options[cid].candidates_rel || [])[k])" />
+            <span v-if="!g.char_options[cid].portrait" class="muted small">缺定妆照 → 去「角色图」页补</span>
           </template>
+          <span v-else class="muted small">缺定妆照 → 去「角色图」页补</span>
         </div>
         <div v-for="sid in g.scene_ids" :key="sid" class="refRow">
           <label class="chk">
             <input type="checkbox" :checked="(g.scene_refs || []).includes(sid)"
                    @change="toggleRef(g, 'scene', sid)" />
-            {{ sid }}（空景背景）
+            {{ sid }}（空景背景，图中无人）
           </label>
           <img v-if="g.scene_options && g.scene_options[sid]" :src="g.scene_options[sid]" class="picked" />
         </div>
       </div>
 
-      <!-- 首尾帧形态：提示词可编辑，先出图再出片段 -->
-      <div v-else class="modelBar">
+      <!-- 首尾帧形态：先出帧，再按帧出片 -->
+      <div v-else-if="g.mode === 'first_last'" class="modelBar">
         <label class="field"><span>首帧提示词（可改）</span>
           <textarea v-model="g.prompt_first" rows="3"></textarea>
         </label>
@@ -193,16 +308,38 @@ onUnmounted(() => clearInterval(timer))
           <span v-if="!g.first_frame" class="muted small">还没有首帧 → 点「生成首尾帧」</span>
         </div>
       </div>
+
+      <!-- 视频提示词：两种形态都给人看、给人改（机器拼的模板是默认值，不是上限） -->
+      <label class="field wide"><span>本段视频的提示词（可改，点「生成」即按它出片）</span>
+        <textarea v-model="g.prompt" rows="6" spellcheck="false"></textarea>
+      </label>
+      <div class="toolbar">
+        <button class="btn sm" :disabled="!!busy[g.group_id]" @click="savePrompts(g)">保存提示词</button>
+      </div>
     </div>
-    <p v-if="!groups.length && !error" class="muted">还没有剧本，或本 run 不适用场景级生成。</p>
+    <p v-if="!groups.length && !error" class="muted">还没有剧本（先在「剧本」页生成剧本）。</p>
   </div>
 </template>
 
 <style scoped>
 .sceneGroup { border: 1px solid var(--line, #333); border-radius: 8px; padding: 8px; margin: 8px 0; }
+.scenelabel { font-weight: 600; }
+.notice {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+  background: var(--panel, #1c1f24); color: var(--fg, #eee);
+  border: 1px solid var(--line, #333); border-left: 3px solid var(--accent, #4a9);
+  border-radius: 6px; padding: 8px 14px; font-size: 13px; z-index: 50;
+  max-width: min(560px, calc(100vw - 32px));
+}
+.summary { margin: 2px 0; }
 .refRow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
 .refRow img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; cursor: pointer; opacity: .55; }
 .refRow img.picked { opacity: 1; outline: 2px solid var(--accent, #4a9); }
 .chk { display: flex; gap: 4px; align-items: center; }
 .field { display: flex; flex-direction: column; gap: 2px; min-width: 260px; }
+.field.wide { width: 100%; }
+.field.wide textarea { width: 100%; font-size: 12px; }
+.shots { margin: 6px 0; padding-left: 20px; }
+.shots li { margin: 4px 0; }
+.shots .action { display: block; }
 </style>

@@ -70,7 +70,7 @@ def test_deleted_portrait_blocks_advance_until_refilled(outdir):
     rep = _progress(outdir, "run_20260101_000021")
     # _mk_run 只造了首帧、没造尾帧 → 角色补齐后先回 frames 步补尾帧，再进镜头视频。
     # 尾帧缺失算 frames 的缺口是刻意的：否则没有任何一步会去补它，m4/m6 永远退回单首帧。
-    assert rep.next.id == "frames", rep.next
+    assert rep.next.id == "scene_videos", rep.next
     assert set(rep.next.missing), "缺口要点名要补尾帧的镜头"
 
 
@@ -181,7 +181,7 @@ def test_delete_script_sends_next_step_back_to_script(client, outdir):
     rep = client.get("/api/runs/run_20260101_000026/steps").json()
     assert rep["next"]["id"] == "script" and rep["next"]["label"] == "生成剧本"
     assert rep["next"]["missing"] == ["script.json"]
-    assert [s["state"] for s in rep["steps"][1:]] == ["pending"] * 5
+    assert [s["state"] for s in rep["steps"][1:]] == ["pending"] * 4  # 五步：除剧本外四步
 
     # 下游全量标 stale（只标不删），否则新剧本沿用同一批 id 时会复用旧脸/旧帧
     sid = script.all_shots()[0].shot_id
@@ -261,7 +261,7 @@ async def test_five_step_chain_fills_only_gaps(cfg, outdir, tmp_path):
         {
             "run_id": run_id,
             "base_info": BaseInfo(topic="逐步链路", target_duration_sec=15).model_dump(),
-            "fake": True, "quality": "economy", "talk_mode": "s2v_direct",
+            "fake": True, "quality": "economy", "talk_mode": "scripted_talk",
             "budget_limit_cny": 100.0,
         },
     )
@@ -274,9 +274,41 @@ async def test_five_step_chain_fills_only_gaps(cfg, outdir, tmp_path):
             break
         await _run_step(ctx, storage, cfg, meta, rep.next)
         seen_steps.append(rep.next.id)
-    # 六步：分镜首帧独立成步（付视频钱前的最后人工检查点）
-    assert seen_steps == ["script", "chars", "scenes", "frames", "videos", "compose"]
+    # 五步：首尾帧/配音/场景片段/兜底合并进「场景视频」一步
+    assert seen_steps == ["script", "chars", "scenes", "scene_videos", "compose"]
     assert (storage.root / "final" / "final.mp4").exists()
+    # 「开始生成」只可能产出**场景片段**：逐镜头 clips/shot_*、talk/shot_* 是"首帧图→
+    # 单镜头短片"那条老路的产物，本项目已不再走它（一段戏切成互不连贯的短片，正是
+    # "镜头之间像瞬移"的根源）。留着断言是为了防止谁把兜底路径又接回正常流程。
+    from fastvideo3.core.scenegroup import group_scenes as _gs
+
+    script = Script.model_validate(storage.load_json("script.json"))
+    groups = _gs(script)
+    assert sorted(p.stem[len("scene_"):] for p in (storage.root / "clips").glob("scene_*.mp4")) == sorted(
+        g.group_id for g in groups
+    ), "每个场景组必须各有一段场景视频"
+    assert not list((storage.root / "clips").glob("shot_*.mp4")), "不许再产出逐镜头片段"
+    assert not list((storage.root / "talk").glob("shot_*.mp4")), "口型由 wan3.0 自带，不再单出"
+    # 参考形态的组**一张首帧都不许画**：模型从立绘/空景图起画，首帧没进过任何请求，
+    # 画它等于白烧 t2i 钱（用户明确要的简化：不走"首帧图→分镜视频"那条路）。
+    from fastvideo3.core.assets import refs_on_disk
+    from fastvideo3.core.scenegroup import MODE_REFERENCE, choose_input_mode
+
+    for g in groups:
+        mode, _why = choose_input_mode(
+            g,
+            has_dialogue=any(
+                sh.dialogues for sh in script.all_shots() if sh.shot_id in set(g.shot_ids)
+            ),
+            has_first_frames=True,
+            has_references=bool(refs_on_disk(storage, characters=g.characters, scene_ids=g.scene_ids)),
+            forced=str(cfg.scene_clip_mode or "auto"),
+        )
+        if mode == MODE_REFERENCE:
+            for sid in g.shot_ids:
+                assert not (storage.root / "storyboard" / f"shot_{sid}.png").is_file(), (
+                    f"{g.group_id} 是参考形态，{sid} 的首帧根本不会被送进 wan3.0，不该画"
+                )
 
     # 中途删一张角色图 → 状态机回到 chars，且只补 c1
     (storage.root / "assets" / "char_c1.png").unlink()
@@ -286,30 +318,32 @@ async def test_five_step_chain_fills_only_gaps(cfg, outdir, tmp_path):
     assert (storage.root / "assets" / "char_c1.png").exists()
     # 补完空缺后**再点一次**才推进；且因为首帧消费过旧定妆照，它们已被血缘标 stale
     rep = prog.compute_progress(storage, meta, cfg)
-    assert rep.next.id == "frames"  # 先重画首帧（不烧视频钱），人工可在此拦截
-    stale_shots = set(rep.next.stale)  # frames 步的 stale 存的是 shot_id
+    assert rep.next.id == "scene_videos"  # 消费过旧定妆照的帧/片段沿血缘 stale → 回到这一步
+    stale_shots = set(rep.next.stale)  # 场景视频步的 stale 存的是 shot_id
     c1_shots = {
         sh.shot_id
         for sc in Script.model_validate(storage.load_json("script.json")).scenes
         for sh in sc.shots
         if "c1" in sh.characters
     }
-    other_shots = {
-        sh.shot_id
-        for sc in Script.model_validate(storage.load_json("script.json")).scenes
-        for sh in sc.shots
-        if "c1" not in sh.characters
-    }
-    assert stale_shots and stale_shots <= c1_shots, (
-        f"只应作废消费过 c1 的镜头：stale={sorted(stale_shots)} c1={sorted(c1_shots)}"
+    assert stale_shots and c1_shots <= stale_shots, (
+        f"消费过 c1 的镜头必须作废：stale={sorted(stale_shots)} c1={sorted(c1_shots)}"
     )
-    assert not (stale_shots & other_shots), "其他角色的镜头不该被作废"
-    await _run_step(ctx, storage, cfg, meta, rep.next)  # 只重做 stale 的首帧
-    rep = prog.compute_progress(storage, meta, cfg)
-    assert rep.next.id == "videos"  # 首帧换了 → 消费过旧帧的片段/口型沿血缘作废
+    from fastvideo3.core.scenegroup import group_scenes
+
+    same_group_as_c1 = set()
+    for g in group_scenes(Script.model_validate(storage.load_json("script.json"))):
+        if set(g.shot_ids) & c1_shots:
+            same_group_as_c1 |= set(g.shot_ids)
+    assert stale_shots <= same_group_as_c1, (
+        f"与 c1 不同组的镜头不该被作废：stale={sorted(stale_shots - same_group_as_c1)}"
+    )
     await _run_step(ctx, storage, cfg, meta, rep.next)
     rep = prog.compute_progress(storage, meta, cfg)
-    assert rep.next.id == "compose"  # 成片也沿血缘被标 stale → 最后重拼
+    # 「场景视频」一步内部就是 首尾帧→配音→场景片段：点一次把整条链补完，
+    # 首帧换了 → 消费它的场景片段沿血缘作废并在这一步里重出。
+    assert rep.next.id == "compose"  # 只剩成片 stale
+    assert sorted(storage.stale_set()) == ["final/final.mp4"]
     await _run_step(ctx, storage, cfg, meta, rep.next)
     assert prog.compute_progress(storage, meta, cfg).next is None
 
@@ -334,64 +368,6 @@ def test_lock_released_when_endpoint_errors_after_acquire(client, outdir, monkey
     r2 = client.post("/api/runs/run_20260101_000026/step")
     assert r2.status_code == 202
     tasklock.release(outdir, "run_20260101_000026")
-
-
-def test_delete_clip_or_talk_allowed_for_redo(client, outdir):
-    """删降级片段/口型段是"强制重出单镜头"的入口：白名单要含 clips/talk。"""
-    root, script = _mk_run(outdir, "run_20260101_000033")
-    sid = script.scenes[0].shots[0].shot_id
-    r = client.delete(f"/api/runs/run_20260101_000033/artifacts/clips/shot_{sid}.mp4")
-    assert r.status_code == 200, r.text
-    assert not (root / "clips" / f"shot_{sid}.mp4").exists()
-    # 扩展名与阶段必须匹配：clips 不收 png，assets 不收 mp4
-    assert client.delete(
-        f"/api/runs/run_20260101_000033/artifacts/clips/shot_{sid}.png"
-    ).status_code == 400
-    assert client.delete(
-        "/api/runs/run_20260101_000033/artifacts/assets/char_c1.mp4"
-    ).status_code == 400
-    # 删除片段后该镜头回到 videos 步缺口
-    rep = client.get("/api/runs/run_20260101_000033/steps").json()
-    videos = next(s for s in rep["steps"] if s["id"] == "videos")
-    assert sid in videos["missing"] or sid in videos["stale"]
-
-
-def test_dialogue_shot_without_talk_is_not_done(outdir):
-    """对白镜头缺 talk 产物 = 未完成；m6 降级出的叠音 clips **不算**完成。
-
-    这是"全片没有对口型"那个系统性缺陷的根因：旧判据把降级 clips 当成有视频，
-    于是口型通道一失败，整片带着零口型镜头被标 done、被合成、被当成合格交付。
-    """
-    root, script = _mk_run(outdir, "run_20260101_000040", with_final=False)
-    dlg = [sh.shot_id for sc in script.scenes for sh in sc.shots if sh.dialogues]
-    assert dlg, "用例前提：fake 剧本要有对白镜头"
-    sid = dlg[0]
-    (root / "talk" / f"shot_{sid}.mp4").unlink()  # 模拟 m6 降级：clips 在、talk 不在
-    rep = _progress(outdir, "run_20260101_000040")
-    videos = next(s for s in rep.steps if s.id == "videos")
-    # 判据是"这一步没完成、且点名了这个镜头"。state 可能是 pending 而不是 gap：
-    # _mk_run 不产尾帧 → frames 步先卡住，后面的步骤一律 pending（顺序推进的语义）。
-    assert videos.state != "done" and sid in videos.missing, "降级叠音不能算完成"
-    (root / "talk" / f"shot_{sid}.mp4").write_bytes(b"x")
-    rep = _progress(outdir, "run_20260101_000040")
-    videos = next(s for s in rep.steps if s.id == "videos")
-    assert sid not in videos.missing
-
-
-def test_audio_overlay_is_the_only_explicit_waiver(outdir):
-    """显式选 audio_overlay 才算"我不要口型"；其余模式缺 talk 一律是缺口。"""
-    root, script = _mk_run(outdir, "run_20260101_000041", with_final=False)
-    meta = json.loads((root / "run_meta.json").read_text(encoding="utf-8"))
-    meta["talk_mode"] = "audio_overlay"
-    (root / "run_meta.json").write_text(json.dumps(meta, ensure_ascii=False),
-                                        encoding="utf-8")
-    for p in (root / "talk").glob("*.mp4"):
-        p.unlink()
-    rep = _progress(outdir, "run_20260101_000041")
-    videos = next(s for s in rep.steps if s.id == "videos")
-    # fixture 不造台词 wav，所以 lines 仍可能是缺口；要点是**对白镜头不再因缺 talk 报缺口**
-    dlg = [sh.shot_id for sc in script.scenes for sh in sc.shots if sh.dialogues]
-    assert not (set(dlg) & set(videos.missing)), videos.missing
 
 
 def test_lipsync_coverage_and_verdict_merge(outdir):
@@ -424,32 +400,6 @@ def test_board_exposes_lipsync_coverage(client, outdir):
     assert cov["required"] is True and cov["missing"] == [dlg[0]]
 
 
-def test_two_person_overlay_is_recorded_waiver_not_endless_gap(outdir):
-    """双人镜头按策略叠音 = 显式豁免：不算缺口（否则「开始生成」无限补不出）。"""
-    from fastvideo3.core.progress import lipsync_coverage
-    from fastvideo3.core.storage import RunStorage
-
-    root, script = _mk_run(outdir, "run_20260101_000044", with_final=False)
-    dlg = [sh.shot_id for sc in script.scenes for sh in sc.shots if sh.dialogues]
-    sid = dlg[0]
-    (root / "talk" / f"shot_{sid}.mp4").unlink()
-    storage = RunStorage("run_20260101_000044", root=outdir)
-    # 未豁免时是缺口
-    cov = lipsync_coverage(storage, script, "v2v_overlay")
-    assert sid in cov["missing"]
-    # m6 双人策略落豁免后：缺口清空、豁免单列，判定不因它不合格
-    storage.record_lipsync_waiver(sid, "two_person_overlay_policy")
-    cov = lipsync_coverage(storage, script, "v2v_overlay")
-    assert cov["missing"] == [] and cov["waived"] == [sid]
-    rep = _progress(outdir, "run_20260101_000044")
-    videos = next(s for s in rep.steps if s.id == "videos")
-    assert sid not in videos.missing, "豁免镜头不该卡住「开始生成」"
-    from fastvideo3.core.progress import apply_lipsync_verdict
-
-    v = apply_lipsync_verdict({"passed": True}, cov, "cinema")
-    assert v["passed"] is True, "豁免是决定，不是不合格"
-
-
 async def test_missing_last_frames_are_a_frames_step_gap(cfg, outdir):
     """尾帧**从没生成过**（m3 那趟被欠费/审核打断）→ frames 步必须算缺口，点一次能补上。
 
@@ -462,7 +412,7 @@ async def test_missing_last_frames_are_a_frames_step_gap(cfg, outdir):
 
     cfg.fake = True
     cfg.talk_mode = "scripted_talk"  # C 链：对白镜头的画面也由口型通道出 → 同样要尾帧
-    cfg.scene_clip_mode = "off"  # 本用例测逐镜头路径
+    cfg.scene_clip_mode = "off"  # 本用例测逐镜头路径的尾帧缺口；场景路径下对白组不产尾帧
     cfg.use_last_frames = True
     run_id = "run_last_gap"
     storage = RunStorage(run_id, root=outdir)
@@ -477,11 +427,14 @@ async def test_missing_last_frames_are_a_frames_step_gap(cfg, outdir):
     )
     meta = storage.load_json("run_meta.json")
     ctx = build_context(cfg, storage)
-    for _ in range(4):  # 剧本 → 角色图 → 场景图 → 分镜（首帧+尾帧）
+    for _ in range(5):  # 剧本 → 角色图 → 场景图 → 场景视频（首尾帧在其内部产）
         rep = prog.compute_progress(storage, meta, cfg)
-        if rep.next is None or rep.next.id == "videos":
+        if rep.next is None:
             break
+        ran = rep.next.id
         await _run_step(ctx, storage, cfg, meta, rep.next)
+        if ran == "scene_videos":
+            break
 
     sb = storage.root / "storyboard"
     lasts = sorted(p.name for p in sb.glob("*_last.png"))
@@ -491,7 +444,7 @@ async def test_missing_last_frames_are_a_frames_step_gap(cfg, outdir):
         p.unlink()  # 模拟"尾帧那趟被打断"：首帧在盘、尾帧从未存在
 
     rep = prog.compute_progress(storage, meta, cfg)
-    assert rep.next is not None and rep.next.id == "frames", (
+    assert rep.next is not None and rep.next.id == "scene_videos", (
         f"尾帧缺失必须算 frames 步的缺口，实际下一步是 {rep.next and rep.next.id}"
     )
     assert set(rep.next.missing), "缺口清单要点名要补的镜头"
@@ -500,4 +453,4 @@ async def test_missing_last_frames_are_a_frames_step_gap(cfg, outdir):
     # 首帧一个字节都不该动：补尾帧不该重画首帧（那是白花一次 t2i 钱）
     after = {p.name: p.read_bytes() for p in sb.glob("shot_*.png") if "_last" not in p.name}
     assert after == first_before, "补尾帧时重画了首帧"
-    assert prog.compute_progress(storage, meta, cfg).next.id != "frames", "补完就不该再报缺口"
+    assert prog.compute_progress(storage, meta, cfg).next.id != "scene_videos", "补完就不该再报缺口"

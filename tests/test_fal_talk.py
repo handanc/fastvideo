@@ -28,7 +28,6 @@ from fastvideo3.providers.base import (
     AccountGateError,
     Capability,
     CapabilityMismatchError,
-    Provider,
     ProviderError,
     TransientAPIError,
     clamp_resolution,
@@ -86,50 +85,6 @@ def _provider() -> FalInfiniteTalkProvider:
 
 
 # ─────────────────────────── 装配与路由 ───────────────────────────
-def test_talk_routing_pairs_channel_with_mode(tmp_path):
-    """口型**通道与模式必须成对**，而成对的答案**按档位不同**（2026-10-11 四次定档）。
-
-    - economy / high（A 链）：主 = 百炼 `wan2.2-s2v`（只吃"图片+音频"）→ `talk_mode`
-      必须是 `s2v_direct`。economy 的运动片段是 480P（短边 480 < videoretalk 要求的
-      640px），就算把路由照抄成 videoretalk 也会被服务端拒 —— 这两档**不能**走 B 链。
-    - cinema（B 链）：m4 的 1080P 运动片段 + 对白音频 → `videoretalk` 重对口型 →
-      `talk_mode` 必须是 `v2v_overlay`。理由是架构：retalk **不重画整段画面**（身份
-      继承 m3 的参考图锁脸）且**输出分辨率/帧率=输入**（1080P 不再被钳到 720P）。
-
-    守两件事：
-    1. 兜底必须**还能出口型**，且输入形态与**本档的模式**相容：A 链兜 fal 的图像端点
-       （图片+音频），B 链兜 fal 的 v2v 端点（同一 provider 按形态自动选端点）。
-       兜到形态不相容的通道等于没有兜底。
-    2. 通道与模式**成对**。不成对的实际代价（run_20261011_164152 实测）：对白镜头先烧
-       一份 i2v 的钱，再 100% 降级成无口型叠音，而"生成镜头视频"这一步因缺口永远不绿。
-    """
-    none_env = tmp_path / "none.env"  # 不吃开发者 .env 的 FV3_TALK_MODE（会盖住档位差异）
-    expect = {
-        "economy": ("dashscope_wan22_s2v", "s2v_direct"),
-        "high": ("dashscope_wan22_s2v", "s2v_direct"),
-        "cinema": ("dashscope_videoretalk", "v2v_overlay"),
-    }
-    for quality, (route, mode) in expect.items():
-        cfg = load_config(dotenv_path=none_env, quality=quality)
-        assert cfg.routing["talk"].default == route, quality
-        assert cfg.routing["talk"].fallback == "fal_infinitalk", quality
-        assert cfg.talk_mode == mode, quality
-
-
-def test_provider_assembled_from_yaml_endpoint_names():
-    cfg = AppConfig(fake=False, fal_api_key=_FAKE_KEY)
-    cfg.routing = {"talk": ProviderRouting(default="fal_infinitalk")}
-    from fastvideo3.providers.factory import make_provider
-
-    p = make_provider(Capability.TALK, cfg)
-    assert isinstance(p, FalInfiniteTalkProvider)
-    assert p.model == IMAGE_ENDPOINT and p.v2v_model == V2V_ENDPOINT
-    assert p.max_resolution == "720p" and p.supports_video_input
-    # 底座音频编码器是 chinese-wav2vec2-base（16k）→ m6 提交前会转 16k 副本
-    assert p.prefers_16k_audio and p.max_audio_sec == 15.0
-    assert Provider in type(p).__mro__
-
-
 def test_missing_key_is_loud_and_falls_back_to_videoretalk():
     """没 FAL_KEY 时主通道构造即报错（写清去哪拿 KEY）；兜底**按模式相容性**决定留不留。
 
@@ -474,20 +429,6 @@ def test_estimate_uses_actual_tier_but_redline_uses_worst():
     assert price_of_route("dashscope_videoretalk", "talk", "1080P") == 0.08
 
 
-def test_video_cost_cap_blocks_when_ceiling_below_worst_tier():
-    """把红线压到 ¥4/秒：InfiniteTalk 最坏档 ¥4.34/秒 必须在**装配时**就被挡住。"""
-    from fastvideo3.providers.factory import make_provider
-
-    cfg = AppConfig(fake=False, fal_api_key=_FAKE_KEY, max_video_cost_per_sec=4.0)
-    cfg.routing = {"talk": ProviderRouting(default="fal_infinitalk")}
-    with pytest.raises(ProviderError) as e:
-        make_provider(Capability.TALK, cfg)
-    assert "超过上限" in str(e.value) and V2V_ENDPOINT in str(e.value)
-    # 默认红线 ¥5/秒 应当放行（否则等于把主通道锁死）
-    cfg.max_video_cost_per_sec = 5.0
-    assert isinstance(make_provider(Capability.TALK, cfg), FalInfiniteTalkProvider)
-
-
 def test_price_key_for_tolerates_duck_typed_stubs():
     class Legacy:
         name = "legacy"
@@ -495,24 +436,6 @@ def test_price_key_for_tolerates_duck_typed_stubs():
 
     assert price_key_for(Legacy(), "720p", has_video=True) == "videoretalk"
     assert price_key_for(_provider(), "720p", has_video=True) == f"{V2V_ENDPOINT}@720p"
-
-
-def test_estimate_run_cost_includes_lipsync(tmp_path):
-    """预估必须含口型，且用**当前路由**的价（不能把通道名写死在预估里）。
-
-    吃 `dotenv_path=none.env`：这条用例守的是**出厂配置**的一致性，不能被开发者机器上
-    的 `.env`（例如 FV3_TALK_MODEL=wan3.0-video，它会把 talk_mode 推导成 scripted_talk）
-    带着一起漂 —— 那样测试红不红取决于谁的机器，等于没有测试。
-    """
-    cfg = load_config(quality="cinema", dotenv_path=tmp_path / "none.env")
-    cfg.fake = False
-    route = cfg.routing["talk"].default
-    est = estimate_run_cost_cny(cfg, 30, dialogue_sec=15)
-    assert est["talk_rate_per_sec"] == price_of_route(route, "talk", cfg.i2v_resolution)
-    assert est["lo"] > 30 * 1.2 + 15 * est["talk_rate_per_sec"] - 1e-6
-    # audio_overlay 明确不要口型 → 口型项归零
-    cfg.talk_mode = "audio_overlay"
-    assert estimate_run_cost_cny(cfg, 30, dialogue_sec=15)["talk_rate_per_sec"] == 0.0
 
 
 def test_estimate_follows_whichever_talk_channel_is_routed():
@@ -547,8 +470,8 @@ class _FalLike(FakeTalkProvider):
     产物由 FakeTalkProvider 用 ffmpeg 真生成 —— 因为 m6 出片后还会跑口型度量与
     身份漂移检查，桩文件（几个字节）会让那两步抛异常、被 except 吞成 failed_fallback，
     于是"测试通过"反而掩盖了真实路径。
-    `prefers_16k_audio` 设 False 以免这条用例再叠一次 ffmpeg 转码；真供应商是 True，
-    已由 test_provider_assembled_from_yaml_endpoint_names 直接断言。
+    `prefers_16k_audio` 设 False 以免这条用例再叠一次 ffmpeg 转码；真供应商是 True
+    （`FalInfiniteTalkProvider.prefers_16k_audio` 的类属性，见本文件协议类用例）。
     """
 
     name = "fal_infinitalk"

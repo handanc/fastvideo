@@ -212,3 +212,26 @@ async def test_storyboard_survives_flaky_judge(cfg, storage, ledger):
     deg = storage.read_degradations()
     assert any(d.get("what") == "consistency_check_unavailable" for d in deg), \
         "跳过抽查必须留痕，不能静默"
+
+
+def test_scene_prompt_is_background_only_and_strips_characters():
+    """场景概念图必须是纯背景：summary 里带角色名/动作的子句要整句删掉。
+
+    t2i 对"画面里有什么"的服从度远高于对"没有什么"——正文写着"猪八戒拉着唐僧"，
+    尾缀一句"无人物"压不住。而这张图现在是场景级生成的 reference_image（提示词里
+    写明"空景背景（图中无人）"），图里若带了人，每个镜头都会多出路人。
+    """
+    from fastvideo3.core.config import AppConfig
+    from fastvideo3.core.schema import BaseInfo, Character, Scene, Script
+    from fastvideo3.modules.m2_assets import scene_background_prompt
+
+    script = Script(
+        base_info=BaseInfo(topic="t"),
+        characters=[Character(character_id="c1", name="唐僧", appearance="白衣")],
+        scenes=[Scene(scene_id="s1", title="街", location="女儿国街道", time_of_day="日",
+                      summary="街道繁华，猪八戒拉着唐僧的袖子不肯走，灯笼高挂，夜色温暖")],
+    )
+    p = scene_background_prompt(AppConfig(fake=True), script, script.scenes[0])
+    assert "唐僧" not in p and "猪八戒" not in p, p
+    assert "街道繁华" in p and "灯笼高挂" in p, "不带人物的氛围子句要保留"
+    assert p.startswith("空景场景概念图") and "没有任何人物" in p

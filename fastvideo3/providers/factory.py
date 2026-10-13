@@ -169,11 +169,12 @@ def _video_cost_cap(cfg: AppConfig, provider: Provider) -> None:
     price = price_of(key, provider.capability.value, 1.0)
     if price > cfg.max_video_cost_per_sec:
         raise ProviderError(
-            f"模型 {key} 单价 ¥{price}/秒 超过上限 ¥{cfg.max_video_cost_per_sec}/秒"
-            f"（FV3_MAX_VIDEO_COST_PER_SEC 或 yaml 的 max_video_cost_per_sec 可调）。"
-            f"更便宜的口型/视频通道：videoretalk(¥0.08/s，在已有运动片段上重对口型)、"
-            f"fal-ai/infinitalk(¥1.43/s@480p 首帧直出)、wan2.2-s2v(¥0.9/s@720P)、"
-            f"wan2.2-i2v-flash(¥0.11/s)。"
+            f"模型 {key} 单价 ¥{price}/秒 超过上限 ¥{cfg.max_video_cost_per_sec}/秒。"
+            f"两条出路：① 降分辨率档 `i2v_resolution`（wan3.0-video 1080P ¥1.2/秒 → "
+            f"720P ¥0.6 → 480P ¥0.3，这条最直接）；② 确实要这一档就调高 "
+            f"FV3_MAX_VIDEO_COST_PER_SEC 或 yaml 的 max_video_cost_per_sec。"
+            f"（别再列 A/B 链的便宜通道：videoretalk / fal-infinitalk / wan2.2-s2v 已从"
+            f"本项目删除，照着换是换不出模型的。）"
         )
 
 
@@ -276,10 +277,14 @@ def _build_real(
             mm("dashscope_retalk", "videoretalk"),
         )
     if name == "dashscope_wan27_i2v":
-        # media 数组新协议：wan2.7-i2v 与 wan3.0-video 系同族
+        # media 数组新协议（wan2.7-i2v 与 wan3.0-video 系同族）。模型名读 **dashscope_i2v**
+        # —— 与 `model_for("i2v")`、目录校验、台账取价是同一个键。此前它读 dashscope_i2v27，
+        # 于是 yaml 里 `dashscope_i2v: wan2.2-i2v-flash` 会被面板显示、被目录拒（400）、
+        # 却根本不会发出去：三份事实各漂一次，排查的人只能猜。
         return dashscope.DashScopeI2V27Provider(
             cfg.dashscope_api_key,
-            mm("dashscope_i2v27", "wan2.7-i2v"),
+            mm("dashscope_i2v", "wan3.0-video"),
+            base_url=cfg.dashscope_video_base_url,
         )
     if name == "dashscope_wan27_audio":
         return dashscope.DashScopeI2V27TalkProvider(

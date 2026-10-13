@@ -48,8 +48,6 @@ export const api = {
   costEstimate: (quality, duration, talkMode) =>
     fetch(`/api/cost-estimate?quality=${encodeURIComponent(quality)}&duration=${encodeURIComponent(duration)}&talk_mode=${encodeURIComponent(talkMode || '')}`).then(unwrap),
   // 口型模式清单：选项、通道名、输入形态、档位冲突提示都来自后端 core/talkmode.py
-  talkModes: (quality) =>
-    fetch(`/api/talk-modes?quality=${encodeURIComponent(quality || '')}`).then(unwrap),
   // 模型选择器：可选清单 + 当前实际生效的模型 + 是谁定的（run/.env/yaml），
   // 唯一来源 core/model_catalog.py（前端不抄第二份模型名表）
   modelChoices: (quality, runId) =>

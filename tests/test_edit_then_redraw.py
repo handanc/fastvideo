@@ -14,6 +14,7 @@ m2/m3 读的是**改过的剧本**，而不是缓存里的旧描述：
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,8 +27,11 @@ from fastvideo3.core.stages import build_context
 from fastvideo3.core.storage import RunStorage
 from fastvideo3.providers.base import Capability
 from fastvideo3.providers.fake import (
+    FakeI2VProvider,
     FakeT2IProvider,
+    FakeTalkProvider,
     FakeTextProvider,
+    FakeTTSProvider,
     FakeVLMProvider,
 )
 
@@ -109,6 +113,14 @@ async def test_edited_descriptions_reach_the_redraw_prompts(client, outdir, cfg,
             return _NoDistillText()
         if cap is Capability.VLM:
             return FakeVLMProvider()
+        # 「场景视频」这一步除了画帧，还要配音（音色参考的原料）与场景片段：
+        # 一律给离线桩，测试才能不花钱地把整步跑完。
+        if cap is Capability.TTS:
+            return FakeTTSProvider()
+        if cap is Capability.I2V:
+            return FakeI2VProvider()
+        if cap is Capability.TALK:
+            return FakeTalkProvider()
         from fastvideo3.providers.factory import make_provider as real
 
         return real(cap, cfg_, work_dir)
@@ -123,11 +135,12 @@ async def test_edited_descriptions_reach_the_redraw_prompts(client, outdir, cfg,
     steps = []
     for _ in range(4):
         rep = prog.compute_progress(storage, meta, cfg)
-        if rep.next is None or rep.next.id not in ("chars", "scenes", "frames"):
+        if rep.next is None or rep.next.id not in ("chars", "scenes", "scene_videos"):
             break
         await _run_step(ctx, storage, cfg, meta, rep.next)
         steps.append(rep.next.id)
-    assert steps == ["chars", "scenes", "frames"], steps
+    # 五步流水线：首帧与尾帧都在「场景视频」这一步里补（不再是独立的 frames 步）
+    assert steps == ["chars", "scenes", "scene_videos"], steps
 
     joined = "\n".join(spy.prompts)
     assert new_appearance in joined, "立绘没用新外貌描述重画"
@@ -165,8 +178,9 @@ async def test_edited_description_redraws_without_deleting(client, outdir, cfg, 
     from fastvideo3.app.cli import _run_step
 
     rep = prog.compute_progress(storage, meta, cfg)
-    assert rep.next.id == "chars" and "c1" in (rep.next.stale or []) or "c1" in (
-        rep.next.missing or []
-    ), "改外貌后角色图步骤必须把 c1 列为待重做"
+    pending = set(rep.next.missing or []) | {
+        Path(s).stem[len("char_"):] for s in (rep.next.stale or [])
+    }
+    assert rep.next.id == "chars" and "c1" in pending, "改外貌后角色图步骤必须把 c1 列为待重做"
     await _run_step(ctx, storage, cfg, meta, rep.next)
     assert any(new_appearance in p for p in spy.prompts), "没删图也必须按新描述重画"

@@ -37,9 +37,11 @@ def test_shot_defaults():
 def test_project_config_defaults():
     pc = ProjectConfig(run_id="r1", base_info=BaseInfo(topic="t"))
     assert pc.profile == "edu-sqlite"
-    # 与 configs/*.yaml、AppConfig、api.RunCreate、cli 选项同值；且与主通道
-    # wan2.2-s2v 的输入形态成对（s2v 不吃视频输入）。默认值散落多处=静默分歧。
-    assert pc.talk_mode == "s2v_direct"
+    # 口型不再是选项：wan3.0 场景片段自带台词口型，音轨恒为模型原声。
+    # 默认值散落多处=静默分歧，所以这里钉住 schema 这一份。
+    assert pc.talk_mode == "scripted_talk"
+    assert pc.voice_source == "model"
+    assert pc.ignored_legacy_fields == []
     assert pc.budget_limit_cny == 150.0
 
 

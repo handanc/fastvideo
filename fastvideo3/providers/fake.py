@@ -340,22 +340,31 @@ class FakeTalkProvider(TalkProvider, _FakeVideoJobMixin):
     name = "fake_talk"
     model = "fake-talk"
     # 与 FakeT2IProvider 声明 supports_reference_image 同一个理由：让 --fake 冒烟跑通
-    # **真实拓扑**。C 链的 wan3.0 通道确实收 last_frame，桩不声明的话 m6 会按"通道不支持"
-    # 退回单首帧，首尾帧这条路径在离线冒烟里就永远测不到。
+    # **真实拓扑**。wan3.0 通道收 last_frame / reference_image / reference_audio，桩不声明
+    # 的话场景级生成在离线冒烟里永远走不到，状态机会卡在 scene_videos 空转。
     supports_last_frame = True
+    supports_reference_image = True
+    supports_reference_audio = True
 
     def __init__(self, fail_first: int = 0):
         super().__init__()
         self._fail_first = fail_first
 
     async def submit(  # type: ignore[override]
-        self, dest: Path, image: Path, audio: Path, **params: Any
+        self, dest: Path, image: Path | None = None, audio: Path | None = None, **params: Any
     ) -> str:
         self._fail_if_needed()
         job_id = uuid.uuid4().hex[:12]
         dest.parent.mkdir(parents=True, exist_ok=True)
-        image_to_video(image, dest, duration=2.0, audio=audio)
-        self._jobs[job_id] = (dest, image)
+        src = image
+        if src is None:
+            # 参考生视频形态没有首帧（只有 references/voice_refs）：造一张占位图当源，
+            # 否则 image_to_video 收到 None → ffmpeg "Error opening input file None"。
+            # 离线冒烟要跑通**真实拓扑**，桩就不能只在首帧形态下能活。
+            src = dest.parent / f"{dest.stem}_refsrc.png"
+            make_placeholder_image(src, label=str(params.get("prompt", ""))[:16] or "scene")
+        image_to_video(src, dest, duration=2.0, audio=audio)
+        self._jobs[job_id] = (dest, src)
         return job_id
 
     async def poll(self, job_id: str) -> VideoJobStatus:

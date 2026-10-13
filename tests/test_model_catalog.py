@@ -71,56 +71,12 @@ def test_env_talk_model_drives_talk_mode(tmp_path):
     assert p.name == "dashscope_wan30_talk" and p.model == "wan3.0-video"
 
 
-def test_explicit_talk_mode_wins_over_derivation(tmp_path):
-    """显式写了 FV3_TALK_MODE 就以它为准（专家级覆盖不该被推导顶掉）。"""
-    env = tmp_path / ".env"
-    env.write_text(
-        "DASHSCOPE_API_KEY=sk-test\nFV3_TALK_MODEL=wan3.0-video\nFV3_TALK_MODE=audio_overlay\n",
-        encoding="utf-8",
-    )
-    assert load_config(quality="cinema", dotenv_path=env).talk_mode == "audio_overlay"
-
-
-def test_unmappable_talk_model_leaves_mode_alone(tmp_path):
-    """认不出来的模型名（如 fal 端点 ID，A/B 两链都吃得下）不改模式，保持 yaml 的值。"""
-    env = tmp_path / ".env"
-    env.write_text(
-        "DASHSCOPE_API_KEY=sk-test\nFV3_TALK_MODEL=fal-ai/infinitalk\n", encoding="utf-8"
-    )
-    cfg = load_config(quality="cinema", dotenv_path=env)
-    assert cfg.talk_mode == "v2v_overlay", "cinema 档 yaml 的值应保持不变"
-
-
-def test_model_choices_reports_env_derived_talk_default(tmp_path, monkeypatch):
-    """/api/model-choices 的 `talk.current_label` 要反映 .env 推导出的默认（前端"默认 X"用它）。"""
-    from fastapi.testclient import TestClient
-
-    import fastvideo3.app.api as api_mod
-
-    env = tmp_path / ".env"
-    env.write_text(
-        "DASHSCOPE_API_KEY=sk-test\nFV3_TALK_MODEL=wan3.0-video\n"
-        "FV3_TEXT_MODEL=qwen3.7-flash\nFV3_I2V_MODEL=wan3.0-video-prime\n",
-        encoding="utf-8",
-    )
-    real_load = api_mod.load_config
-
-    def _load(**kw):
-        kw["dotenv_path"] = env
-        return real_load(**kw)
-
-    monkeypatch.setattr(api_mod, "load_config", _load)
-    with TestClient(api_mod.app) as c:
-        data = c.get("/api/model-choices?quality=cinema").json()
-    assert data["talk"]["current"] == "scripted_talk"
-    assert data["talk"]["current_label"] == "wan3.0-video"
-    eff = {x["capability"]: x["effective_model"] for x in data["capabilities"]}
-    assert eff["text"] == "qwen3.7-flash"
-    assert eff["i2v"] == "wan3.0-video-prime"
-
-
 def test_catalog_covers_the_requested_models():
-    """用户点名的模型必须全在目录里，且每个都有"跟随档位"这一默认项。"""
+    """目录就是面板能点什么的全部真相：点名的模型要在，不该在的不能悄悄回来。
+
+    三项都按**集合相等**断言（不是 ⊆）：目录多收一个名字，用户就会选到一个"能选出来、
+    链路已经不再支持"的模型 —— 那比少一个名字贵得多（少一个只是暂时不能选）。
+    """
     assert [c.model for c in CHOICES["text"]][:2] == [
         "qwen3.7-flash",
         "qwen3.7-flash-2026-07-15",
@@ -134,16 +90,17 @@ def test_catalog_covers_the_requested_models():
             # 480P/720P 的出厂默认也必须可选：面板已去掉"跟随默认"空选项，
             # 否则"当前生效值"根本不在下拉里，用户无从选起
             "wanx2.1-t2i-turbo", "wanx2.1-t2i-plus"} == {c.model for c in CHOICES["t2i"]}
-    assert {"wan3.0-video", "wan3.0-video-prime", "wan2.7-i2v",
-            "wan2.2-i2v-flash", "wan2.2-i2v-plus"} == {c.model for c in CHOICES["i2v"]}
+    # 图生视频**只剩 wan3.0 一族**（用户裁定："image2video 只保留 wan3.0 系列模型"）：
+    # 场景级多镜头、首尾帧、参考素材、原生台词口型都只有这一族有，留着 wan2.7/wan2.2
+    # 就是留着一堆"选得出、跑不对"的入口。用 == 而不是 ⊆：多收一个名字同样要被发现。
+    assert {c.model for c in CHOICES["i2v"]} == {"wan3.0-video", "wan3.0-video-prime"}
     for cap in SELECTABLE_CAPS:
         rows = choices_for(cap)
         assert rows, cap
         # 面板不再有"跟随默认"空选项：每一项都是具体模型名
         assert all(r["model"] for r in rows), (cap, rows[0])
-    # 口型清单来自 talkmode（同一条链的多个模型共用一个 mode）
-    talk = {c.model for c in CHOICES["talk"]}
-    assert {"wan2.2-s2v", "videoretalk", "wan3.0-video", "wan3.0-video-prime"} <= talk
+    # 口型不再是目录里的一栏：wan3.0 生成场景片段时自带台词口型，独立口型通道已下线
+    assert "talk" not in CHOICES and "talk" not in SELECTABLE_CAPS
 
 
 def test_configured_models_reads_env_then_yaml(tmp_path):
@@ -166,7 +123,10 @@ def test_configured_models_reads_env_then_yaml(tmp_path):
     assert got["talk"] == "wan3.0-video-prime"
     # 没配 .env 时回落到 yaml 的档位默认（480P = wanx2.1-t2i-turbo / wan2.2-i2v-flash）
     bare = configured_models(load_config(quality="economy", dotenv_path=tmp_path / "none.env"))
-    assert bare["t2i"] == "wanx2.1-t2i-turbo" and bare["i2v"] == "wan2.2-i2v-flash"
+    assert bare["t2i"] == "wanx2.1-t2i-turbo" and bare["i2v"] == "wan3.0-video", (
+        "yaml 档位默认必须落在**目录允许**的模型上：曾经 yaml 写着 wan2.2-i2v-flash，"
+        "面板显示成\"配置指定\"、`validate` 却回 400，默认值自己选不回来"
+    )
 
 
 def test_effective_model_outside_catalog_is_added_as_a_choice():
@@ -209,60 +169,6 @@ def test_talk_model_outside_channel_table_resolves_by_protocol():
     assert mode_for_model("完全不认识的模型") is None
 
 
-def test_api_appends_unlisted_talk_model_and_accepts_it(tmp_path, monkeypatch):
-    """端到端：.env 指定一个目录外的口型模型 → 选项里出现它，且建任务不会被拒。"""
-    from fastapi.testclient import TestClient
-
-    import fastvideo3.app.api as api_mod
-
-    env = tmp_path / ".env"
-    env.write_text(
-        "DASHSCOPE_API_KEY=sk-test\nFV3_TALK_MODEL=fal-ai/infinitalk\n", encoding="utf-8"
-    )
-    real_load = api_mod.load_config
-
-    def _load(**kw):
-        kw["dotenv_path"] = env
-        return real_load(**kw)
-
-    monkeypatch.setattr(api_mod, "load_config", _load)
-    monkeypatch.setattr(api_mod, "_spawn", lambda cmd, log_path=None: None)
-    with TestClient(api_mod.app) as c:
-        data = c.get("/api/model-choices?quality=cinema").json()
-        values = [m["value"] for m in data["talk"]["choices"]]
-        assert "fal-ai/infinitalk" in values, values
-        assert data["talk"]["current_value"] == "fal-ai/infinitalk"
-        # fal 两个端点由同一 provider 承接（按输入形态自动选），s2v_direct 与 v2v_overlay
-        # **都相容** → 保持 cinema 档 yaml 的 v2v_overlay，不悄悄改掉用户的档位语义
-        assert data["talk"]["current"] == "v2v_overlay"
-        r = c.post(
-            "/api/runs",
-            json={"topic": "x", "quality": "cinema", "fake": True,
-                  "talk_model": "fal-ai/infinitalk"},
-        )
-        assert r.status_code == 201, r.text
-
-
-def test_api_talk_label_names_the_env_model_not_the_chain_head(tmp_path, monkeypatch):
-    """`.env` 的口型默认值是同一条链的**备选**模型时，面板要显示它自己。
-
-    scripted_talk 有两个模型（wan3.0-video / wan3.0-video-prime）。按"模式"找标签会永远
-    返回清单里排在前面的 wan3.0-video，用户看到的默认值就和他配的不一致。
-    """
-    from fastapi.testclient import TestClient
-
-    env = tmp_path / ".env"
-    env.write_text("DASHSCOPE_API_KEY=sk-test\nFV3_TALK_MODEL=wan3.0-video-prime\n", encoding="utf-8")
-    real_load = api_mod.load_config
-    monkeypatch.setattr(api_mod, "load_config", lambda **kw: real_load(**{**kw, "dotenv_path": env}))
-
-    with TestClient(api_mod.app) as c:
-        talk = c.get("/api/model-choices?quality=cinema").json()["talk"]
-    assert talk["current_value"] == "wan3.0-video-prime"
-    assert talk["current"] == "scripted_talk"
-    assert talk["current_label"] == "wan3.0-video-prime"
-
-
 def test_explicit_panel_pick_of_unlisted_talk_model_uses_protocol_mode():
     """面板上**显式**点选目录外的口型端点时，没有"当前模式"可保持 → 按协议取它的主形态。
 
@@ -291,12 +197,24 @@ def test_every_selectable_model_resolves_to_a_real_protocol():
 
 
 def test_validate_rejects_unknown_names_and_non_selectable_caps():
+    """两条不同的拒法不能混：**能力不开放**与**名字不在目录**说的是两件事。
+
+    `talk` 已从 SELECTABLE_CAPS 移除（wan3.0 生成场景片段时自带台词口型，独立口型通道
+    下线），所以它和 tts/vlm/r2v 一样落在"不支持手动选择"这一支 —— 报错要说的是
+    "这个能力没有下拉"，而不是"这个名字我不认识"。把 talk 写成后者会骗人：
+    连目录里的 wan3.0-video 都"选不了"，用户会以为是自己打错了字。
+    """
     err = validate("t2i", "wan2.2-i2v-flash")  # 那是图生视频的模型
     assert err and "可选" in err
-    # 口型现在**可以**在这里选（它的清单来自 talkmode，选中即同时决定模式）
-    assert validate("talk", "videoretalk") is None
-    assert validate("talk", "wan3.0-video-prime") is None
-    assert "不支持模型" in (validate("talk", "sora-2") or "")
+    for model in ("videoretalk", "wan3.0-video", "wan3.0-video-prime", "sora-2"):
+        assert "不支持手动选择 talk" in (validate("talk", model) or ""), model
+    # 图生视频只剩 wan3.0 两档：曾经合法的旧名字现在要被拒，并把可选项说出来
+    for gone in ("wan2.7-i2v", "wan2.2-i2v-flash", "wan2.2-i2v-plus"):
+        e = validate("i2v", gone)
+        assert e and "i2v 不支持模型" in e, gone
+        assert "wan3.0-video" in e and "wan3.0-video-prime" in e, "拒的时候要说清能选谁"
+    assert validate("i2v", "wan3.0-video") is None
+    assert validate("i2v", "wan3.0-video-prime") is None
     # tts/vlm/r2v 仍不开放：换它们要连带改提示词与度量口径
     assert "不支持手动选择" in (validate("vlm", "qwen-vl-max") or "")
     assert validate("t2i", FOLLOW_PROFILE) is None
@@ -379,25 +297,52 @@ def test_model_choices_endpoint_lists_effective_and_source(client):
 
 
 def test_every_selectable_model_shows_a_real_price(client):
-    """面板能选的模型**全部**要有真实单价（pyproject.toml 的单价表）。
+    """目录里**摆出来给人点**的模型，每一个都要有单价，而且要有出处。
 
-    以前这条断言的是反面（"qwen-image-2.0 未回填 → priced=False"）：可选项带着
-    "没价"上线，台账就回落能力默认价，熔断线按一个假想价放行。现在单价表的
-    要求是覆盖全部可选项，谁掉出去就是回归。
+    为什么判据落在 `CHOICES` 而不是 API 返回的每一行：`ui_catalog` 会把"当前生效值不在
+    目录里"的模型也补成一行（标签带"配置指定"）—— 那一行是**这台机器 `.env` 的
+    FV3_*_MODEL**，不是我们交付给用户的选择。拿"必须有价"要求它，红不红就取决于谁的
+    机器上写了什么（`deepseek-v4-flash-0731` 这次就是这么红的）。它真正该守的是另一件事：
+    **没价必须看得见** —— 因为没进单价表的模型会让台账回落能力默认价、熔断按假想价放行。
+
+    目录内那部分的口径没有放松，反而更硬：条目要么是有出处的确定价（`certain=True`），
+    要么按 pyproject 的先例**显式**写 `verified = false`（价从旧表沿用、官网当前查不到），
+    并留一句 note 说清它从哪来。"有数字但没根据"两头不靠，不接受。
     """
-    r = client.get("/api/model-choices?quality=cinema")
-    data = r.json()
+    from fastvideo3.core import pricing
+    from fastvideo3.core.cost import load_pricing
+
+    table = load_pricing().get("models") or {}
+    data = client.get("/api/model-choices?quality=cinema").json()
     caps = {c["capability"]: c for c in data["capabilities"]}
-    for cap, rows in caps.items():
-        unpriced = [row["model"] for row in rows["choices"] if not row["priced"]]
-        assert not unpriced, f"{cap} 这些可选项没有真实单价 → 回填 [tool.fastvideo3.pricing]：{unpriced}"
-    # 口型那一项也在同一个组件里，同样要有价（含备选模型）
-    assert {"wan3.0-video", "wan3.0-video-prime", "wan2.2-s2v", "videoretalk"} <= {
-        m["value"] for m in data["talk"]["choices"]
-    }
+    assert set(caps) == set(CHOICES), "面板的能力行数必须与目录一致"
+    for cap, block in caps.items():
+        catalog = {c.model for c in CHOICES[cap]}
+        for row in block["choices"]:
+            model = row["model"]
+            in_table = model in table
+            # 面板显示"有没有价"必须与单价表一致，不许它自己感觉良好
+            assert row["priced"] is in_table, (cap, model, row["priced"])
+            if model not in catalog:
+                continue  # 本地 .env 补进来的"配置指定"行：如实标注即可
+            assert in_table, (
+                f"{cap} 的可选项 {model} 没有单价条目 → 回填 [tool.fastvideo3.pricing]"
+            )
+            spec = table[model] if isinstance(table[model], dict) else {}
+            if spec.get("verified") is False:
+                assert spec.get("note"), f"{model} 标了 verified=false 就要说清价从哪来"
+            else:
+                assert pricing.resolve(model, cap).certain is True, (cap, model)
+    # 口型不再是可选项：那一块只剩"已下线"的说明，没有可点模型，也就没有单价要求
+    assert data["talk"]["removed"] is True and "choices" not in data["talk"]
 
 
 def test_create_run_persists_model_choices(client, outdir):
+    """建任务时点名的模型要原样落进 run_meta，续跑每一步才恢复得到同一个模型。
+
+    i2v 点的是 `wan3.0-video-prime`（以前这里写 wan2.7-i2v）：图生视频只剩 wan3.0 两档，
+    旧名字现在**在建任务时**就被拒 —— 而且是带着可选项拒的，见下面那半个用例。
+    """
     r = client.post(
         "/api/runs",
         json={
@@ -405,14 +350,32 @@ def test_create_run_persists_model_choices(client, outdir):
             "quality": "cinema",
             "duration": 30,
             "fake": True,
-            "model_overrides": {"t2i": "wan2.7-image", "i2v": "wan2.7-i2v", "text": ""},
+            "model_overrides": {
+                "t2i": "wan2.7-image",
+                "i2v": "wan3.0-video-prime",
+                "text": "",
+            },
         },
     )
     assert r.status_code == 201, r.text  # 路由声明的 status_code=201（建任务不花钱也不占锁）
     run_id = r.json()["run_id"]
     meta = json.loads((outdir / run_id / "run_meta.json").read_text(encoding="utf-8"))
     # 只落**点名**的能力；空值＝跟随档位，不进表（否则 .env 的覆盖会被误当成用户本次选择）
-    assert meta["model_overrides"] == {"t2i": "wan2.7-image", "i2v": "wan2.7-i2v"}
+    # `talk` 是 `i2v` 的镜像：场景视频与口型是同一次 wan3.0 调用。不一起落，就会被 .env 里
+    # 旧的 FV3_TALK_MODEL 压过 —— "面板选了 prime、实际跑 video"是最难查的那类分叉。
+    assert meta["model_overrides"] == {
+        "t2i": "wan2.7-image", "i2v": "wan3.0-video-prime", "talk": "wan3.0-video-prime",
+    }, meta["model_overrides"]
+
+    # 下线的 i2v 名字：建任务就拒（等它跑到 m4 就是真花钱了），并且要说清能选谁
+    gone = client.post(
+        "/api/runs",
+        json={"topic": "x", "quality": "cinema", "fake": True,
+              "model_overrides": {"i2v": "wan2.7-i2v"}},
+    )
+    assert gone.status_code == 400, gone.text
+    detail = gone.json()["detail"]
+    assert "i2v 不支持模型" in detail and "wan3.0-video" in detail, detail
 
 
 def test_create_run_rejects_unknown_model_with_choices(client):
@@ -429,16 +392,18 @@ def test_create_run_rejects_unknown_model_with_choices(client):
 def test_create_run_rejects_non_selectable_capability(client):
     """tts/vlm/r2v 不开放手动选择：换它们要连带改提示词与度量口径，不是一次点选能说清的。
 
-    口型（talk）**是**开放的 —— 但它的清单来自 `core/talkmode.py`，选中即同时决定
-    `talk_mode`，所以仍然只有一份事实（见 test_talk_model_choice_drives_mode）。
+    口型（talk）现在和它们同一栏：wan3.0 生成场景片段时自带台词口型，独立口型通道已下线，
+    所以点 `talk` 也是 400 —— 连目录里存在的 `wan3.0-video` 都不该被收进 model_overrides，
+    否则老前端传过来会把一次"已经不存在的选择"当成用户本次点名存进 run_meta。
     """
-    r = client.post(
-        "/api/runs",
-        json={"topic": "x", "quality": "economy", "fake": True,
-              "model_overrides": {"vlm": "qwen-vl-max"}},
-    )
-    assert r.status_code == 400
-    assert "不支持手动选择" in r.json()["detail"]
+    for cap, model in (("vlm", "qwen-vl-max"), ("talk", "wan3.0-video")):
+        r = client.post(
+            "/api/runs",
+            json={"topic": "x", "quality": "economy", "fake": True,
+                  "model_overrides": {cap: model}},
+        )
+        assert r.status_code == 400, (cap, r.text)
+        assert "不支持手动选择" in r.json()["detail"], cap
 
 
 def test_create_run_rejects_overflow_capabilities(client):
@@ -464,7 +429,11 @@ def test_cli_new_persists_and_prints_choices(outdir):
     assert r.exit_code == 0, r.output
     metas = sorted((outdir).glob("run_*/run_meta.json"))
     meta = json.loads(metas[-1].read_text(encoding="utf-8"))
-    assert meta["model_overrides"] == {"t2i": "wan2.7-image", "i2v": "wan3.0-video-prime"}
+    # `talk` 是 `i2v` 的镜像：场景视频与口型是同一次 wan3.0 调用。不一起落，就会被 .env 里
+    # 旧的 FV3_TALK_MODEL 压过 —— "面板选了 prime、实际跑 video"是最难查的那类分叉。
+    assert meta["model_overrides"] == {
+        "t2i": "wan2.7-image", "i2v": "wan3.0-video-prime", "talk": "wan3.0-video-prime",
+    }, meta["model_overrides"]
 
 
 def test_cli_new_rejects_unknown_model(outdir):

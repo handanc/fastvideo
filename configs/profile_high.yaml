@@ -9,7 +9,7 @@ providers:
   # 兜底 = fal.ai InfiniteTalk 图像端点（同输入形态，需 .env 的 FAL_KEY；未填则兜底为空，
   # 走 I2V+叠音降级并落 degradations.json —— 那时成片就是"没有对口型"，看板会红标）。
   talk: {default: dashscope_wan22_s2v, fallback: fal_infinitalk}
-  i2v: {default: dashscope_wan22_i2v, fallback: siliconflow_wan22}
+  i2v: {default: dashscope_wan27_i2v}   # 与 economy 同族，只差分辨率档
   # 参考图锁脸：首帧以角色立绘为图像条件生成（wan2.7-image 同步端点）。
   # 增量成本 ≈ ¥0.05/张 × 约21张 = +¥1/片；fallback 不支持参考图时会落
   # fallback_used{dropped:[ref_image]} 事件，降级可见。
@@ -47,4 +47,4 @@ generation:
 models:
   dashscope_t2i: wanx2.1-t2i-plus     # plus 档：构图/质感/提示词遵循度显著优于 turbo
   dashscope_t2i27: wan2.7-image       # 参考图锁脸首帧（messages 协议，支持多参考图）
-  dashscope_i2v: wan2.2-i2v-plus      # plus 档：运动连贯、无闪帧、细节保留
+  dashscope_i2v: wan3.0-video           # 1080P ¥1.2/秒；场景级生成自带口型

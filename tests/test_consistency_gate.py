@@ -61,7 +61,7 @@ async def _chain(cfg, outdir, vlm, *, auto_reshoot: bool = False, gate: bool = T
         {
             "run_id": run_id,
             "base_info": BaseInfo(topic="闸门", target_duration_sec=15).model_dump(),
-            "fake": True, "quality": "cinema", "talk_mode": "s2v_direct",
+            "fake": True, "quality": "cinema", "talk_mode": "scripted_talk",
             "budget_limit_cny": 100.0,
         },
     )
@@ -136,8 +136,20 @@ async def test_auto_reshoot_redoes_picked_shots_exactly_once(cfg, outdir):
     assert len(shots) == 1, "只允许一轮，防成本失控"
     picks = shots[0]["shots"]
     assert picks == ["s1_01", "s2_02"], f"应挑动作/空镜镜头（对白镜头不入选）：{picks}"
+    # 场景级生成下，重拍单位是**覆盖该镜头的场景片段**（一段戏在一个 mp4 里，
+    # 没有 clips/shot_*.mp4 可重出）；重出的证据是文件比"重拍"事件更新。
+    import time as _t
+
+    from fastvideo3.core.scenegroup import group_scenes
+    from fastvideo3.core.schema import Script
+
+    ev_ts = _t.mktime(_t.strptime(shots[0]["ts"], "%Y-%m-%d %H:%M:%S"))
+    script = Script.model_validate(storage.load_json("script.json"))
+    group_of = {sid: g.group_id for g in group_scenes(script) for sid in g.shot_ids}
     for sid in picks:
-        assert (storage.root / "clips" / f"shot_{sid}.mp4").exists(), "重拍后片段必须重新产出"
+        clip = storage.root / "clips" / f"scene_{group_of[sid]}.mp4"
+        assert clip.is_file(), f"重拍后 {sid} 所在场景片段必须重新产出（{clip.name}）"
+        assert clip.stat().st_mtime >= ev_ts - 1.0, "场景片段没被重出，重拍等于没发生"
 
     summary = storage.load_json("run_summary.json")
     assert summary["reshoot_shots"] == picks

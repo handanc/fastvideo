@@ -134,11 +134,16 @@ def test_api_create_run_writes_back_and_records_provenance(outdir, dotenv, monke
         )
         assert r.status_code == 201, r.text
         body = r.json()
-        assert sorted(body["env_written"]) == ["FV3_I2V_MODEL", "FV3_T2I_MODEL"]
+        # FV3_TALK_MODEL 一起写回：talk 是 i2v 的镜像，漏了它 .env 的旧值会压过用户新选档位
+        assert sorted(body["env_written"]) == ["FV3_I2V_MODEL", "FV3_T2I_MODEL", "FV3_TALK_MODEL"]
         assert body["env_error"] == ""
         meta = json.loads((outdir / body["run_id"] / "run_meta.json").read_text(encoding="utf-8"))
-        assert meta["model_overrides"] == {"t2i": "wan2.7-image", "i2v": "wan3.0-video"}
-        assert sorted(meta["model_env_written"]) == ["FV3_I2V_MODEL", "FV3_T2I_MODEL"]
+        assert meta["model_overrides"] == {
+            "t2i": "wan2.7-image", "i2v": "wan3.0-video", "talk": "wan3.0-video",
+        }, meta["model_overrides"]
+        assert sorted(meta["model_env_written"]) == [
+            "FV3_I2V_MODEL", "FV3_T2I_MODEL", "FV3_TALK_MODEL",
+        ], meta["model_env_written"]
     out = dotenv.read_text(encoding="utf-8")
     assert "FV3_T2I_MODEL=wan2.7-image" in out and "FV3_I2V_MODEL=wan3.0-video" in out
     assert "DASHSCOPE_API_KEY=sk-super-secret-keep-me" in out  # 密钥行仍然完好
@@ -173,8 +178,11 @@ def test_env_write_failure_still_creates_the_run(outdir, tmp_path, monkeypatch):
         assert r.status_code == 201, r.text
         assert r.json()["env_error"]
         meta = json.loads((outdir / r.json()["run_id"] / "run_meta.json").read_text(encoding="utf-8"))
-        assert meta["model_overrides"] == {"i2v": "wan3.0-video"}
-        assert meta["model_env_written"] == [] or meta["model_env_written"] == ["FV3_I2V_MODEL"]
+        assert meta["model_overrides"] == {"i2v": "wan3.0-video", "talk": "wan3.0-video"}
+        # 写失败也照样建任务；env_written 只能是点名的 i2v 与它的镜像 talk（部分成功要可见）
+        assert set(meta["model_env_written"]) <= {"FV3_I2V_MODEL", "FV3_TALK_MODEL"}, (
+            meta["model_env_written"]
+        )
 
 
 def test_cli_new_writes_back_too(outdir, dotenv, monkeypatch):

@@ -170,114 +170,42 @@ def test_free_quota_placeholders_are_gone_and_real_prices_are_in():
 
 
 def test_video_cost_cap_rejects_overpriced_channel(monkeypatch, tmp_path):
-    """用户红线 ¥5/s 落在装配层：改 .env 切到贵通道会直接报错，而不是静默烧钱。"""
+    """¥/秒 上限拦的是**实际会被装配出来的那条通道的最贵一档**，报错还要给出出路。
+
+    口型通道只剩 wan3.0（场景片段自带台词口型），所以今天被这条红线拦下来的一定是
+    `wan3.0-video@1080p`（¥1.2/秒）或 `wan3.0-video-prime@1080p`（¥1.8/秒）。
+    闸门取 `worst_case_price_key()` 而不是"这次实际会发的档位"：用户在建任务之后
+    还能把分辨率调到 1080P，而装配期闸门只过一次 —— 按低档校验等于红线形同虚设。
+
+    拦下时必须把**拦的价、上限、以及改哪个变量**写进报错：只说"超了"的报错会让用户
+    去翻源码才知道 `FV3_MAX_VIDEO_COST_PER_SEC` 才是那个旋钮。
+    """
+    from fastvideo3.core.cost import price_of
     from fastvideo3.providers.base import Capability, ProviderError
     from fastvideo3.providers.factory import make_provider
 
-    cfg = _cfg(monkeypatch, tmp_path, FV3_TALK_MODEL="wan2.7-i2v")
-    cfg.routing["talk"] = ProviderRouting(default="dashscope_wan27_audio")
-    assert make_provider(Capability.TALK, cfg).model == "wan2.7-i2v"  # ¥1/s 在红线内
-    cfg.max_video_cost_per_sec = 0.4  # 把红线压到 ¥0.4/s
+    cfg = _cfg(monkeypatch, tmp_path)
+    p = make_provider(Capability.TALK, cfg)
+    assert p.name == "dashscope_wan30_talk" and p.model == "wan3.0-video"
+    assert p.worst_case_price_key() == "wan3.0-video@1080p"
+    assert price_of(p.worst_case_price_key(), "talk", 1.0) == 1.2
+
+    cfg.max_video_cost_per_sec = 1.1  # 红线压到所选通道的最高档之下
+    with pytest.raises(ProviderError) as e:
+        make_provider(Capability.TALK, cfg)
+    msg = str(e.value)
+    assert "超过上限" in msg and "wan3.0-video@1080p" in msg, msg
+    assert "¥1.2/秒" in msg and "¥1.1/秒" in msg, "拦住的价与上限都要写出来：" + msg
+    assert "FV3_MAX_VIDEO_COST_PER_SEC" in msg, "必须给出可行的出路，不许只报超限"
+
+    # 上限抬到最高档单价之上就放行（同一份配置只改红线这一个数）
+    cfg.max_video_cost_per_sec = 1.2
+    assert make_provider(Capability.TALK, cfg).model == "wan3.0-video"
+    # 贵一档的 prime（¥1.8/秒）在同一条红线上必须被拒：闸门跟的是**实际选中的模型**，
+    # 不是通道名 —— 否则"换优速版"在成本上看起来是免费的。
+    # 口型模型跟随面板选的 i2v（同族才跟），所以这里改 i2v 就等于改口型单价。
+    cfg.model_overrides = {"i2v": "wan3.0-video-prime"}
     with pytest.raises(ProviderError, match="超过上限"):
         make_provider(Capability.TALK, cfg)
-    # s2v 台账单价按**我们实际发送的 720P 档**记 ¥0.9/s（480P 才是 ¥0.5/s）：
-    # 熔断宁可早触发也不能晚触发，所以取高值。红线 ¥0.6/s 时它应被拒。
-    cfg.max_video_cost_per_sec = 0.6
-    cfg.routing["talk"] = ProviderRouting(default="dashscope_wan22_s2v")
-    cfg.model_overrides = {}
-    with pytest.raises(ProviderError, match="超过上限"):
-        make_provider(Capability.TALK, cfg)
-    cfg.max_video_cost_per_sec = 0.95
-    assert make_provider(Capability.TALK, cfg).model == "wan2.2-s2v"
-    # 兜底通道 videoretalk 只要 ¥0.08/s：红线压到 ¥0.1/s 也应当可用（降级不能被闸门挡住）。
-    # 注意必须配上它的模式（v2v_overlay）：模式表会否决"形态不相容"的路由，
-    # 在 s2v_direct 下写 videoretalk 不再会被装配出来（这正是防错配的设计）。
-    cfg.max_video_cost_per_sec = 0.1
-    cfg.talk_mode = "v2v_overlay"
-    cfg.routing["talk"] = ProviderRouting(default="dashscope_videoretalk")
-    assert make_provider(Capability.TALK, cfg).model == "videoretalk"
-    # 同一份路由换个模式：装配的是**模式解析出来的那条通道**（A 链 ¥0.9/s），
-    # 于是 ¥0.1/s 的红线把它拒了 —— 拒的依据不再是路由里写的名字，防的就是"看着便宜
-    # 其实贵"与"模式与路由错配"这两类静默失效。
-    cfg.talk_mode = "s2v_direct"
-    with pytest.raises(ProviderError, match="超过上限"):
-        make_provider(Capability.TALK, cfg)
-
-
-def test_talk_channel_per_quality_and_pairing(monkeypatch, tmp_path):
-    """口型通道**按档位定档**（2026-10-11 四次定档），且通道与 talk_mode 必须成对。
-
-    A 链 = `economy` / `high`：主 = 百炼 `wan2.2-s2v`（官方 wan-s2v-api），兜底 = fal InfiniteTalk
-    - wan2.2-s2v：单张图片 + 音频 → 说话/唱歌/表演视频；480P ¥0.5/秒、720P ¥0.9/秒；
-      新账号 100 秒免费额度；失败不计费；并发 1。
-    - 与 talk_mode=s2v_direct **必须成对**（s2v 不接受视频输入；provider 现在会在
-      收到 video 时直接 CapabilityMismatchError，不再静默丢掉 m4 花钱出的运动片段）。
-    - 兜底选 fal_infinitalk 的图像端点：与主通道**同为"图片+音频"**输入形态，所以在
-      s2v_direct 下真的能用；videoretalk 只吃视频，在这个 mode 下等于没有兜底。
-      fal 需要 .env 的 FAL_KEY，没填时兜底为空 → 降级叠音并落 degradations.json（可见）。
-    - **为什么不升级成 B 链**：economy 的 i2v 是 480P（短边 480 < videoretalk 官方下限
-      640px）→ 提交必被服务端拒；high 的片段虽然够大，但 A 链的对白镜头**根本不过 i2v**，
-      省下一整份运动费 —— 教学档与常规交付档优先保成本与出片率。
-
-    B 链 = `cinema`：m4 的 1080P 运动片段 + 对白音频 → `videoretalk` 重对口型（`v2v_overlay`）
-    - retalk **不重画整段画面**，只重绘嘴部 → m3 参考图锁住的脸一路继承；
-      官方规格「输出分辨率与帧率=输入」→ 1080P 对白镜头不再被钳到 720P
-      （A 链在 cinema 的结构性代价：`resolution_clamped` 每个对白镜头都吃一次）。
-    - ¥0.08/秒 + 新账号 1800 秒免费额度；音频上限 120s → 不需要 s2v 那套 <20s 分段拼接。
-    """
-    from fastvideo3.providers.dashscope import DashScopeRetalkProvider, DashScopeTalkProvider
-    from fastvideo3.providers.fal import FalInfiniteTalkProvider
-
-    for quality in ("economy", "high"):
-        # _cfg 的副作用才是重点：清掉项目 .env 可能带进来的模型覆盖 + 注入测试 KEY
-        _cfg(monkeypatch, tmp_path)
-        cfg2 = load_config(dotenv_path=tmp_path / "none.env", quality=quality)
-        assert cfg2.routing["talk"].default == "dashscope_wan22_s2v", quality
-        assert cfg2.routing["talk"].fallback == "fal_infinitalk", quality
-        assert cfg2.talk_mode == "s2v_direct", quality  # 路由与 mode 成对
-        p = make_provider(Capability.TALK, cfg2)
-        assert isinstance(p, DashScopeTalkProvider) and p.model == "wan2.2-s2v", quality
-        assert p.supports_video_input is False and p.max_resolution == "720P"
-        fb = make_fallback(Capability.TALK, cfg2)
-        assert isinstance(fb, FalInfiniteTalkProvider), quality
-
-    # cinema：B 链要装配成 videoretalk（吃视频、输出规格=输入、¥0.08/秒不分档）
-    _cfg(monkeypatch, tmp_path)
-    cfgc = load_config(dotenv_path=tmp_path / "none.env", quality="cinema")
-    assert cfgc.routing["talk"].default == "dashscope_videoretalk"
-    assert cfgc.talk_mode == "v2v_overlay", "B 链必须与 v2v_overlay 成对，否则拿不到运动片段"
-    pc = make_provider(Capability.TALK, cfgc)
-    assert isinstance(pc, DashScopeRetalkProvider) and pc.model == "videoretalk"
-    assert pc.supports_video_input is True and pc.max_audio_sec == 120.0
-
-    # 兜底的 FAL_KEY 缺失不影响主通道：s2v 照样装配成功（用户只需原有 DASHSCOPE KEY）
-    monkeypatch.delenv("FAL_KEY", raising=False)
-    cfg3 = load_config(dotenv_path=tmp_path / "none.env", quality="high")
-    assert isinstance(make_provider(Capability.TALK, cfg3), DashScopeTalkProvider)
-    assert make_fallback(Capability.TALK, cfg3) is None  # 没 KEY 就没兜底（降级会记账，不静默）
-
-
-def test_v2v_overlay_needs_i2v_for_dialogue_shots(monkeypatch, tmp_path):
-    """v2v_overlay 下对白镜头必须先有运动片段：这是"在已有片段上重对口型"的前置依赖。
-
-    cinema 出厂即 `v2v_overlay`（B 链：videoretalk 吃 m4 的运动片段），所以这条前置在
-    出厂配置下**必须自动成立** —— 本用例同时钉住两件事：
-    1. 出厂 mode 与出厂 talk 路由成对（错配的真实代价见 run_20261011_164152：对白镜头
-       先烧一份 i2v 的钱、再 100% 降级成无口型，"生成镜头视频"步骤因缺口永远不绿）；
-    2. 显式设成 v2v_overlay 时，对白镜头必须进 m4；设成 s2v_direct 时必须**不进**（省那份钱）。
-    """
-    from fastvideo3.core.schema import BaseInfo
-    from fastvideo3.modules.m4_shots import shots_need_i2v
-    from fastvideo3.providers.fake import fake_script
-
-    cfg = load_config(dotenv_path=tmp_path / "none.env", quality="cinema")
-    assert cfg.talk_mode == "v2v_overlay", "cinema 出厂即 B 链，mode 必须与 videoretalk 成对"
-    assert cfg.routing["talk"].default == "dashscope_videoretalk", "mode 与路由一起改才算成对"
-    script = fake_script(BaseInfo(topic="t"))
-    dialogue = [s for s in script.all_shots() if s.type.value == "dialogue"]
-    need = {s.shot_id for s in shots_need_i2v(script, cfg.talk_mode)}
-    assert dialogue, "用例前提：fake 剧本要有对白镜头"
-    assert all(s.shot_id in need for s in dialogue), "v2v_overlay 时必须为对白镜头出 i2v 片段"
-    # 反证：s2v_direct 模式对白镜头不出 i2v（由 s2v 直出），两种模式不能混
-    direct = {s.shot_id for s in shots_need_i2v(script, "s2v_direct")}
-    assert not (set(s.shot_id for s in dialogue) & direct)
+    cfg.max_video_cost_per_sec = 1.8
+    assert make_provider(Capability.TALK, cfg).model == "wan3.0-video-prime"

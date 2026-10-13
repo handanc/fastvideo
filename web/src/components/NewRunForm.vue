@@ -10,17 +10,9 @@ const form = reactive({
   style: '都市轻喜剧',
   duration: 30,
   fake: false,
-  // 口型模式**就是通道选择器**（映射表在后端 core/talkmode.py，选项由 GET /api/talk-modes 给）。
+  // 口型不再是选项：wan3.0 生成场景片段时原生带台词口型（音轨=模型原声）。
   // 这里不再写"该档必须配哪个模式"—— 历史上模式与路由被抄成两份，漂一次的后果不是报错而是
   // 静默降级：对白镜头先烧一份运动片段的钱、再 100% 出无口型叠音（run_20261011_164152 实测）。
-  talk_mode: 's2v_direct',
-  // 面板提交的是**口型模型名**（空串=不做口型）；模式由后端从模型名解析。
-  // 初值在 loadModels() 里按后端给的"当前生效模型"对齐（.env 的 FV3_TALK_MODEL 优先）。
-  talk_model: '',
-  // 仅 C 链（wan3.0-video 自发声）有意义。**默认 model = 用模型自己的音轨**：C 链的口型就是
-  // 对着这条音轨画的，只有它保证"嘴 = 听到的声音"。master（换回我们的配音）实测会让语音领先
-  // 口型 0～2.2 秒且偏移不恒定（测量表在后端 core/talkmode.py）→ 只作为对比试验选项。
-  voice_source: 'model',
   // 面板上用户只选**分辨率**；内部档位由后端映射（config.RESOLUTION_TO_QUALITY）。
   // form.quality 仍保留并跟着分辨率走：成本预估、口型清单、模型清单这三个接口都按档位问，
   // 让它们继续用同一个值，避免"面板显示 720P、预估按 economy 算"这种对不上。
@@ -59,39 +51,6 @@ watch(() => form.resolution, () => {
 }, { immediate: true })
 
 // 选项清单来自后端；这份本地表只在问不到时兜底显示（价格与冲突一律不抄，永远问后端）
-const FALLBACK_MODES = [
-  { mode: 's2v_direct', label: 'wan2.2-s2v', eats: '图片 + 语音 + 提示词 → 口型视频' },
-  { mode: 'v2v_overlay', label: 'videoretalk', eats: 'wan3.0 动作片段 + 语音 → 重加口型' },
-  { mode: 'scripted_talk', label: 'wan3.0-video', eats: '图片 + 提示词（含台词）→ 口型+动作一体' },
-  { mode: 'audio_overlay', label: '不做口型', eats: '只叠音轨' },
-]
-const talkModes = ref(FALLBACK_MODES)
-// 口型下拉的选项：value=模型名（"不做口型"为空串），mode 由后端给（前端不自己映射）。
-// 来源是 /api/model-choices 的 talk 块；问不到时用 talkModes 兜底（value 退回模式名）。
-const talkChoices = ref([])
-
-async function loadTalkModes() {
-  try {
-    const data = await api.talkModes(form.quality)
-    if (Array.isArray(data?.modes) && data.modes.length) talkModes.value = data.modes
-  } catch {
-    talkModes.value = FALLBACK_MODES // 问不到就用本地清单，表单不能因此开不起来
-  }
-}
-onMounted(loadTalkModes)
-watch(() => form.quality, loadTalkModes)
-
-// 口型下拉的值是**模型名**（同一条链可能有多个模型，如 wan3.0-video 与其优速版），
-// 模式由后端从模型名解析（talkmode.resolve_talk_choice）—— 前端不自己维护映射。
-const isScripted = computed(() => {
-  const row = talkChoices.value.find((m) => m.value === form.talk_model)
-  return (row?.mode || form.talk_mode) === 'scripted_talk'
-})
-// 口型那一行显示在「模型选择」里，但它落盘的字段是 talk_mode（不是 model_overrides.talk）：
-// 通道与输入形态绑死，模式还决定"要不要为对白镜头出运动片段/成片音轨用谁的/字幕按谁排"。
-// 展示模型名、提交模式名，映射只在后端一份（core/talkmode.py）。
-// 行标题的"默认 X"由后端给（talkDefaultLabel），前端不自己推。
-
 // ── 模型选择（text / 文生图 / 图生视频）：清单与"当前生效值"都来自后端 ─────────────
 // 为什么值得单独做这一节：`.env` 里的 FV3_TEXT_MODEL / FV3_T2I_MODEL / FV3_I2V_MODEL 是
 // **全局**开关 —— 改一次就把三个画质档的所有新 run 一起换掉，而 configs 的档位表看起来
@@ -103,8 +62,6 @@ const CAP_TITLE = { text: '文本（编剧/评审）', t2i: '文生图（立绘/
 
 // 口型那一行的"默认 X"与初始选中值都来自后端：X = .env 的 FV3_TALK_MODEL 映射出的通道，
 // 没设 .env 时 = 分辨率档位 yaml 的 talk_mode 对应通道。改 .env，这里显示跟着变。
-const talkDefaultLabel = ref('—')
-let talkDefaultLoaded = false
 
 async function loadModels() {
   try {
@@ -122,23 +79,8 @@ async function loadModels() {
           opts.includes(cap.effective_model) ? cap.effective_model : (opts[0] || '')
       }
     }
-    if (data?.talk) {
-      talkChoices.value = data.talk.choices || []
-      talkDefaultLabel.value = data.talk.current_label || '—'
-      if (!talkDefaultLoaded) {
-        // 只在首次加载时对齐默认值：之后用户手改的选择不能被"换分辨率触发的重载"冲掉
-        form.talk_model = data.talk.current_value ?? form.talk_model
-        form.talk_mode = data.talk.current || form.talk_mode
-        form.voice_source = data.talk.voice_source || form.voice_source
-        talkDefaultLoaded = true
-      }
-    }
   } catch {
     modelCaps.value = []   // 问不到就不显示这一节；表单其余部分必须照常能用
-    if (!talkChoices.value.length) {
-      // 兜底：value 用模式名（后端 resolve_talk_choice 两种都收）
-      talkChoices.value = talkModes.value.map((m) => ({ value: m.mode, label: m.label, mode: m.mode }))
-    }
   }
 }
 onMounted(loadModels)
@@ -172,12 +114,12 @@ const est = ref(null)
 async function loadEst() {
   if (form.fake) { est.value = null; return }
   try {
-    est.value = await api.costEstimate(form.quality, form.duration, form.talk_mode)
+    est.value = await api.costEstimate(form.quality, form.duration, 'scripted_talk')
   } catch {
     est.value = null   // 问不到就退回本地兜底量级（宁可提示不精确，也不能不提示）
   }
 }
-watch(() => [form.quality, form.duration, form.talk_mode, form.fake], loadEst, { immediate: true })
+watch(() => [form.quality, form.duration, form.fake], loadEst, { immediate: true })
 
 const costHint = computed(() => {
   if (est.value) {
@@ -303,12 +245,6 @@ async function submit() {
       </label>
     </div>
 
-    <!-- 选了「我们的配音」才需要这条红字：口型是模型对着自己的声音画的，换音轨必然错位 -->
-    <div v-if="isScripted && !form.fake && form.voice_source === 'master'" class="alert err">
-      换成我们的配音会让<b>语音领先口型 0～2.2 秒</b>（每镜不同，修不齐）。
-      要音色统一又要口型对得上，口型请选 <b>videoretalk</b>。
-    </div>
-
     <!-- 模式 × 画质档的真实硬冲突（判据在后端，例如 videoretalk 要求片段边长 ≥640）-->
     <div v-if="!form.fake && costHint.warning" class="alert err">
       ⚠ {{ costHint.warning }}
@@ -317,7 +253,7 @@ async function submit() {
     <!-- ── 模型选择：清单与"当前生效值"来自 GET /api/model-choices（唯一来源 core/model_catalog.py）
          留空 = 跟随画质档位；选择落进 run_meta.json，每一步（含续跑）都按原样恢复 ── -->
     <details v-if="modelCaps.length" class="models" :open="chosenModels.length > 0">
-      <summary>模型选择 — 文本 / 文生图 / 图生视频 / 口型</summary>
+      <summary>模型选择 — 文本 / 文生图 / 图生视频（wan3.0 自带台词口型）</summary>
       <!-- 每行标题只说"默认 X"：X 由后端算出（.env 的 FV3_*_MODEL 优先，其次分辨率档位），
            改 .env 前端显示跟着变，不在 JS 里抄第二份默认值 -->
       <div v-for="cap in modelCaps" :key="cap.capability" class="modelRow">
@@ -333,25 +269,6 @@ async function submit() {
         <div v-if="selectedUnpriced(cap)" class="modelNote warnText">
           ⚠ 该模型暂无单价数据 → 成本按默认价估算，可能与真实账单不符
         </div>
-      </div>
-      <!-- 口型放最后：下拉值是**模型名**（"不做口型"为空串），模式由后端解析 -->
-      <div class="modelRow">
-        <label class="field">
-          <span>口型 <em class="muted">默认 {{ talkDefaultLabel }}</em></span>
-          <select v-model="form.talk_model">
-            <option v-for="m in talkChoices" :key="m.value || m.mode" :value="m.value">
-              {{ m.label }}
-            </option>
-          </select>
-        </label>
-        <!-- 只有 wan3.0-video 需要决定成片用谁的声音：它的口型是对着模型自己的发声画的 -->
-        <label v-if="isScripted" class="field">
-          <span>成片音轨</span>
-          <select v-model="form.voice_source">
-            <option value="model">模型原声（推荐）· 口型与声音同轨</option>
-            <option value="master">我们的配音 · 音色统一，但口型对不上</option>
-          </select>
-        </label>
       </div>
     </details>
 

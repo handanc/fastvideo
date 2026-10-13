@@ -11,10 +11,6 @@ import yaml
 from dotenv import dotenv_values
 from pydantic import BaseModel, Field
 
-# 口型模式的唯一映射表（`core/talkmode.py`）。这里只取它的默认值常量，
-# 不在 config 里重复定义"哪个模式用哪个通道"——那件事抄两份就会漂一份。
-from fastvideo3.core.talkmode import DEFAULT_VOICE_SOURCE
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = Path(os.getenv("FV3_OUTPUT_DIR", PROJECT_ROOT / "output"))
 CONFIGS_DIR = PROJECT_ROOT / "configs"
@@ -126,11 +122,13 @@ class AppConfig(BaseModel):
     #   v2v_overlay    = videoretalk（wan3.0 出动作片段 → 再重加口型）
     #   scripted_talk  = wan3.0-video（图片+提示词 → 口型+动作一体）
     #   audio_overlay  = 不做口型，m7 只叠音轨
-    talk_mode: str = "s2v_direct"
-    # C 链（scripted_talk）的音轨来源：master = 换成 m5 的 TTS 母带（**默认**，保语音一致性：
-    # 全项目音色由 cosyvoice 按性别分桶统一）；model = 保留模型自发声的音轨（嘴型与声音同轨，
-    # 但同一角色跨镜头可能换嗓子）。判据与代价见 `core/talkmode.py`。
-    voice_source: str = DEFAULT_VOICE_SOURCE  # 不写死字面量：默认值只认 talkmode 那一处
+    # 口型**不再是可选项**：wan3.0 生成场景片段时原生带台词口型（音频与嘴型同轨），
+    # 独立口型通道（s2v/videoretalk）与"不做口型"都已下线。字段保留只为读旧 run 的
+    # run_meta（历史值原样反序列化），`load_config` 会把它钉回 scripted_talk。
+    talk_mode: str = "scripted_talk"
+    # 音轨来源同样不再可选：场景片段的嘴型是对着模型自己的声音画的，换回 TTS 母带
+    # 实测领先嘴型 0～2.2s 且偏移不固定（无法用固定延迟修）。字段保留读旧 run 用。
+    voice_source: str = "model"
     fake: bool = False
 
     # ── 预算与并发 ──
@@ -326,20 +324,10 @@ def load_config(
 
     resolution = tuple(gen.get("resolution", [540, 960]))
 
-    # `.env` 的 FV3_TALK_MODEL 显式点名了口型模型时，**talk_mode 必须跟着它走**。
-    # 否则会踩这个坑（用户 .env 实测形状）：FV3_TALK_MODEL=wan3.0-video 让工厂改道到
-    # `dashscope_wan30_talk`（只吃"图片+提示词"），而 talk_mode 仍是 yaml 的 s2v_direct
-    # → m6 按 A 链把**音频**喂过去 → 每个对白镜头 CapabilityMismatchError → 全部降级成
-    # 无口型叠音，而"生成镜头视频"因缺口永远不绿。模式与通道必须同源，这里就是那个源。
-    # 校准规则是"**相容就别动、不相容才纠正**"（`talkmode.reconcile_mode`）：
-    # fal 两个端点由同一 provider 承接、两种模式都吃得下，一律按协议反推会把 cinema 的
-    # v2v_overlay 悄悄改成 s2v_direct（对白镜头不再出运动片段，成本与画面都变了）。
-    talk_model_override = env("FV3_TALK_MODEL")
-    talk_mode_val = env("FV3_TALK_MODE", gen.get("talk_mode", "s2v_direct"))
-    if talk_model_override and not env("FV3_TALK_MODE"):
-        from fastvideo3.core.talkmode import reconcile_mode
-
-        talk_mode_val = reconcile_mode(talk_model_override, talk_mode_val)
+    # 口型模式曾是可选项（s2v_direct/v2v_overlay/scripted_talk/audio_overlay），由此踩过的
+    # 坑（.env 点名 wan3.0 而 talk_mode 还是 s2v_direct → m6 喂音频 → 全镜头降级无口型）
+    # 随选项一起消失：talk_mode 现在恒为 scripted_talk，`.env` 的 FV3_TALK_MODEL 只负责
+    # 在 wan3.0-video 与 -prime 之间选模型（见 model_overrides["talk"]）。
 
     return AppConfig(
         deepseek_api_key=env("DEEPSEEK_API_KEY"),
@@ -358,8 +346,10 @@ def load_config(
         fal_api_key=env("FAL_KEY"),
         fal_acceleration=env("FAL_ACCELERATION", "regular"),
         profile=env("FV3_PROFILE", "edu-sqlite"),
-        talk_mode=talk_mode_val,
-        voice_source=env("FV3_VOICE_SOURCE", gen.get("voice_source", DEFAULT_VOICE_SOURCE)),
+        # 口型/音轨不再可选：wan3.0 场景片段自带口型，音轨用模型原声（嘴型与声音同轨）。
+        # .env 的 FV3_TALK_MODEL 仍有效 —— 它选的是 wan3.0-video 还是 -prime。
+        talk_mode="scripted_talk",
+        voice_source="model",
         fake=env("FV3_FAKE", "0") in ("1", "true", "yes"),
         budget_limit_cny=float(env("FV3_BUDGET_LIMIT_CNY", "0") or 150),
         max_parallel_jobs=int(limits.get("max_parallel_jobs", 4)),

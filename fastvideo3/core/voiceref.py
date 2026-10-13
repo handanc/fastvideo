@@ -54,13 +54,20 @@ def trim_wav(src: Path, dest: Path, max_sec: float) -> Path | None:
         return None
 
 
-def group_lines(lines: list[Any], group_shot_ids: set[str]) -> dict[str, list[Any]]:
-    """本组内每个角色的台词母带（按出现顺序），过滤掉文件不在盘的。"""
+def character_lines(lines: list[Any]) -> dict[str, list[Any]]:
+    """每个角色在**全剧**的台词母带（按 audio_map 顺序），过滤掉文件不在盘的。
+
+    取材范围是全局而不是"本组"，是修一个死循环：样本文件按角色全局存
+    （`audio/_voiceref_{cid}.wav`），若源按组取，组1 用第1句、组2 用第3句，
+    两组轮流跑就会轮流"源变了"→ 轮流 record_regeneration → 轮流作废对方的场景片段，
+    步骤永久 gap（实测每点一次「开始生成」就作废一次自己刚出的片段）。
+    全局取源还顺带服务了目标本身：音色参考要锁的是**这个角色全片的嗓子**，
+    用哪一句切样本都该是同一个确定性答案。
+    """
     out: dict[str, list[Any]] = {}
     for ln in lines or []:
         cid = str(getattr(ln, "character_id", "") or "")
-        sid = str(getattr(ln, "shot_id", "") or "")
-        if not cid or sid not in group_shot_ids:
+        if not cid:
             continue
         wav = getattr(ln, "wav_uri", "") or ""
         if not wav or not Path(wav).exists():
@@ -69,10 +76,17 @@ def group_lines(lines: list[Any], group_shot_ids: set[str]) -> dict[str, list[An
     return out
 
 
-def pick_lines(lines: list[Any], group_shot_ids: set[str]) -> dict[str, Any]:
-    """每个角色在**本组内**最长的一句台词（确定性取材，见模块 docstring）。"""
+def pick_lines(lines: list[Any], group_shot_ids: set[str] | None = None) -> dict[str, Any]:
+    """每个角色最长的一句台词（确定性取材）。`group_shot_ids` 保留仅为兼容旧调用。"""
+    pool = character_lines(lines)
+    if group_shot_ids is not None:
+        pool = {
+            cid: [ln for ln in ls if str(getattr(ln, "shot_id", "")) in group_shot_ids]
+            for cid, ls in pool.items()
+        }
+        pool = {cid: ls for cid, ls in pool.items() if ls}
     return {cid: max(ls, key=lambda x: float(getattr(x, "duration_sec", 0) or 0))
-            for cid, ls in group_lines(lines, group_shot_ids).items()}
+            for cid, ls in pool.items()}
 
 
 def _dur(ln: Any) -> float:
@@ -98,7 +112,7 @@ def build_voice_refs(
     """
     out: dict[str, str] = {}
     skipped: list[str] = []
-    by_cid = group_lines(lines, set(group.shot_ids))
+    by_cid = character_lines(lines)  # 全局取源：见 character_lines 的注释（死循环修复）
     for cid in wanted:
         cands = by_cid.get(cid) or []
         if not cands:
@@ -125,14 +139,33 @@ def build_voice_refs(
         if 0 < avail < MIN_VOICE_REF_SEC:
             skipped.append(f"{cid}: 样本仅 {avail:.1f}s（<{MIN_VOICE_REF_SEC}s，抓不住音色）")
             continue
+        # 血缘 inputs 必须是**仓库相对路径**（与全项目其它 record_* 调用一致）：
+        # 写绝对路径的话 dependents_of 匹配不上，作废链就断了。
+        src_rels: list[str] = []
+        for x in sources:
+            try:
+                src_rels.append(str(Path(str(x.wav_uri)).relative_to(storage.root)))
+            except ValueError:
+                src_rels.append(str(x.wav_uri))
+        # **源没变就复用，绝不 record_regeneration**：每次跑都登记"重切"会把没变的样本
+        # 也当成变更 → 依赖它的场景片段被标 stale → 步骤永久 gap（实测死循环：
+        # 每点一次「开始生成」就作废一次自己刚出的片段）。
+        if (
+            dest.exists()
+            and not storage.is_stale(rel)
+            and list(storage.upstream_of(rel)) == src_rels
+        ):
+            out[cid] = str(dest)
+            continue
         got = trim_wav(src, dest, per_sec)
         if got is None:
             skipped.append(f"{cid}: 切样失败（{src.name}）")
             continue
         out[cid] = str(got)
-        # 血缘：母带换了（改台词/换音色）样本就得重切，否则锁的是旧嗓子
+        # 母带真的换了（改台词/换音色/首次切）→ 登记重生成，作废依赖它的场景片段：
+        # 锁的嗓子变了，旧片段里的声音就对不上新样本了
         try:
-            storage.record_regeneration(rel, [str(x.wav_uri) for x in sources], reason="音色参考重切")
+            storage.record_regeneration(rel, src_rels, reason="音色参考重切")
         except Exception:  # noqa: BLE001  # 血缘登记失败不该影响生成
             pass
     return out, skipped

@@ -38,7 +38,9 @@ models:
     cfg = load_config(config_path=yml, dotenv_path=env)
     assert cfg.deepseek_api_key == "sk-test-123"
     assert cfg.fake is True
-    assert cfg.talk_mode == "audio_overlay"
+    # yaml 里写 talk_mode 也不再生效：口型恒为 scripted_talk（wan3.0 场景片段自带口型）。
+    # 这条断言钉的是"配置里残留的旧选项不会悄悄改变管线行为"。
+    assert cfg.talk_mode == "scripted_talk"
     assert cfg.resolution == (320, 568)
     assert cfg.max_parallel_jobs == 2
     assert cfg.routing["text"].default == "deepseek"

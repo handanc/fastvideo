@@ -394,21 +394,85 @@ def _mk(client, outdir, **over):
 
 
 def test_patch_models_mid_run_updates_meta(client, outdir):
+    """中途改模型：能改的落盘并合并，不能改的**当场拒**（不写坏 meta）。
+
+    `wan2.7-i2v` 从前是合法可选项，现在必须被拒 —— 图生视频只剩 wan3.0 两档
+    （场景级多镜头/首尾帧/参考素材/原生台词口型只有这一族有）。拒的文案要**把可选项
+    说出来**：面板上那个下拉是后端清单生成的，手打旧模型名的调用方如果只收到 400，
+    永远不知道自己该改成什么。
+    """
     rid, root = _mk(client, outdir)
-    r = client.patch(f"/api/runs/{rid}/models", json={"model_overrides": {"i2v": "wan2.7-i2v"}})
+    rejected = client.patch(
+        f"/api/runs/{rid}/models", json={"model_overrides": {"i2v": "wan2.7-i2v"}}
+    )
+    assert rejected.status_code == 400, rejected.text
+    detail = rejected.json()["detail"]
+    assert "i2v 不支持模型" in detail, detail
+    assert "wan3.0-video" in detail and "wan3.0-video-prime" in detail, "必须列出可选项"
+    # 被拒的那次不能留下半个覆盖：否则"改失败了但之后一直在用"最难查
+    meta = json.loads((root / "run_meta.json").read_text(encoding="utf-8"))
+    assert "i2v" not in (meta.get("model_overrides") or {}), meta
+
+    r = client.patch(
+        f"/api/runs/{rid}/models", json={"model_overrides": {"i2v": "wan3.0-video-prime"}}
+    )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["model_overrides"] == {"i2v": "wan2.7-i2v"}
-    assert body["effective"]["i2v"] == "wan2.7-i2v"
+    # talk 是 i2v 的镜像：场景视频与口型是同一次 wan3.0 调用，点一次名两个键一起落，
+    # 否则 .env 里旧的 FV3_TALK_MODEL 会赢过用户刚选的档位（面板 A、实跑 B）。
+    assert body["model_overrides"] == {
+        "i2v": "wan3.0-video-prime", "talk": "wan3.0-video-prime",
+    }, body["model_overrides"]
+    assert body["effective"]["i2v"] == "wan3.0-video-prime"
     meta = json.loads((root / "run_meta.json").read_text(encoding="utf-8"))
-    assert meta["model_overrides"] == {"i2v": "wan2.7-i2v"}
+    assert meta["model_overrides"] == {
+        "i2v": "wan3.0-video-prime", "talk": "wan3.0-video-prime",
+    }, meta["model_overrides"]
     # 再改一次：合并而不是覆盖丢失（空串＝撤回该项）
     client.patch(f"/api/runs/{rid}/models", json={"model_overrides": {"t2i": "wan2.7-image"}})
     meta = json.loads((root / "run_meta.json").read_text(encoding="utf-8"))
-    assert meta["model_overrides"] == {"i2v": "wan2.7-i2v", "t2i": "wan2.7-image"}
+    assert meta["model_overrides"] == {
+        "i2v": "wan3.0-video-prime",
+        "t2i": "wan2.7-image",
+        "talk": "wan3.0-video-prime",  # i2v 的镜像仍在（改 t2i 不该动它）
+    }, meta["model_overrides"]
     client.patch(f"/api/runs/{rid}/models", json={"model_overrides": {"i2v": ""}})
     meta = json.loads((root / "run_meta.json").read_text(encoding="utf-8"))
     assert meta["model_overrides"] == {"t2i": "wan2.7-image"}, "空串＝撤回，回到跟随档位"
+
+
+def test_scene_generation_model_has_exactly_one_lever(client, outdir):
+    """场景视频与口型是**同一次 wan3.0 调用** → 只有一个模型选择器：`i2v_model`。
+
+    此前 `talk_model` 在 POST 被"收下并忽略"、在 PATCH 却写进 model_overrides["talk"]
+    并回写 .env：同一个字段两个端点两种语义，老前端按 PATCH 的语义走就会以为建任务时
+    也能单独指定口型模型（实测事故形状：面板显示 A、跑的是 B）。
+    现在两边一致 —— `i2v_model` 是唯一个杠杆，`talk_model` 一律进忽略清单并说明原因。
+    """
+    import fastvideo3.app.api as api_mod
+    from fastvideo3.providers.factory import _wan30_talk_model
+
+    rid, root = _mk(client, outdir)
+    r = client.patch(f"/api/runs/{rid}/models", json={"model_overrides": {"i2v": "wan3.0-video-prime"}})
+    assert r.status_code == 200, r.text
+    cfg = api_mod._cfg_for_run(root)
+    assert cfg.model_overrides.get("i2v") == "wan3.0-video-prime"
+    # 装配口型通道时用的就是这个 i2v 选择：一次调用同时出画面与口型，模型只能是同一个
+    assert _wan30_talk_model(cfg) == "wan3.0-video-prime", "改了 i2v 却没换到场景生成模型 = 静默跑旧模型"
+
+    # talk_model 不再有自己的语义：收下、忽略、留痕，且**绝不**落进 model_overrides["talk"]
+    r2 = client.patch(f"/api/runs/{rid}/models", json={"talk_model": "wan3.0-video"})
+    assert r2.status_code == 200, r2.text
+    assert "talk_model" in (r2.json().get("ignored_legacy_fields") or []), r2.json()
+    assert r2.json().get("talk_warning"), "必须解释为什么没生效，否则调用方以为换了"
+    meta = json.loads((root / "run_meta.json").read_text(encoding="utf-8"))
+    # talk 只是 i2v 的**镜像**（同一次调用、同一个模型）：被忽略的 talk_model 绝不能把
+    # 它改成 wan3.0-video，否则"忽略了"却实际降了档 —— 那正是最难查的那种失败。
+    assert (meta.get("model_overrides") or {}).get("talk") == "wan3.0-video-prime", meta
+    assert api_mod._cfg_for_run(root).model_overrides.get("i2v") == "wan3.0-video-prime", (
+        "忽略 talk_model 不能把 i2v 选择一起冲掉"
+    )
+    assert _wan30_talk_model(api_mod._cfg_for_run(root)) == "wan3.0-video-prime"
 
 
 def test_patch_models_rejects_bad_name(client, outdir):
@@ -457,161 +521,6 @@ def test_duration_bounds_are_one_to_3600_on_both_paths(client, outdir):
     assert bad.exit_code != 0 and "1~3600" in bad.output
     ok = runner.invoke(app, ["new", "--topic", "x", "--duration", "3600", "--fake"])
     assert ok.exit_code == 0, ok.output
-
-
-def test_model_choices_includes_talk_models_with_their_modes(client, outdir):
-    """口型模型与其它模型同栏显示，但**落盘字段是 talk_mode**（不是 model_overrides.talk）。
-
-    为什么不让它进 model_overrides：通道与输入形态绑死（s2v 只吃图片+音频、videoretalk 只吃
-    视频、wan3.0 只吃图片+提示词），而模式还决定"要不要为对白镜头出运动片段、成片音轨用谁的、
-    字幕按谁的时间轴排"。两处各存一份就是本项目反复出问题的形状（两次实测：对白镜头先烧
-    一份运动片段的钱、再 100% 降级成无口型）。
-    """
-    r = client.get("/api/model-choices?quality=cinema")
-    assert r.status_code == 200
-    talk = r.json()["talk"]
-    # 下拉的值是**模型名**（"不做口型"为空串），mode 由后端解析 —— 前端不自己维护映射
-    assert talk["field"] == "talk_model"
-    by_label = {c["label"]: c for c in talk["choices"]}
-    assert by_label["wan2.2-s2v"]["mode"] == "s2v_direct"
-    assert by_label["videoretalk"]["mode"] == "v2v_overlay"
-    assert by_label["wan3.0-video"]["mode"] == "scripted_talk"
-    # 同一条链的优速版：mode 相同、模型名不同（只有落进 model_overrides['talk'] 才区分得出）
-    assert by_label["wan3.0-video-prime"]["mode"] == "scripted_talk"
-    assert by_label["wan3.0-video-prime"]["value"] == "wan3.0-video-prime"
-    assert by_label["不做口型"]["mode"] == "audio_overlay"
-    assert by_label["不做口型"]["value"] == ""
-    # 顺序：优速版排在"不做口型"之前
-    labels = [c["label"] for c in talk["choices"]]
-    assert labels.index("wan3.0-video-prime") < labels.index("不做口型"), labels
-    assert by_label["videoretalk"]["needs_clip_for_dialogue"] is True
-    assert by_label["wan3.0-video"]["voices_script"] is True
-    assert talk["switch_note"], "中途换口型模型的代价必须在选择处就说清楚"
-
-
-def test_patch_talk_model_mid_run_updates_mode_and_channel(client, outdir):
-    """生成过程中换口型模型：写进 run_meta.talk_mode，续跑时按它装配对应通道。"""
-    rid, root = _mk(client, outdir)
-    # 用模型名换（前端显示的就是模型名）
-    r = client.patch(f"/api/runs/{rid}/models", json={"talk_mode": "wan3.0-video"})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["talk_mode"] == "scripted_talk"
-    assert body["talk_channel"] == "wan3.0-video"
-    assert body["talk_provider"] == "dashscope_wan30_talk"
-    meta = json.loads((root / "run_meta.json").read_text(encoding="utf-8"))
-    assert meta["talk_mode"] == "scripted_talk"
-    # 续跑恢复出来的 cfg 必须装配成同一条通道（cli._cfg_from_meta / api._cfg_for_run 同源）
-    import fastvideo3.app.api as api_mod
-    from fastvideo3.core.talkmode import provider_name
-
-    cfg = api_mod._cfg_for_run(root)
-    assert cfg.talk_mode == "scripted_talk"
-    assert provider_name(cfg, cfg.talk_mode) == "dashscope_wan30_talk"
-    # 换回 A 链也一样成立
-    r2 = client.patch(f"/api/runs/{rid}/models", json={"talk_mode": "wan2.2-s2v"})
-    assert r2.json()["talk_provider"] == "dashscope_wan22_s2v"
-
-
-def test_patch_talk_model_empty_string_means_no_lipsync(client, outdir, monkeypatch, tmp_path):
-    """面板选「不做口型」提交**空串**：它是显式意图，不是"没填"。
-
-    早先这里用 `.strip()` 判空，空串被当缺席 → talk_mode 保持原样、保存后什么都没变，
-    而这条 run 之后还在按旧通道花钱出对口型。
-
-    `.env` 里**必须**留着一个 FV3_TALK_MODEL：`current_value` 走的是"run 点名 > .env >
-    模式默认"，只有 .env 有残留值时，"audio_overlay 不该显示任何模型"这条才真的在被测。
-    """
-    import fastvideo3.app.api as api_mod
-
-    env = tmp_path / ".env"
-    env.write_text("DASHSCOPE_API_KEY=sk-test\nFV3_TALK_MODEL=wan3.0-video-prime\n", encoding="utf-8")
-    real_load = api_mod.load_config
-    monkeypatch.setattr(
-        api_mod, "load_config", lambda **kw: real_load(**{**kw, "dotenv_path": env})
-    )
-
-    rid, root = _mk(client, outdir)
-    client.patch(f"/api/runs/{rid}/models", json={"talk_model": "wan3.0-video-prime"})
-    meta = json.loads((root / "run_meta.json").read_text(encoding="utf-8"))
-    assert meta["model_overrides"]["talk"] == "wan3.0-video-prime"
-
-    r = client.patch(f"/api/runs/{rid}/models", json={"talk_model": ""})
-    assert r.status_code == 200, r.text
-    assert r.json()["talk_mode"] == "audio_overlay"
-    meta = json.loads((root / "run_meta.json").read_text(encoding="utf-8"))
-    assert meta["talk_mode"] == "audio_overlay"
-    # 旧点名必须**撤掉**：留着它，面板会把 current_value 读成那个模型（overrides 优先于
-    # 模式默认），于是"显示 wan3.0-video-prime、实际不做口型"
-    assert "talk" not in meta["model_overrides"], meta["model_overrides"]
-    talk = client.get("/api/model-choices", params={"run_id": rid}).json()["talk"]
-    assert talk["current"] == "audio_overlay"
-    assert talk["current_value"] == ""
-    assert talk["current_label"] == "不做口型"
-    # 字段缺席 = 不改（不能被上面的空串语义带偏）
-    keep = client.patch(f"/api/runs/{rid}/models", json={"model_overrides": {"t2i": "wan2.7-image"}})
-    assert keep.json()["talk_mode"] == "audio_overlay"
-
-
-def test_patch_talk_model_rejects_unknown_and_warns_on_conflict(client, outdir):
-    rid, _ = _mk(client, outdir, resolution="480P")
-    bad = client.patch(f"/api/runs/{rid}/models", json={"talk_mode": "sora-2"})
-    assert bad.status_code == 400 and "未知口型模型" in bad.json()["detail"]
-    # 480P + videoretalk：片段边长 <640 会被服务端拒 → 允许改，但必须把代价说出来
-    warn = client.patch(f"/api/runs/{rid}/models", json={"talk_mode": "videoretalk"})
-    assert warn.status_code == 200
-    assert "640" in warn.json()["talk_warning"]
-    bad_voice = client.patch(f"/api/runs/{rid}/models", json={"voice_source": "both"})
-    assert bad_voice.status_code == 400
-
-
-def test_talk_model_choice_drives_mode_and_assembled_provider(client, outdir):
-    """选「wan3.0-video-prime」→ 模式 scripted_talk + 模型覆盖，装配出的就是 prime。
-
-    同一条链有多个模型时，只落 mode 区分不出选了哪个 —— 所以模型名必须进
-    `model_overrides['talk']`，并由 `_wan30_talk_model` 优先采用。
-    """
-    r = client.post(
-        "/api/runs",
-        json={"topic": "优速口型", "quality": "cinema", "fake": True,
-              "talk_model": "wan3.0-video-prime"},
-    )
-    assert r.status_code == 201, r.text
-    rid = r.json()["run_id"]
-    meta = json.loads((outdir / rid / "run_meta.json").read_text(encoding="utf-8"))
-    assert meta["talk_mode"] == "scripted_talk"
-    assert meta["model_overrides"]["talk"] == "wan3.0-video-prime"
-
-    import fastvideo3.app.api as api_mod
-    from fastvideo3.providers.base import Capability
-    from fastvideo3.providers.factory import make_provider
-
-    cfg = api_mod._cfg_for_run(outdir / rid)
-    assert cfg.talk_mode == "scripted_talk"
-    p = make_provider(Capability.TALK, cfg)
-    assert p.name == "dashscope_wan30_talk" and p.model == "wan3.0-video-prime"
-
-
-def test_talk_model_empty_string_means_no_lipsync(client, outdir):
-    """下拉里「不做口型」的值是空串 —— 必须与"没提供该字段"区分开。"""
-    r = client.post(
-        "/api/runs",
-        json={"topic": "不要口型", "quality": "cinema", "fake": True, "talk_model": ""},
-    )
-    assert r.status_code == 201, r.text
-    meta = json.loads((outdir / r.json()["run_id"] / "run_meta.json").read_text(encoding="utf-8"))
-    assert meta["talk_mode"] == "audio_overlay"
-    assert "talk" not in (meta["model_overrides"] or {})
-
-
-def test_unknown_talk_model_is_rejected_with_choices(client, outdir):
-    r = client.post(
-        "/api/runs",
-        json={"topic": "x", "quality": "cinema", "fake": True, "talk_model": "sora-2"},
-    )
-    assert r.status_code == 400
-    detail = r.json()["detail"]
-    assert "未知口型模型" in detail and "wan3.0-video-prime" in detail
 
 
 def test_patch_models_still_works_without_talk_field(client, outdir):

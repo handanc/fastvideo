@@ -413,26 +413,6 @@ def test_scripted_channel_price_lookup_is_wired():
     assert price_of_route("dashscope_wan27_audio", "talk", "1080P") == 1.0
 
 
-def test_api_talk_modes_endpoint_lists_three_channels():
-    from fastapi.testclient import TestClient
-
-    from fastvideo3.app.api import app
-
-    with TestClient(app) as client:
-        r = client.get("/api/talk-modes?quality=cinema")
-        assert r.status_code == 200
-        modes = {m["mode"]: m["label"] for m in r.json()["modes"]}
-        assert modes["s2v_direct"] == "wan2.2-s2v"
-        assert modes["v2v_overlay"] == "videoretalk"
-        assert modes["scripted_talk"] == "wan3.0-video"
-        est = client.get(
-            "/api/cost-estimate?quality=cinema&duration=30&talk_mode=scripted_talk"
-        ).json()
-        assert est["talk_route"] == "dashscope_wan30_talk"
-        assert est["talk_channel"] == "wan3.0-video"
-        assert est["tier_warning"], "C 链的音色一致性取舍要在建任务前显示出来"
-
-
 async def test_default_voice_source_is_model_and_makes_no_driver(cfg, storage, ledger, jobs):
     """默认必须是 `model`：C 链的口型是对着模型自己的发声画的，换母带就必然声画错位。
 
@@ -632,55 +612,3 @@ async def test_scripted_talk_assembled_uses_selected_i2v_model(cfg):
     cfg.model_overrides = {"i2v": "wan3.0-video-prime"}
     p = make_provider(Capability.TALK, cfg)
     assert p.name == "dashscope_wan30_talk" and p.model == "wan3.0-video-prime"
-
-
-# ─────────────────────── CLI 预飞：花钱之前就把取舍说清楚 ───────────────────────
-def test_cli_new_scripted_prints_channel_and_voice_tradeoff(outdir):
-    """建任务时打印**实际通道**与音色取舍，并把模式 + 音轨来源一起定死进 run_meta。
-
-    `new` 本身不花钱也不占任务锁（只写 run_meta.json），所以这条预飞是用户唯一的
-    "在按下开始生成之前看见代价"的机会 —— 通道名、单价、档位冲突都必须在这里说出来。
-    """
-    import json as _json
-
-    from typer.testing import CliRunner
-
-    from fastvideo3.app.cli import app
-
-    r = CliRunner().invoke(
-        app,
-        ["new", "--topic", "冒烟", "--duration", "30", "--quality", "cinema",
-         "--talk-mode", "scripted_talk"],
-    )
-    assert r.exit_code == 0, r.output
-    assert "wan3.0-video" in r.output, "要打印模式解析出来的通道名，不是内部模式串"
-    assert "音色" in r.output, "C 链的语音一致性取舍必须出现在预飞里"
-    metas = sorted(Path(outdir).glob("run_*/run_meta.json"))
-    assert metas, "new 应该已经落好 run_meta"
-    meta = _json.loads(metas[-1].read_text(encoding="utf-8"))
-    assert meta["talk_mode"] == "scripted_talk"
-    assert meta["voice_source"] == "model", "音轨来源与模式一样在建任务时定死（C 链默认模型原声）"
-
-
-def test_cli_new_rejects_unknown_mode(outdir):
-    """非法模式要当场拒绝，而不是留给 pydantic 抛一堆 ValidationError 让人以为是程序坏了。"""
-    from typer.testing import CliRunner
-
-    from fastvideo3.app.cli import app
-
-    r = CliRunner().invoke(app, ["new", "--topic", "x", "--talk-mode", "bogus_mode"])
-    assert r.exit_code != 0
-    assert "未知口型模式" in r.output
-
-
-def test_cli_new_warns_about_economy_videoretalk_conflict(outdir):
-    """economy 的 480P 片段喂不进 videoretalk（官方边长 ≥640）→ 建任务时就要拦住说清楚。"""
-    from typer.testing import CliRunner
-
-    from fastvideo3.app.cli import app
-
-    r = CliRunner().invoke(
-        app, ["new", "--topic", "冲突", "--quality", "economy", "--talk-mode", "v2v_overlay"]
-    )
-    assert r.exit_code == 0, "是警告不是错误：用户可能就是想试一条"
-    assert "640" in r.output

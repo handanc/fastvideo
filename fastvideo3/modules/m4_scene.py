@@ -36,7 +36,9 @@ from fastvideo3.core.jobs import JobStore
 from fastvideo3.core.prompts import NO_ONSCREEN_TEXT
 from fastvideo3.core.scenegroup import (
     MAX_CLIP_SEC,
+    MAX_REF_IMAGES,
     MIN_CLIP_SEC,
+    MODE_NONE,
     MODE_REFERENCE,
     RefPlan,
     SceneGroup,
@@ -252,41 +254,76 @@ def scene_prompt(
     return " ".join(p for p in (head + body + tail) if p).strip()
 
 
-def _ref_path(assets: dict, storage: RunStorage, ov: dict, cid: str) -> Path:
+def _ref_path(
+    assets: dict, storage: RunStorage | None, ov: dict, cid: str
+) -> Path | None:
     """某角色的参考图路径：覆盖选择（界面里换用某张候选立绘）优先，默认 char_{cid}.png。
 
     覆盖值必须是**盘上已存在的资产相对路径**（endpoint 校验过），这里只做解析：
     界面只允许"选已有的图"，不允许上传新图或改图 —— 改图是角色页的职责，
     在这里开放编辑会出现"这条片段锁的脸和角色页显示的脸不是同一张"的分裂。
+
+    盘上没有就返回 None（调用方据此裁掉这张参考、并如实落进降级台账），
+    绝不返回一个不存在的路径让 OSS 上传或本地守卫在半路炸掉。
     """
-    rel = str((ov.get("char_images") or {}).get(cid) or f"assets/char_{cid}.png")
-    a = assets.get(f"char_{cid}")
-    if rel and not rel.endswith(f"char_{cid}.png") and a is None:
-        rel = f"assets/char_{cid}.png"
-    return storage.root / rel
+    from fastvideo3.core.assets import resolve_path
+
+    rel = str((ov.get("char_images") or {}).get(cid) or "")
+    if rel:
+        p = resolve_path(storage, rel) if storage is not None else Path(rel)
+        if p.is_file():
+            return p
+    if storage is None:
+        return None
+    return asset_image(assets, storage, f"char_{cid}")
 
 
-def _ordered_refs(group: SceneGroup, assets: dict, ov: dict | None = None) -> tuple[list[str], list[str]]:
+def asset_image(assets: dict, storage: RunStorage, key: str) -> Path | None:
+    """资产对应的盘上文件：登记表 uri 优先，登记表为空/uri 失效时回落到规范落盘位置。
+
+    为什么要回落：`asset_registry.json` 只由 m2 写。用户在角色页/场景页**手动上传**
+    图片时走的是 `PUT /artifacts`（只写文件 + uploads.json），于是盘上有图、登记表为空，
+    本函数若只信登记表就会返回 None —— 参考形态拿着 0 张图去发 wan3.0，被本地规格守卫
+    拦下，表现就是"点了生成毫无反应"（实测事故）。
+    """
+    from fastvideo3.core.assets import resolve_path
+
+    a = assets.get(key)
+    uri = str(getattr(a, "uri", "") or (a.get("uri", "") if isinstance(a, dict) else ""))
+    p = resolve_path(storage, uri, fallback_rel=f"assets/{key}.png")
+    return p if p.is_file() else None
+
+
+def _ordered_refs(
+    group: SceneGroup, assets: dict, ov: dict | None = None, storage: RunStorage | None = None
+) -> tuple[list[str], list[str]]:
     """本组实际要发的立绘角色 id 与场景图 id（顺序 = 上传顺序 = 提示词编号顺序）。
 
     覆盖（界面选择）决定**子集与顺序**；不在覆盖里的按出场顺序。只保留盘上真有文件的。
+    `storage` 给了才能做"登记表为空但盘上有图"的回落（手动上传场景的必用路径）。
     """
     ov = ov or {}
     want_chars = [c for c in (ov.get("char_refs") or []) if c in group.characters]
     want_chars += [c for c in group.characters if c not in want_chars]
-    looks = []
-    for cid in want_chars:
-        a = assets.get(f"char_{cid}")
-        if a is not None and Path(str(a.uri)).exists():
-            looks.append(cid)
+    # 先按**出场顺序**定出"谁该有参考图"，再只保留盘上有文件的。编号由**存活名单**现算
+    # （调用方拿同一份列表同时生成提示词与 media 数组），所以缺一张只会少一个 图N，
+    # 不会出现"提示词说图3、media 里只有两张"的错位。
+    looks = [
+        cid for cid in dict.fromkeys(want_chars)
+        if _ref_path(assets, storage, ov, cid) is not None
+    ]
     want_scenes = [s for s in (ov.get("scene_refs") or []) if s in group.scene_ids]
     want_scenes += [s for s in group.scene_ids if s not in want_scenes]
-    scenes = []
-    for sid in want_scenes:
-        a = assets.get(f"scene_{sid}")
-        if a is not None and Path(str(a.uri)).exists():
-            scenes.append(sid)
+    scenes = [
+        sid for sid in dict.fromkeys(want_scenes)
+        if storage is None or asset_image(assets, storage, f"scene_{sid}") is not None
+    ]
     return looks, scenes
+
+
+def scene_image_path(assets: dict, storage: RunStorage, sid: str) -> Path | None:
+    """场景图（空景背景）的盘上路径 —— 与立绘同一套回落规则，别只信登记表。"""
+    return asset_image(assets, storage, f"scene_{sid}")
 
 
 async def generate_scene_clips(
@@ -344,7 +381,7 @@ async def generate_scene_clips(
             continue
 
         ov = (overrides or {}).get(gid) or {}
-        look_cids, scene_sids = _ordered_refs(group, assets, ov)
+        look_cids, scene_sids = _ordered_refs(group, assets, ov, storage)
         gshots = {sh.shot_id: sh for sh in script.all_shots() if sh.shot_id in set(group.shot_ids)}
         speakers = tuple(dict.fromkeys(
             d.character_id for sid in group.shot_ids for d in (gshots[sid].dialogues if sid in gshots else [])
@@ -356,9 +393,21 @@ async def generate_scene_clips(
 
         # **先定实际能发什么，再写提示词**：编号（图N/音频N）必须与 media 数组顺序逐位
         # 对应。反过来先写提示词再裁素材，就会出现"提示词说图3、media 里只有两张"，
-        # 模型不报错，只会把第三张的锁脸意图套到错误的图上。
-        img_cids = look_cids[:10]
-        scene_sids = scene_sids[: max(0, 10 - len(img_cids))]
+        # 模型不报错，只会把锁脸意图套到错误的图上。所以先把路径解析出来、按解析成功的
+        # 那批裁剪名单，再编号。
+        capped = [c for c in look_cids[:MAX_REF_IMAGES]]
+        scene_capped = scene_sids[: max(0, MAX_REF_IMAGES - len(capped))]
+        char_files = [
+            (c, _ref_path(assets, storage, ov, c)) for c in capped
+        ]
+        scene_files = [(s, scene_image_path(assets, storage, s)) for s in scene_capped]
+        img_cids = [c for c, p in char_files if p is not None]
+        img_paths = [p for _, p in char_files if p is not None]
+        scene_sids = [s for s, p in scene_files if p is not None]
+        scene_paths = [p for _, p in scene_files if p is not None]
+        ref_files = img_paths + scene_paths
+        dropped_images = [c for c, p in char_files if p is None] + look_cids[MAX_REF_IMAGES:]
+        dropped_scenes = [s for s, p in scene_files if p is None]
         audio_cids = [c for c in voice_cids if c in got_voice]
         plan = RefPlan(
             images=tuple((f"图{i + 1}", c) for i, c in enumerate(img_cids)),
@@ -366,7 +415,7 @@ async def generate_scene_clips(
                 (f"图{len(img_cids) + i + 1}", s) for i, s in enumerate(scene_sids)
             ),
             audios=tuple((f"音频{i + 1}", c) for i, c in enumerate(audio_cids)),
-            dropped_images=tuple(look_cids[10:]),
+            dropped_images=tuple(dropped_images + dropped_scenes),
             dropped_audios=tuple(voice_skipped),
         )
 
@@ -377,9 +426,19 @@ async def generate_scene_clips(
             group,
             has_dialogue=bool(speakers),
             has_first_frames=first_frame is not None,
+            has_references=bool(ref_files),
             forced=str(ov.get("mode") or cfg.scene_clip_mode or "auto"),
         )
-        prompt = scene_prompt(
+        if mode == MODE_NONE:
+            storage.log_event("m4_scene", "scene_no_input", group=gid, error=why[:200])
+            storage.log_degradation(
+                "scene", "scene_clip_no_input", why[:200],
+                impact=f"场景 {gid} 未生成：盘上既没有可用的角色图/场景图，也没有本组首帧",
+            )
+            continue
+        # 界面里人工编辑过的提示词**逐字生效**（两种形态都允许编辑）：机器拼的模板是
+        # 默认值，不是上限。编辑版落盘在 run_meta.scene_overrides，重跑可复现。
+        prompt = str(ov.get("prompt") or "").strip() or scene_prompt(
             cfg, group, script, char_map,
             plan if mode == MODE_REFERENCE else None,
         )
@@ -391,10 +450,10 @@ async def generate_scene_clips(
         }
         submit_image: Path | None = None
         if mode == MODE_REFERENCE:
-            # 参考图路径以覆盖选择为准（界面里可以换用某张候选立绘），默认 char_{cid}.png
-            params["references"] = [_ref_path(assets, storage, ov, c) for c in img_cids] + [
-                Path(str(assets[f"scene_{s}"].uri)) for s in scene_sids
-            ]
+            # 用**已经解析成功**的那批路径，且与 plan 的编号顺序同源（图N ↔ 数组第 N 项）。
+            # 这里绝不再去 assets 里现查：查不到就会发出 references=[]，
+            # 被本地规格守卫拦下（官方：参考形态必须至少一个素材），等于点了没反应。
+            params["references"] = list(ref_files)
             params["voice_refs"] = [Path(got_voice[c]) for c in audio_cids]
         else:
             submit_image = first_frame
@@ -519,6 +578,14 @@ async def generate_scene_clips(
             res=billed_res, refs=len(img_cids) + len(scene_sids), voices=len(audio_cids),
         )
         out[gid] = str(dest)
+        # 一组一次付费调用，整步可能连跑十几组：每组之后续一次心跳，
+        # 否则长 run 会被僵尸锁回收逻辑误判成"进程死了"（锁超时=别人能插进来烧双份钱）
+        try:
+            from fastvideo3.core import tasklock
+
+            tasklock.heartbeat(storage.root.parent)
+        except Exception:  # noqa: BLE001  # 心跳失败不该中断已经付费的生成链
+            pass
     return out
 
 
