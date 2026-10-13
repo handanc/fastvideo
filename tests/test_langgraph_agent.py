@@ -124,6 +124,24 @@ async def test_gate_redo_with_wrong_group_name_leaves_no_phantom_state(cfg, outd
     assert any(e.get("status") == "gate_redo_unknown" for e in evs), "写错的组名必须留痕并给出正确清单"
 
 
+def test_cli_group_name_resolution_is_tolerant_but_never_silent():
+    """`--redo` 宽容认名（`s1` / `scene_1` / `1` / `场景1` / `all`），认不出必须交回报错。
+
+    静默忽略参数是本项目最难查的一类失败：用户以为重出了，其实什么都没发生。
+    """
+    from fastvideo3.app.cli import _resolve_groups
+
+    valid = ["s1", "s2", "s3"]
+    assert _resolve_groups("s2", valid)[0] == ["s2"]
+    assert _resolve_groups("scene_2", valid)[0] == ["s2"], "带前缀的写法要认（真实 run 的组名带 scene_）"
+    assert _resolve_groups("3", valid)[0] == ["s3"]
+    assert _resolve_groups("场景1", valid)[0] == ["s1"]
+    assert _resolve_groups("s1，s3", valid)[0] == ["s1", "s3"], "中文逗号也要认"
+    assert _resolve_groups("all", valid)[0] == valid
+    picked, unknown = _resolve_groups("scene_9", valid)
+    assert picked == [] and unknown == ["scene_9"], "认不出的一律交回调用方报错"
+
+
 async def test_graph_resume_after_crash_does_not_resubmit(cfg, outdir, monkeypatch):
     """崩溃恢复：已提交、仍在途的任务必须**接着轮询**，绝不重新提交（省钱且防重复付费）。"""
     rid = "run_graph_resume"
@@ -135,7 +153,7 @@ async def test_graph_resume_after_crash_does_not_resubmit(cfg, outdir, monkeypat
     from fastvideo3.core.scenegroup import group_scenes
     from fastvideo3.core.schema import JobStatus, Script
 
-    jobs = JobStore(cfg.db_url)
+    jobs = JobStore(cfg.db_url, run_id=rid)
     gid = group_scenes(Script.model_validate(storage.load_json("script.json")))[0].group_id
     job_id = f"scene_{gid}"
     job = jobs.get(job_id)

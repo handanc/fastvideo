@@ -1182,6 +1182,46 @@ def scene_gen(
         tasklock.release(OUTPUT_DIR, run_id)
 
 
+def _resolve_groups(raw: str, valid: list[str]) -> tuple[list[str], list[str]]:
+    """把人打的组名解析成真实 group_id，返回 `(命中的组, 认不出/歧义的原始写法)`。
+
+    实操里最难查的失败是"参数被静默忽略"：`--redo scene_1` 而真实组叫 `s1`，用户以为
+    重出了、其实什么都没发生（本项目已因此丢过一整个审片轮次）。所以这里宽容匹配
+    （`scene_1` / `s1` / `1` / `场景1` / `all` 都认），认不出的**交回给调用方报错**，
+    绝不静默丢弃。
+    """
+    import re
+
+    def norm(x: str) -> str:
+        return re.sub(r"[^0-9a-z]+", "", x.lower())
+
+    def digits_of(x: str) -> str:
+        m = re.findall(r"(\d+)\D*$", norm(x))
+        return m[0] if m else ""
+
+    picked: list[str] = []
+    unknown: list[str] = []
+    valid_norm = {norm(g): g for g in valid}
+    valid_tail = {digits_of(g): g for g in valid if digits_of(g)}
+    for tok in raw.replace("，", ",").split(","):
+        token = tok.strip()
+        if not token:
+            continue
+        if norm(token) in ("all", "全部", "quanbu"):
+            picked.extend(g for g in valid if g not in picked)
+            continue
+        hit: list[str] = []
+        if norm(token) in valid_norm:
+            hit = [valid_norm[norm(token)]]
+        elif digits_of(token) and digits_of(token) in valid_tail:
+            hit = [valid_tail[digits_of(token)]]
+        if len(hit) == 1 and hit[0] not in picked:
+            picked.append(hit[0])
+        else:
+            unknown.append(token)
+    return picked, unknown
+
+
 @app.command("graph")
 def graph_cmd(
     run_id: str = typer.Argument(...),
@@ -1205,6 +1245,7 @@ def graph_cmd(
     import asyncio
 
     from fastvideo3.core import tasklock
+    from fastvideo3.core.storage import RunStorage
     from fastvideo3.graph import run_graph
 
     ok, lock = tasklock.acquire(OUTPUT_DIR, run_id, "graph", adopt_same_run=True)
@@ -1213,7 +1254,21 @@ def graph_cmd(
         raise typer.Exit(code=4)
     decision: dict | None = None
     if redo.strip():
-        decision = {"redo_groups": [x.strip() for x in redo.split(",") if x.strip()]}
+        # 先对着真实组名解析：打错就当场报（列出可选组），而不是"看起来跑了、其实没重出"
+        from fastvideo3.core.scenegroup import group_scenes
+        from fastvideo3.core.schema import Script
+
+        _st = RunStorage(run_id, root=OUTPUT_DIR)
+        if not _st.exists("script.json"):
+            console.print("[red]✘ 还没有剧本，无法点名重出（先跑 step 或 graph 生成剧本）[/]")
+            raise typer.Exit(code=1)
+        valid = [g.group_id for g in group_scenes(Script.model_validate(_st.load_json("script.json")))]
+        picked, unknown = _resolve_groups(redo, valid)
+        if unknown or not picked:
+            console.print(f"[red]✘ 认不出的组名：{', '.join(unknown) or '（无命中）'}[/]")
+            console.print(f"   可选：{', '.join(valid)}（也支持 `1` / `场景1` / `all`）")
+            raise typer.Exit(code=2)
+        decision = {"redo_groups": picked}
     elif finish:
         decision = {"finish": True}
     elif resume:

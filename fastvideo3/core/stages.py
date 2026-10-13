@@ -49,7 +49,7 @@ def build_context(cfg: AppConfig, storage: RunStorage) -> StageContext:
         cfg=cfg,
         storage=storage,
         ledger=CostLedger(storage, cfg.budget_limit_cny),
-        jobs=JobStore(cfg.db_url),
+        jobs=JobStore(cfg.db_url, run_id=storage.run_id),
     )
 
 

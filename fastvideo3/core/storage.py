@@ -232,6 +232,12 @@ class RunStorage:
         for rel in targets:
             meta = edges.get(rel)
             if meta is None:
+                # **凭空写一条"已作废"是垃圾状态**：这条产物既不在盘上、也从没有过血缘
+                # （典型来源是把组名打错成 `scene_scene_1.mp4` 这类不存在的相对路径）。
+                # 它会永远挂在 lineage 里 —— 本项目反复踩过"遗留状态被当成缺口 → 步骤
+                # 永久 gap"，所以在这里一次性拦住：没有实体也没有来路的产物不作废。
+                if not (self.root / rel).exists():
+                    continue
                 meta = {"inputs": [], "stale": True, "reason": reason}
                 edges[rel] = meta
                 changed += 1
