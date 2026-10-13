@@ -284,4 +284,45 @@ def test_choose_mode_forced_override_still_respects_physics():
                              forced=MODE_FIRST_LAST)[0] == MODE_FIRST_LAST
     mode, why = choose_input_mode(g, has_look_cards=True, has_first_frames=False,
                                   forced=MODE_FIRST_LAST)
-    assert mode == MODE_REFERENCE and "没有首帧" in why
+    assert mode == MODE_REFERENCE and ("缺失" in why or "作废" in why), why
+
+
+def test_single_shot_with_dialogue_prefers_reference_for_voice_lock():
+    """单镜头但**有台词**：首尾帧能锁构图却发不了音色参考（官方互斥）→ 走参考形态。
+
+    否则一个说话镜头会锁住构图却丢嗓子 —— 跨场景换声就是这么来的，
+    而"换声"比"构图差一点"难发现得多（要听出来，不是看出来）。
+    """
+    from fastvideo3.core.scenegroup import MODE_REFERENCE, choose_input_mode
+
+    g = group_scenes(_script([_scene("scene_1", "街道", "日", [
+        _shot("shot_1_1", 4.0, dialogue="甲说一句话"),
+    ])]))[0]
+    mode, why = choose_input_mode(g, has_look_cards=True, has_first_frames=True,
+                                  has_dialogue=True)
+    assert mode == MODE_REFERENCE and "音色" in why
+
+
+def test_stale_first_frame_is_not_trusted_as_an_anchor():
+    """首帧是旧立绘画的（血缘已标 stale）→ 不能拿它锁起止，改走参考形态。"""
+    from fastvideo3.core.scenegroup import MODE_FIRST_LAST, MODE_REFERENCE, choose_input_mode
+
+    g = group_scenes(_script([_scene("scene_1", "街道", "日", [_shot("shot_1_1", 4.0)])]))[0]
+    mode, why = choose_input_mode(
+        g, has_look_cards=True, has_first_frames=True, first_frame_stale=True
+    )
+    assert mode == MODE_REFERENCE and "作废" in why
+    # 首帧新鲜时同一条规则不该触发
+    assert choose_input_mode(g, has_look_cards=True, has_first_frames=True)[0] == MODE_FIRST_LAST
+
+
+def test_forced_first_last_on_stale_frame_falls_back_with_reason():
+    """配置强制首尾帧、但首帧已作废 → 说明原因后退回参考（物理前提不让步）。"""
+    from fastvideo3.core.scenegroup import MODE_REFERENCE, choose_input_mode
+
+    g = _one_shot_group()
+    mode, why = choose_input_mode(
+        g, has_look_cards=True, has_first_frames=True, first_frame_stale=True,
+        forced="first_last",
+    )
+    assert mode == MODE_REFERENCE and "作废" in why

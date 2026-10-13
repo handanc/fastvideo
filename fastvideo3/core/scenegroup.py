@@ -326,41 +326,60 @@ def choose_input_mode(
     *,
     has_look_cards: bool,
     has_first_frames: bool,
+    has_dialogue: bool = False,
+    first_frame_stale: bool = False,
     bridging: bool = False,
     forced: str = "auto",
 ) -> tuple[str, str]:
     """自动选这次调用走哪种输入形态，返回 (模式, 理由)。
 
-    规则是确定性的（同一剧本同一配置永远选同一条路，结果才可复现、才可对账）：
+    判据是"**这一组最需要锁住什么**"—— 两种形态锁的东西不同：
+    参考生视频锁**身份属性**（脸/服装/音色，整段全程）并让模型拥有组内镜头语言；
+    首尾帧锁**起止两个瞬间的像素构图**，但中段不受控、且发不了音色参考（官方互斥）。
+    按预测力排序的五个信号：
 
-    1. **串联优先**：要拿上一组尾帧当首帧（跨场景隐形切）就必须走首尾帧 ——
-       官方互斥，串联组发不了参考素材。身份靠"上一组尾帧里已经画对的脸"继承，
-       所以只在同人同景的衔接上用。
-    2. **单镜头组走首尾帧**（有首帧时）：空镜/单镜头没有"组内多镜头"要连贯，
-       像素级锁起止构图比参考级锁脸更直接，也更便宜（少传一堆素材）。
-    3. **其余走参考生视频**（主干）：多镜头、有台词的组，靠立绘锁脸 + 音色样本锁声 +
-       模型自己在组内切镜头 —— 参考片（小云雀 34s/11 镜）实测就是这个形状。
-    4. 一个角色立绘都没有时退回首尾帧（有首帧的话）：没有参考素材，"锁脸"无从谈起。
+    1. **组内有几个切点**：多镜头组只有参考形态能让中段连贯 —— 首尾帧只能锁两端，
+       中间 3-5 个切点完全不受控，等于放弃组内连续性。
+    2. **要不要与邻组像素级衔接**：要（串联）就只能首尾帧 —— 参考形态表达不了
+       "从上一组尾帧那个像素状态开始"。
+    3. **有没有台词**：有台词就需要音色参考，而 `reference_audio` 只有参考形态能发；
+       单镜头说话镜头走首尾帧会锁住构图却丢嗓子（跨场景换声就是这么来的）。
+    4. **参考素材与首帧哪个新鲜可信**：首帧是旧立绘画的（血缘已标 stale）时，
+       拿它锁起止 = 把旧脸焊进新片段，必须改走参考形态或先重画首帧。
+    5. **失败代价**：首尾帧形态单镜头 2-5s（¥1-6），参考形态整组 10-30s（¥6-36）。
+       代价高不改变选型（前四条更影响成片质量），但超预算时应该**拆组**而不是换形态。
 
-    `forced` 允许配置/面板覆盖（"auto" | MODE_REFERENCE | MODE_FIRST_LAST），
-    覆盖时仍要满足物理前提（比如强制 reference 但没有立绘 → 说明原因后照走，
-    因为场景图也可以当参考；强制 first_last 但没有首帧 → 只能退回 reference）。
+    规则是确定性的（同一剧本同一配置永远选同一条路，结果才可复现、才可对账）。
+    `forced` 允许配置/面板覆盖，但覆盖仍受物理前提约束（强制首尾帧却没有新鲜首帧
+    → 说明原因后退回参考；强制参考而没有立绘 → 场景图也可以当参考，照走）。
     """
+    fresh_first = has_first_frames and not first_frame_stale
     if forced == MODE_FIRST_LAST:
-        if has_first_frames:
+        if fresh_first:
             return MODE_FIRST_LAST, "配置指定首尾帧形态"
-        return MODE_REFERENCE, "配置要首尾帧但本组没有首帧，退回参考生视频"
+        return MODE_REFERENCE, (
+            "配置要首尾帧，但本组首帧"
+            + ("已作废（上游变更）" if first_frame_stale else "缺失")
+            + "，退回参考生视频"
+        )
     if forced == MODE_REFERENCE:
         return MODE_REFERENCE, "配置指定参考生视频形态"
     if bridging:
         return MODE_FIRST_LAST, "跨场景串联：首帧取自上一组尾帧（与参考素材官方互斥）"
-    if group.shot_count == 1 and has_first_frames:
-        return MODE_FIRST_LAST, "单镜头组：像素级锁起止构图比参考级锁脸更直接"
+    if first_frame_stale and has_look_cards:
+        return MODE_REFERENCE, "首帧已作废（上游立绘/剧本变更）：拿它锁起止会把旧脸焊进新片段"
+    if has_dialogue and has_look_cards:
+        return MODE_REFERENCE, (
+            "有台词：音色参考只有参考形态能发（与首尾帧互斥），脸与声一起锁"
+            + ("；组内多镜头由模型自切保持连贯" if group.shot_count > 1 else "")
+        )
+    if group.shot_count == 1 and fresh_first:
+        return MODE_FIRST_LAST, "单镜头无台词：像素级锁起止构图最直接，且少传素材更便宜"
     if has_look_cards:
-        return MODE_REFERENCE, "多镜头/有台词：立绘锁脸 + 音色样本锁声，模型组内自切镜头"
-    if has_first_frames:
-        return MODE_FIRST_LAST, "本组角色没有立绘可参考，退回首帧锁构图"
-    return MODE_REFERENCE, "无立绘也无首帧：用场景图作参考素材（聊胜于无）"
+        return MODE_REFERENCE, "多镜头无台词：组内连贯靠模型自切，立绘锁脸"
+    if fresh_first:
+        return MODE_FIRST_LAST, "本组没有立绘可参考：用首帧锁构图"
+    return MODE_REFERENCE, "无立绘也无可用首帧：场景图作参考素材（聊胜于无）"
 
 
 def describe(groups: list[SceneGroup]) -> str:

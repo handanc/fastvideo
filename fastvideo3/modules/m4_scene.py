@@ -368,10 +368,17 @@ async def generate_scene_clips(
         if bridging and first_frame is None and prev_clip is not None:
             tail = storage.path("clips", f"_bridge_{gid}.png")
             first_frame = _tail_frame(prev_clip, tail)
+        # 首帧"在盘"不等于"可信"：上游立绘/剧本改过之后血缘会把它标 stale，
+        # 拿一张旧脸画的首帧去锁起止，等于把旧脸焊进新片段。
+        first_stale = bool(frames.get(first_shot)) and storage.is_stale(
+            f"storyboard/shot_{first_shot}.png"
+        )
         mode, why = choose_input_mode(
             group,
             has_look_cards=bool(img_cids),
             has_first_frames=first_frame is not None,
+            has_dialogue=bool(speakers),
+            first_frame_stale=first_stale,
             bridging=bridging,
             forced=cfg.scene_clip_mode,
         )
