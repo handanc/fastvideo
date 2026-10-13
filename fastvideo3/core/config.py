@@ -194,6 +194,16 @@ class AppConfig(BaseModel):
     # 与 r2v 参考生视频拿不到（官方 first/last_frame 与 reference_image 互斥），
     # 那种情况自动退回单首帧并记事件，绝不阻断交付。
     use_last_frames: bool = True
+    # 场景级生成（wan3.0 一次调用出一个场景的连贯多镜头片段）的输入形态：
+    #   auto        = 按 scenegroup.choose_input_mode 的确定性规则选（默认）
+    #   reference   = 强制参考生视频（立绘+场景图+音色样本；≈90% 的主干）
+    #   first_last  = 强制首尾帧（像素级锁起止；≈10% 的串联/单镜头/重拍）
+    #   off         = 关掉场景级生成，回到逐镜头路径（economy/A链/B链本来就走那边）
+    # 官方硬约束：reference_* 与 first/last_frame **互斥**，所以这是"二选一"不是"叠加"。
+    scene_clip_mode: Literal["auto", "reference", "first_last", "off"] = "auto"
+    # 跨场景串联：拿上一组尾帧当这一组首帧（隐形切）。开了之后该组走 first_last 形态，
+    # 代价是这一组发不了参考素材（互斥）—— 身份靠上一组尾帧里已画对的脸继承。
+    scene_bridge: bool = False
     style_suffix: str = ""  # 全局风格锚：追加到所有文生图提示词尾部（统一全片画风）
     negative_prompt: str = ""  # 全局负向提示词（防卡通化/防劣化）
     color_grade: bool = False  # 成片轻度调色（对比/饱和/锐化）
@@ -388,6 +398,8 @@ def load_config(
         auto_reshoot=bool(gen.get("auto_reshoot", False)),
         i2v_resolution=gen.get("i2v_resolution", "480P"),
         use_last_frames=bool(gen.get("use_last_frames", True)),
+        scene_clip_mode=gen.get("scene_clip_mode", "auto"),
+        scene_bridge=bool(gen.get("scene_bridge", False)),
         style_suffix=gen.get("style_suffix", ""),
         negative_prompt=gen.get("negative_prompt", ""),
         color_grade=bool(gen.get("color_grade", False)),

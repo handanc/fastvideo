@@ -49,6 +49,27 @@ def enforce_transition_variety(script: Script) -> Script:
     return script
 
 
+def enforce_shot_durations(script: Script) -> tuple[Script, list[str]]:
+    """把每个镜头时长钳进 **2–5 秒**，返回 (剧本, 改动说明)。
+
+    为什么是确定性后处理而不是只在提示词里要求：官方多镜头提示词指南明写
+    "各镜头首尾相接、不跳段不重叠，**每段 2–5 秒**"，而场景级生成要把一个场景的
+    镜头时间戳首尾相接地写进同一段提示词 —— 模型给了 6 秒或 1.5 秒，时间戳就对不上，
+    整段提示词的分镜结构就废了（实测用户那条 run 里就有 6 秒镜头）。
+    提示词管"倾向"，这里管"约束"，两层都要。
+    """
+    from fastvideo3.core.scenegroup import SHOT_MAX_SEC, SHOT_MIN_SEC
+
+    notes: list[str] = []
+    for shot in script.all_shots():
+        raw = float(shot.duration_sec or 0.0)
+        want = min(max(raw, SHOT_MIN_SEC), SHOT_MAX_SEC)
+        if want != raw:
+            notes.append(f"{shot.shot_id}: {raw:g}s → {want:g}s")
+            shot.duration_sec = want
+    return script, notes
+
+
 def line_length_violations(script: Script) -> list[str]:
     msgs = []
     for shot in script.all_shots():
@@ -230,7 +251,11 @@ async def generate_script(
             note=f"script_round{round_no}", meta=llm_meta(text),
         )
         script = enforce_transition_variety(Script.model_validate_json(strip_code_fence(raw)))
+        script, dur_notes = enforce_shot_durations(script)
         storage.log_event("m1_scripting", "draft", round=round_no, shots=script.shot_count())
+        if dur_notes:
+            storage.log_event("m1_scripting", "shot_duration_clamped", count=len(dur_notes),
+                              detail="；".join(dur_notes[:4]))
 
         violations = line_length_violations(script)
         if not violations:

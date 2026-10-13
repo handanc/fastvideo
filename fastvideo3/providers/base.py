@@ -231,6 +231,10 @@ class Provider(ABC):
     # 另：官方规定 `first_frame/last_frame` 与 `reference_image` **互斥**，所以走 r2v
     # （参考生视频）的镜头拿不到首尾帧，这是硬约束不是实现选择。
     supports_last_frame: bool = False
+    # 参考生视频（wan3.0 系）：`reference_image` 锁脸 / `reference_audio` 锁音色。
+    # 与 first_frame/last_frame **官方互斥** —— 同一请求只能二选一，
+    # 所以"场景级多镜头"与"首尾帧串联"是两条不能混用的输入形态。
+    supports_reference_audio: bool = False
     # 官方规格的**硬性输入上限**（超限即服务端 400，属永久错误，重试无意义）：
     # None = 未知/不限，不猜。钳位在调用方做（m6），因为记事件需要 storage 上下文。
     # 背景：m6 曾把 cfg.i2v_resolution(=cinema 的 1080P) 原样透传给 wan2.2-s2v，

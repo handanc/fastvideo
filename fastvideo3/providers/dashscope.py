@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from fastvideo3.core.scenegroup import MAX_REF_AUDIOS, MAX_REF_IMAGES
 from fastvideo3.providers.base import (
     CapabilityMismatchError,
     I2VProvider,
@@ -937,12 +938,17 @@ class DashScopeWan30TalkProvider(DashScopeWan27Base, TalkProvider):
     """
 
     name = "dashscope_wan30_talk"
-    # 只吃「图片(+尾帧) + 提示词」：既不吃音频也不吃视频，两种误用都响亮拒绝
+    # 只吃「图片(+尾帧) + 提示词」或「参考素材 + 提示词」：不吃 driving_audio 也不吃运动片段，
+    # 两种误用都响亮拒绝
     supports_video_input = False
     accepts_audio = False
     accepts_last_frame = True
     # 首尾帧：media 协议支持 `last_frame`（m6 按这一个能力位决定发不发，见 _last_frame_kwargs）
     supports_last_frame = True
+    # 参考生视频：立绘锁脸（reference_image ≤10）+ 音色样本锁声（reference_audio ≤5 段/≤15s）。
+    # 场景级多镜头生成走这条路；它与首尾帧互斥，由 submit 本地拦（见那里的注释）。
+    supports_reference_image = True
+    supports_reference_audio = True
     prefers_16k_audio = False
     max_resolution = "1080P"
     min_duration_sec = 2
@@ -990,18 +996,43 @@ class DashScopeWan30TalkProvider(DashScopeWan27Base, TalkProvider):
                 f"{self.model} 口型通道吃「图片 + 提示词」，不吃运动片段；"
                 "「先出动作视频再重加口型」请选 videoretalk 模式"
             )
-        if image is None:
-            raise CapabilityMismatchError(f"{self.model} 口型通道需要首帧图（image）")
+        # ── 两种互斥的输入形态（官方硬约束，本地先拦，别等服务端 400）──
+        # A) 参考生视频：reference_image（≤10）+ reference_audio（≤5 段、总 ≤15s）+ 多镜头提示词
+        #    —— 场景级生成的主干：立绘锁脸、音色样本锁声，模型自己切镜头；
+        # B) 首尾帧：first_frame（+last_frame）+ 提示词 —— 像素级锁起止构图，
+        #    用于跨场景串联与单镜头重拍。
+        # 两者**不能混发**：官方原文"first_frame/last_frame 与 reference_image/
+        # reference_video/reference_audio/file/link 类型互斥，不能在同一请求中混用"。
+        refs = list(params.get("references") or [])
+        voice_refs = list(params.get("voice_refs") or [])
+        if (refs or voice_refs) and (image is not None or params.get("last_frame")):
+            raise CapabilityMismatchError(
+                f"{self.model}：reference_* 与 first_frame/last_frame 官方互斥，不能同发。"
+                "场景级生成走参考素材（锁脸+锁声），跨场景串联/单镜头重拍走首尾帧 —— 二选一。"
+            )
+        if len(refs) > MAX_REF_IMAGES or len(voice_refs) > MAX_REF_AUDIOS:
+            raise CapabilityMismatchError(
+                f"{self.model}：参考素材超官方上限（图 ≤{MAX_REF_IMAGES}、音频 ≤{MAX_REF_AUDIOS}），"
+                f"收到 图{len(refs)}/音频{len(voice_refs)}；超预算的分配应在 scenegroup.plan_references 里裁掉"
+            )
+        if refs or voice_refs:
+            media: list[tuple[str, Path]] = [("reference_image", Path(p)) for p in refs]
+            media += [("reference_audio", Path(p)) for p in voice_refs]
+        else:
+            if image is None:
+                raise CapabilityMismatchError(
+                    f"{self.model} 需要首帧图或参考素材之一：都没有就既锁不了构图也锁不了脸"
+                )
+            self._check_image(Path(image))
+            media = [("first_frame", Path(image))]
+            last = params.get("last_frame")
+            if last:
+                self._check_image(Path(last), label="尾帧")
+                media.append(("last_frame", Path(last)))
         prompt = str(params.get("prompt") or "").strip()
         if not prompt:
             # 空提示词 = 没有台词也没有运镜，模型会自由发挥一条"没人说话的口型视频"
             raise ProviderError(f"{self.model} 口型通道必须给提示词（台词与运镜都在里面）")
-        self._check_image(Path(image))
-        media: list[tuple[str, Path]] = [("first_frame", Path(image))]
-        last = params.get("last_frame")
-        if last:
-            self._check_image(Path(last), label="尾帧")
-            media.append(("last_frame", Path(last)))
 
         res = str(clamp_resolution(self, str(params.get("resolution") or "1080P"))[0]).upper()
         if res not in self._RES_PARAMS:
