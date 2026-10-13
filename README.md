@@ -10,6 +10,29 @@
 - 需求与设计：[PRD.md](PRD.md) · [TDD.md](TDD.md)
 - 前代项目：FastVideo2（本地推理单体版），本项目为其架构现代化重构
 
+## 多模态 Agent 编排（LangGraph）
+
+分步模式之外，同一个任务可以用**执行图**跑：`fastvideo3/graph/`（LangGraph `StateGraph` + SQLite/PostgreSQL 检查点）。
+
+```
+START → script → assets（角色图 ‖ 场景图，节点内并发） → scene_videos → compose → final_gate
+                                          ↑                                        │
+                                          └──────── 人审点名重出（条件回边）────────┘
+```
+
+```bash
+fastvideo3 graph <run_id>                        # 跑到人审门停下（成片已产出）
+fastvideo3 graph <run_id> --resume --redo scene_2  # 不满意：只重出这一组，再交人审
+fastvideo3 graph <run_id> --resume --finish      # 收片
+```
+
+职责边界（这是本项目的硬约束，不是风格偏好）：图只管**顺序、并行、中断、恢复**；每一步做什么仍然走
+`core/stages.py` 与 `cli._run_step` 那**唯一一份**执行器。自动重做 ≤2 轮的实现只在 `compose` 里，图上不重复实现。
+所以同一条 run 可以两种编排混用，产物、成本台账、血缘完全一致（`tests/test_langgraph_agent.py` 用差分测试钉住）。
+
+为什么"带口型的场景视频"能算多模态：一次 wan3.0 调用同时产出画面、台词语音与口型，输入是
+角色立绘 + 空景背景图 + 音色样本 + 多镜头提示词（官方配额：参考图 ≤10、参考音频 ≤5 段且总 ≤15s，与首尾帧互斥）。
+
 ## 快速开始
 
 ```bash

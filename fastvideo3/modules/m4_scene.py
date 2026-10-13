@@ -45,7 +45,7 @@ from fastvideo3.core.scenegroup import (
     choose_input_mode,
     group_scenes,
 )
-from fastvideo3.core.schema import AudioLine, JobStatus, Script, TransitionType
+from fastvideo3.core.schema import AudioLine, JobStatus, RunJob, Script, TransitionType
 from fastvideo3.core.storage import RunStorage
 from fastvideo3.modules.m6_talk import _scripted_lines_block, _timbre_anchor
 from fastvideo3.providers.base import (
@@ -461,7 +461,15 @@ async def generate_scene_clips(
 
         job_id = f"scene_{gid}"
         existing = jobs.get(job_id)
-        if existing is not None and existing.status == JobStatus.SUCCEEDED and dest.exists():
+        # 复用条件必须带"不作废"：台账记的是"曾经成功"，而上游（角色图/剧本/人审决定）一变，
+        # 盘上那段就已经是旧素材拍出来的了。只看"成功+文件在"会让重做请求被台账一句话吞掉
+        # —— 表现是"点了重出，什么都没发生"。
+        if (
+            existing is not None
+            and existing.status == JobStatus.SUCCEEDED
+            and dest.exists()
+            and not storage.is_stale(rel)
+        ):
             out[gid] = str(dest)
             continue
         # **已提交但在途的任务：接着轮询，绝不重新提交。**
@@ -470,6 +478,17 @@ async def generate_scene_clips(
         resumed = str(existing.output_uri or "") if (
             existing is not None and existing.status == JobStatus.RUNNING
         ) else ""
+        if existing is None:
+            # **先把任务行插进台账**：`jobs.update()` 只会 UPDATE 已存在的行，之前只调 update
+            # 的写法让台账一直是空的 —— 于是 `jobs.get()` 永远返回 None，"跳过已提交任务"与
+            # "在途任务续跑"两条保护全是死代码，服务重启后必然重新提交（同一秒画面付两次钱）。
+            jobs.submit(RunJob(
+                job_id=job_id,
+                run_id=storage.run_id,
+                capability="talk" if speakers else "i2v",
+                provider=str(getattr(provider, "name", "")),
+                params={"group": gid, "mode": mode, "duration": duration},
+            ))
         try:
             ext_id = resumed or await provider.submit(
                 dest=dest, image=submit_image, audio=None, video=None, **params

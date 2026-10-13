@@ -20,6 +20,7 @@ from langgraph.types import interrupt
 from fastvideo3.core import progress as prog
 from fastvideo3.core import stages
 from fastvideo3.core.config import AppConfig
+from fastvideo3.core.scenegroup import group_scenes
 from fastvideo3.core.storage import RunStorage
 from fastvideo3.graph.state import ProductionState
 
@@ -40,7 +41,9 @@ class GraphContext:
         return self.ctx
 
 
-async def _run_step_ids(g: GraphContext, ids: tuple[str, ...], *, parallel: bool = False) -> dict[str, Any]:
+async def _run_step_ids(
+    g: GraphContext, ids: tuple[str, ...], *, parallel: bool = False
+) -> dict[str, Any]:
     """跑给定步骤（只补缺口/待重做）。`parallel` 让互不消费的两步同时跑。
 
     缺口判定一律现算 `compute_progress`：节点不自己记"我做过没有"，否则就又多一份状态真相。
@@ -66,7 +69,9 @@ async def _run_step_ids(g: GraphContext, ids: tuple[str, ...], *, parallel: bool
     else:
         for st in todo:
             try:
-                produced += list(await _run_step(g.ensure_ctx(), g.storage, g.cfg, g.meta, st) or [])
+                produced += list(
+                    await _run_step(g.ensure_ctx(), g.storage, g.cfg, g.meta, st) or []
+                )
             except Exception as e:  # noqa: BLE001 单步失败不吞掉：交给状态留痕与人工处置
                 errors.append(f"{st.id}: {str(e)[:200]}")
                 break
@@ -106,7 +111,6 @@ def make_nodes(g: GraphContext) -> dict[str, Any]:
         重做不删文件，只把该组的场景片段标 stale —— 与界面「删除片段」、上游改动作废下游
         走的是同一套血缘判据，不再多一份"怎样才算要重出"的实现。
         """
-        from fastvideo3.core.scenegroup import group_scenes
         from fastvideo3.core.schema import Script
 
         script = Script.model_validate(g.storage.load_json("script.json"))
@@ -121,13 +125,25 @@ def make_nodes(g: GraphContext) -> dict[str, Any]:
             "groups": [gg.group_id for gg in group_scenes(script)],
         }
         decision = interrupt(payload) or {}
-        redo = [str(x) for x in (decision.get("redo_groups") or [])]
+        asked = [str(x) for x in (decision.get("redo_groups") or [])]
+        # **只承认这图里真的存在的组名**：给错名字（如 scene_1 而实际是 s1）时，
+        # 标 stale 会凭空写出一条"不存在的产物已作废"的血缘条目并永久留着 ——
+        # 本项目吃过太多次"遗留状态被当成缺口"的亏，这类垃圾条目一律不许产生。
+        valid = {gg.group_id for gg in group_scenes(script)}
+        redo = [gid for gid in dict.fromkeys(asked) if gid in valid]
+        unknown = [gid for gid in dict.fromkeys(asked) if gid not in valid]
+        if unknown:
+            g.storage.log_event(
+                "graph", "gate_redo_unknown", unknown=unknown, valid=sorted(valid),
+                hint="组名写错，已忽略；重出请用上一步列出的组名",
+            )
         if redo:
-            rels = [f"clips/scene_{gid}.mp4" for gid in redo]
-            g.storage.mark_stale(rels, "人审要求重出该组场景片段")
+            g.storage.mark_stale(
+                [f"clips/scene_{gid}.mp4" for gid in redo], "人审要求重出该组场景片段"
+            )
             g.storage.log_event("graph", "gate_redo", groups=redo)
         return {
-            "gate": {"redo_groups": redo, "finish": not redo},
+            "gate": {"redo_groups": redo, "unknown": unknown, "finish": not redo},
             "spent_cny": prog.compute_progress(g.storage, g.meta, g.cfg).spent_cny,
         }
 
