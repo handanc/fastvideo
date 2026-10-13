@@ -176,13 +176,39 @@ async def test_asset_best_of_n_picks_via_vlm(cfg, storage, ledger):
     assert len(assets) == 5
     assert t2i.calls == 2 * 2 + 3  # 角色×2候选 + 场景×1
     assert vlm.scored == [
-        "_cand_char_c1_0.png",
-        "_cand_char_c1_1.png",
-        "_cand_char_c2_0.png",
-        "_cand_char_c2_1.png",
+        "_cand_char_c1_t0_0.png",
+        "_cand_char_c1_t0_1.png",
+        "_cand_char_c2_t0_0.png",
+        "_cand_char_c2_t0_1.png",
     ]
     a = storage.dir("assets")
-    # 最优候选(得分最高的 _1)移入正式路径，落选(_0)留盘可排查
-    assert (a / "char_c1.png").exists() and not (a / "_cand_char_c1_1.png").exists()
-    assert (a / "_cand_char_c1_0.png").exists()
+    # 最优候选(得分最高的 _1)**复制**到正式路径；全部候选留盘（供 ✔ 人工改选）。
+    # 原实现用 rename：Windows 上候选图被文件请求/杀软瞬时握住即抛 WinError 32，
+    # 实测把整条 cinema run 打死在 art 阶段（run_20261002_132909）。
+    assert (a / "char_c1.png").exists() and (a / "_cand_char_c1_t0_1.png").exists()
+    assert (a / "_cand_char_c1_t0_0.png").exists()
+    assert (a / "char_c1.png").read_bytes() == (a / "_cand_char_c1_t0_1.png").read_bytes()
     assert any("char_qc:" in e.note for e in ledger.entries)
+
+
+async def test_storyboard_survives_flaky_judge(cfg, storage, ledger):
+    """裁判回残缺 JSON（ReviewParseError）时，已付费的出帧步骤不得 abort。
+
+    实测（run_20261002_235904 的 server_spawn.log）：qwen-vl-max 某次只回
+    passed+feedback、缺 score → review() 抛 ReviewParseError → 整个 storyboard
+    步骤在出帧之后崩掉，用户再点一次逐步又付一遍钱。抽查是质量增益不是前置条件。
+    """
+    from fastvideo3.providers.base import ReviewParseError
+
+    class FlakyVLM(FakeVLMProvider):
+        async def review(self, media, *, rubric, dest=None):
+            raise ReviewParseError('评审 JSON 缺 passed/score 字段: {"passed": true}')
+
+    script = fake_script(BaseInfo(topic="t"))
+    t2i = FakeT2IProvider()
+    assets = await build_assets(cfg, t2i, script, storage, ledger)
+    frames = await build_storyboard(cfg, t2i, script, assets, storage, ledger, vlm=FlakyVLM())
+    assert len(frames) == script.shot_count(), "裁判抽风不该吃掉已出的帧"
+    deg = storage.read_degradations()
+    assert any(d.get("what") == "consistency_check_unavailable" for d in deg), \
+        "跳过抽查必须留痕，不能静默"

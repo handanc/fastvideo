@@ -1,0 +1,20 @@
+# 消融臂 1：只开"首帧参考图锁脸"（wan2.7-image），不开 r2v/抽卡。
+providers:
+  t2i: {default: dashscope_wan27_image, fallback: dashscope_t2i}
+generation:
+  use_reference_keyframes: true
+  require_reference_keyframes: false   # 消融里允许降级，靠 coverage 指标暴露
+  ref_max_chars: 1
+  use_r2v_for_characters: false
+  candidates_per_shot: 1
+  asset_candidates: 1
+  storyboard_sample_rate: 0.5
+  keyframe_seed_scope: cast
+  asset_style_gate: "off"
+  look_extraction: false
+  consistency_metric: sample
+  resolution: [540, 960]
+  i2v_resolution: 480P
+  talk_mode: audio_overlay
+models:
+  dashscope_t2i27: wan2.7-image

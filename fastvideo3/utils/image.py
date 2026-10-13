@@ -4,22 +4,43 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_FONT_CANDIDATES = [
-    "C:/Windows/Fonts/msyh.ttc",  # 微软雅黑（Win）
-    "C:/Windows/Fonts/simhei.ttf",
-    "/System/Library/Fonts/PingFang.ttc",  # macOS
-    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  # Linux
+# 全片**唯一**中文字体。候选按 (libass 家族名, 字体文件) 成对给出，第一个真实存在的
+# 就是全片用的那一款 —— 字幕（libass 只认家族名）与标题卡（PIL 只认文件路径）必须来自
+# 同一行配置，否则会出现"片名是微软雅黑、对白字幕是黑体"这种一眼可见的不一致
+# （实测正是如此：旧标题卡优先 msyh.ttc，而字幕写死 SimHei）。
+# ⚠ 家族名一律**不带空格**：libass 的 force_style 用逗号分隔键值，带空格的名字
+#   （"Microsoft YaHei"）会静默渲染失败 → 字幕变成系统默认字体，没人发现。
+CJK_FONT_CANDIDATES: list[tuple[str, str]] = [
+    ("SimHei", "C:/Windows/Fonts/simhei.ttf"),          # 黑体：短剧字幕的标准选择
+    ("SimSun", "C:/Windows/Fonts/simsun.ttc"),
+    ("KaiTi", "C:/Windows/Fonts/simkai.ttf"),
+    ("WenQuanYiMicroHei", "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
+    ("ArialUnicodeMS", "/Library/Fonts/Arial Unicode.ttf"),
 ]
+
+
+def cjk_font() -> tuple[str, str]:
+    """返回 (libass 家族名, 字体文件路径)；一个都没有时返回 ("", "")。"""
+    for family, fp in CJK_FONT_CANDIDATES:
+        if Path(fp).exists():
+            return family, fp
+    return "", ""
 
 
 def _load_font(size: int):
     from PIL import ImageFont
 
-    for fp in _FONT_CANDIDATES:
-        if Path(fp).exists():
+    _family, fp = cjk_font()
+    if fp:
+        try:
+            return ImageFont.truetype(fp, size)
+        except Exception:  # noqa: BLE001  # 文件损坏/无权限时继续往下兜底
+            pass
+    for _family, alt in CJK_FONT_CANDIDATES:  # 首选读不动就逐个再试
+        if Path(alt).exists():
             try:
-                return ImageFont.truetype(fp, size)
-            except Exception:  # noqa: BLE001, pragma: no cover
+                return ImageFont.truetype(alt, size)
+            except Exception:  # noqa: BLE001
                 continue
     return ImageFont.load_default()  # pragma: no cover
 

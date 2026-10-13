@@ -22,12 +22,19 @@ async def _frames(cfg, storage, ledger):
 def test_shots_need_i2v_mode_filter():
     script = fake_script(BaseInfo(topic="t"))
     assert len(shots_need_i2v(script, "s2v_direct")) == 3  # 仅动作/风景
+    # 默认档 v2v_overlay：对白镜头**也要**先出运动片段，口型才有东西可重对。
+    # 漏掉这一条 = 口型通道拿不到片段 → 静默降级叠音（用户看到的"没有对口型"）。
+    assert len(shots_need_i2v(script, "v2v_overlay")) == 6
     assert len(shots_need_i2v(script, "audio_overlay")) == 6  # 对话镜头也进 I2V
 
 
 async def test_generate_shots_parallel(cfg, storage, ledger, jobs):
     script, frames = await _frames(cfg, storage, ledger)
-    clips = await generate_shots(cfg, FakeI2VProvider(), script, frames, storage, ledger, jobs)
+    # talk_mode 固定为 s2v_direct：本用例只测"并行出片 + 台账"，镜头集合=动作/风景 3 个
+    # （默认档 v2v_overlay 会把对白镜头也带上，由 test_shots_need_i2v_mode_filter 覆盖）
+    clips = await generate_shots(
+        cfg, FakeI2VProvider(), script, frames, storage, ledger, jobs, talk_mode="s2v_direct"
+    )
     assert len(clips) == 3
     for p in clips.values():
         assert Path(p).exists()
@@ -76,7 +83,8 @@ async def test_all_candidates_fail_yields_still_fallback(cfg, storage, ledger, j
     """候选全失败 → 首帧静帧兜底（此前镜头静默缺席 → 成片缺叙事）。"""
     script, frames = await _frames(cfg, storage, ledger)
     clips = await generate_shots(
-        cfg, FakeI2VProvider(fail_first=999), script, frames, storage, ledger, jobs
+        cfg, FakeI2VProvider(fail_first=999), script, frames, storage, ledger, jobs,
+        talk_mode="s2v_direct",
     )
     assert len(clips) == 3  # 全部镜头仍交付
     for p in clips.values():
@@ -98,6 +106,7 @@ async def test_fallback_provider_saves_shot(cfg, storage, ledger, jobs):
         ledger,
         jobs,
         fallback=FakeI2VProvider(),
+        talk_mode="s2v_direct",
     )
     assert len(clips) == 3
     events = [e for e in storage.read_events() if e.get("status") == "fallback_used"]
@@ -129,7 +138,8 @@ async def test_best_of_n_uses_multi_frame_review(cfg, storage, ledger, jobs):
 
     vlm = FrameCountVLM()
     clips = await generate_shots(
-        cfg, FakeI2VProvider(), script, frames, storage, ledger, jobs, vlm=vlm
+        cfg, FakeI2VProvider(), script, frames, storage, ledger, jobs, vlm=vlm,
+        talk_mode="s2v_direct",
     )
     assert len(clips) == 3
     assert vlm.frame_counts and all(c == 3 for c in vlm.frame_counts)

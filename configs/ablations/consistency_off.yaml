@@ -1,0 +1,19 @@
+# 消融臂 0：关闭全部一致性机制（对照基线）。
+# 注意：consistency_metric 保持开启 —— 度量是"尺子"不是"被试机制"，四臂都要出数据。
+providers:
+  t2i: {default: dashscope_t2i}   # 不支持参考图的端点（wanx2.1 系）
+generation:
+  use_reference_keyframes: false
+  require_reference_keyframes: false
+  use_r2v_for_characters: false
+  candidates_per_shot: 1
+  asset_candidates: 1
+  storyboard_sample_rate: 0.0
+  keyframe_seed_scope: shot      # 连种子锚也关掉
+  asset_style_gate: "off"
+  look_extraction: false
+  consistency_metric: sample
+  # 四臂统一规格：只比一致性，不比分辨率/运动/口型
+  resolution: [540, 960]
+  i2v_resolution: 480P
+  talk_mode: audio_overlay

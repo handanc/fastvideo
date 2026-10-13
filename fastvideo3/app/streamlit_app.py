@@ -1,7 +1,9 @@
 """Streamlit 可视化面板（教学第 6 讲观测素材）。
 
 启动：streamlit run fastvideo3/app/streamlit_app.py
-功能：新建任务（后台子进程）、运行列表、事件流时间线、产物画廊、成本看板。
+功能：新建任务（只建，不花钱）、点一次补一步、事件流时间线、产物画廊、成本看板。
+
+与 Vue 面板（`fastvideo3 serve`）同一套后端命令：`new` 建任务、`step` 推进一步。
 """
 
 from __future__ import annotations
@@ -17,9 +19,14 @@ from fastvideo3.core.config import OUTPUT_DIR
 from fastvideo3.core.storage import list_runs
 
 st.set_page_config(page_title="FastVideo3", layout="wide")
-st.title("🎬 FastVideo3 —— 多智能体短剧生成面板")
+st.title("🎬 FastVideo3 —— 短剧生成面板（按顺序逐步完成）")
 
 tab1, tab2 = st.tabs(["新建任务", "运行详情"])
+
+
+def _spawn(*argv: str) -> None:
+    subprocess.Popen([sys.executable, "-m", "fastvideo3.app.cli", *argv])  # noqa: S603
+
 
 with tab1:
     with st.form("new_run"):
@@ -28,22 +35,12 @@ with tab1:
         duration = st.slider("目标时长(秒)", 15, 300, 30, 15)
         fake = st.checkbox("Fake 模式（零成本演示）", value=True)
         if st.form_submit_button("开始生成"):
-            cmd = [
-                sys.executable,
-                "-m",
-                "fastvideo3.app.cli",
-                "run",
-                "--topic",
-                topic,
-                "--style",
-                style,
-                "--duration",
-                str(duration),
-            ]
+            cmd = ["new", "--topic", topic, "--style", style, "--duration", str(duration)]
             if fake:
                 cmd.append("--fake")
-            subprocess.Popen(cmd)  # 后台运行，面板刷新查看进度
-            st.success("已启动后台任务，请到「运行详情」刷新查看进度")
+            _spawn(*cmd)
+            st.success("任务已建（不花钱）。请到「运行详情」选它，再点「开始生成」一步一步补。")
+    st.caption("按照顺序逐步完成任务：剧本 → 角色图 → 场景图 → 分镜图 → 镜头视频 → 成片。")
 
 with tab2:
     runs = list_runs()
@@ -52,6 +49,10 @@ with tab2:
     else:
         run_id = st.selectbox("选择运行", runs)
         root: Path = OUTPUT_DIR / run_id
+
+        if st.button("▶ 开始生成（补最靠前的未完成步骤）", type="primary"):
+            _spawn("step", run_id)
+            st.info("已在后台启动这一步，稍后刷新查看进度。")
 
         col1, col2 = st.columns([1, 1])
         with col1:

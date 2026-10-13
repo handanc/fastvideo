@@ -13,3 +13,9 @@ dist/
 .coverage
 node_modules/
 web/dist/
+
+# ── 项目内置运行时（`fastvideo3 provision` 生成，二进制不入库）──
+bin/*
+!bin/README.md
+models/*.onnx
+models/*.part

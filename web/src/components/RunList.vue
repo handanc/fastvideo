@@ -39,7 +39,7 @@ onUnmounted(() => clearInterval(timer))
     </div>
 
     <div v-if="error" class="alert err">{{ error }}</div>
-    <p v-else-if="!runs.length" class="muted">暂无运行记录 —— 到「新建任务」发起第一次生成吧。</p>
+    <p v-else-if="!runs.length" class="muted">暂无任务，到「新建任务」开始。</p>
 
     <table v-else class="tbl">
       <thead>

@@ -2,7 +2,6 @@
 export const STATUS = {
   done: { label: '已完成', cls: 'ok' },
   running: { label: '运行中', cls: 'run' },
-  paused: { label: '待审片', cls: 'warn' },
   failed: { label: '失败', cls: 'err' },
   idle: { label: '已停止', cls: 'idle' },
 }

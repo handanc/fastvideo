@@ -1,6 +1,9 @@
 """FFmpeg 封装：转场/拼接/混音/规格统一（TDD §8）。
 
-二进制解析顺序：系统 PATH → imageio-ffmpeg 自带静态二进制（跨平台兜底）。
+二进制解析顺序（唯一一份在 `core/runtime.py`）：
+`FV3_FFMPEG_PATH` → **项目内 `bin/`** → venv 的 imageio-ffmpeg → 系统 PATH。
+项目内置排在系统 PATH 之前：部署包带着自己的 ffmpeg，行为由项目决定，
+不受宿主机上装了哪个版本影响（"这台机器好使"不是上线依据）。
 """
 
 from __future__ import annotations
@@ -16,18 +19,12 @@ def find_ffmpeg() -> str:
     global _cached_exe
     if _cached_exe:
         return _cached_exe
-    exe = shutil.which("ffmpeg")
-    if not exe:
-        try:
-            import imageio_ffmpeg
+    from fastvideo3.core.runtime import ffmpeg_source
 
-            exe = imageio_ffmpeg.get_ffmpeg_exe()
-        except ImportError as e:  # pragma: no cover
-            raise RuntimeError(
-                "未找到 ffmpeg：请安装系统 ffmpeg 或 pip install imageio-ffmpeg"
-            ) from e
-    _cached_exe = exe
-    return exe
+    # 找不到就抛 RuntimeError（消息里带 `provision` 指令）。不静默回退：
+    # 一条 run 要调 ffmpeg 几十次，宁可在第一步就说清楚，也不要跑到 m7 才炸。
+    _cached_exe = ffmpeg_source().path
+    return _cached_exe
 
 
 def run_ffmpeg(
@@ -555,7 +552,13 @@ def concat_demux(
     """
     out.parent.mkdir(parents=True, exist_ok=True)
     listfile = out.with_suffix(".concat.txt")
-    listfile.write_text("\n".join(f"file '{c.as_posix()}'" for c in clips), encoding="utf-8")
+    # **必须写绝对路径**：concat 列表里的相对路径是按"列表文件所在目录"解析的，
+    # 而 listfile 就放在 out 的目录里 —— 传相对路径（如从仓库根跑 `output/run_x/...`）
+    # 会被拼成 `.../\_norm\output/run_x/.../\_norm/merge_2.mp4` 这种双重路径，
+    # 报 "Impossible to open"。单 pass 合并与逐对回退都走这里，所以一处修掉。
+    listfile.write_text(
+        "\n".join(f"file '{Path(c).resolve().as_posix()}'" for c in clips), encoding="utf-8"
+    )
     try:
         if copy:
             try:

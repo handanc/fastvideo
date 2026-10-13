@@ -234,26 +234,43 @@ async def test_dashscope_i2v_sends_duration_and_watermark(tmp_path):
             dest=tmp_path / "o.mp4", image=img, prompt="x", resolution="1080P", duration=7
         )
         sent = _json.loads(route.calls[0].request.content)
+        # 官方只有 480P/720P 两档：1080P 必须**靠上钳到 720P** 发送。
+        # （旧断言写的是"1080P 原样透传"，而那正是每次提交都 400 的规格外请求。）
         assert sent["parameters"]["resolution"] == "1080P"
         assert sent["parameters"]["duration"] == 7
         assert sent["parameters"]["watermark"] is False
 
 
 async def test_dashscope_s2v_sends_resolution(tmp_path):
-    """wan2.2-s2v：parameters 块必须存在且带 resolution（此前对白镜头恒按服务端默认档出片）。"""
+    """wan2.2-s2v：parameters 块必须存在且带 resolution（此前对白镜头恒按服务端默认档出片）。
+
+    端点也在这里钉死：s2v 的创建任务地址是 `image2video/video-synthesis`（官方 API 参考）。
+    打在 `video-generation/video-synthesis` 上会得到 `400 url error, please check url`，
+    而那句报错把排查方向带偏成"s2v 不支持我们的输入"，差点永久砍掉这条便宜通道。
+    原先这条用例**mock 的就是那个错端点**，所以它一直绿——自证式测试的典型失效。
+    """
     img = tmp_path / "f.png"
     img.write_bytes(_PNG)
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"RIFF" + b"0" * 64)
     with respx.mock:
         _mock_oss_upload()
-        route = respx.post(f"{_DS}/services/aigc/video-generation/video-synthesis").mock(
+        wrong = respx.post(f"{_DS}/services/aigc/video-generation/video-synthesis").mock(
+            return_value=Response(400, json={"code": "InvalidParameter", "message": "url error"})
+        )
+        route = respx.post(f"{_DS}/services/aigc/image2video/video-synthesis").mock(
             return_value=Response(200, json={"output": {"task_id": "t-11"}})
         )
         p = DashScopeTalkProvider(api_key="sk-x", model="wan2.2-s2v")
         await p.submit(dest=tmp_path / "o.mp4", image=img, audio=wav, resolution="1080P")
+        assert route.called and not wrong.called, "s2v 必须走 image2video 端点"
         sent = _json.loads(route.calls[0].request.content)
-        assert sent["parameters"]["resolution"] == "1080P"
+        assert sent["input"]["image_url"].startswith("oss://")
+        assert sent["input"]["audio_url"].startswith("oss://")
+        # 官方只有 480P/720P 两档：档位名超上限时**靠上钳到 720P** 再发送。
+        # （旧断言写的是"1080P 原样透传"，而那本身就是每次必 400 的规格外请求 ——
+        #  这条用例当时 mock 的就是合法值，所以看不出问题。）
+        assert sent["parameters"]["resolution"] == "720P"
         assert sent["parameters"]["watermark"] is False
         assert "duration" not in sent["parameters"]  # s2v 时长由音频驱动，不发送防 400
 

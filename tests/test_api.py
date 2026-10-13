@@ -29,7 +29,6 @@ def _make_run(
     *,
     topic: str = "测试主题",
     done: bool = True,
-    gated: bool = False,
     cost: list | None = None,
     age_sec: int = 0,
 ):
@@ -47,7 +46,6 @@ def _make_run(
         },
         "fake": True,
         "quality": "economy",
-        "review_mode": "gated" if gated else "auto",
     }
     (root / "run_meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     (root / "events.jsonl").write_text(
@@ -83,23 +81,18 @@ def test_runs_empty(client):
     assert client.get("/api/runs").json() == []
 
 
-def test_create_run_spawns_cli(client, outdir):
+def test_create_run_only_writes_meta_and_never_spawns(client, outdir):
+    """新建任务只落 run_meta.json：不启动任何生成，也不占全局任务锁（建任务不花钱）。"""
     r = client.post("/api/runs", json={"topic": "校园喜剧", "duration": 45, "fake": True})
     assert r.status_code == 201
     run_id = r.json()["run_id"]
     assert run_id.startswith("run_")
+    assert client.spawned == [], "建任务不该 spawn 任何子进程（生成由 /step 一步一步来）"
     # run_meta.json 先行落盘 → 运行列表立即可见
     meta = json.loads((outdir / run_id / "run_meta.json").read_text(encoding="utf-8"))
     assert meta["base_info"]["topic"] == "校园喜剧"
+    assert meta["base_info"]["target_duration_sec"] == 45
     assert meta["fake"] is True
-    # 后台命令拼装正确
-    cmd = client.spawned[-1]
-    assert cmd[1:3] == ["-m", "fastvideo3.app.cli"]
-    assert "run" in cmd
-    assert cmd[cmd.index("--topic") + 1] == "校园喜剧"
-    assert cmd[cmd.index("--duration") + 1] == "45"
-    assert "--fake" in cmd
-    assert cmd[cmd.index("--run-id") + 1] == run_id
 
 
 def test_create_run_defaults_to_real_mode(client, outdir):
@@ -112,8 +105,7 @@ def test_create_run_defaults_to_real_mode(client, outdir):
     run_id = r.json()["run_id"]
     meta = json.loads((outdir / run_id / "run_meta.json").read_text(encoding="utf-8"))
     assert meta["fake"] is False
-    assert "--fake" not in client.spawned[-1]
-    # budget=0 → meta 落 .env 实际生效值（此前落 0.0 → resume 熔断恒触发）
+    # budget=0 → meta 落 .env 实际生效值（落 0.0 会让看板熔断显示 ¥0、第一步就跳闸）
     assert meta["budget_limit_cny"] > 0
 
 
@@ -126,13 +118,12 @@ def test_create_run_validation(client):
 # ───────────────────────── 列表与状态启发式 ─────────────────────────
 def test_list_statuses(client, outdir):
     _make_run(outdir, "run_done", topic="完成剧")
-    _make_run(outdir, "run_paused", topic="审片剧", done=False, gated=True, age_sec=600)
     _make_run(outdir, "run_idle", topic="停摆剧", done=False, age_sec=600)
     runs = {r["run_id"]: r for r in client.get("/api/runs").json()}
     assert runs["run_done"]["status"] == "done"
     assert runs["run_done"]["topic"] == "完成剧"
-    assert runs["run_paused"]["status"] == "paused"
     assert runs["run_idle"]["status"] == "idle"
+    assert "review_mode" not in runs["run_done"], "审片模式已随端到端一起删除"
 
 
 def test_status_running_and_failed(client, outdir):
@@ -168,31 +159,6 @@ def test_detail_404(client, outdir):
     _make_run(outdir, "run_ok")
     assert client.get("/api/runs/run_nope").status_code == 404
     assert client.get("/api/runs/run_ok/../../etc").status_code in (400, 404)
-
-
-# ───────────────────────── 审片续跑 ─────────────────────────
-def test_resume(client, outdir):
-    _make_run(outdir, "run_r", done=False, gated=True, age_sec=600)
-    r = client.post("/api/runs/run_r/resume", json={"decision": "approve"})
-    assert r.status_code == 200 and r.json()["started"] is True
-    cmd = client.spawned[-1]
-    assert "resume" in cmd and "run_r" in cmd
-    assert cmd[cmd.index("--decision") + 1] == "approve"
-    # 带意见的驳回合法
-    assert (
-        client.post(
-            "/api/runs/run_r/resume", json={"decision": "reject:第三幕节奏太慢"}
-        ).status_code
-        == 200
-    )
-    # 非法决策被 pydantic 拒绝
-    assert client.post("/api/runs/run_r/resume", json={"decision": "rm -rf /"}).status_code == 422
-
-
-def test_resume_404(client):
-    assert (
-        client.post("/api/runs/run_ghost/resume", json={"decision": "approve"}).status_code == 404
-    )
 
 
 # ───────────────────────── 产物文件与路径穿越防护 ─────────────────────────

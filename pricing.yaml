@@ -1,38 +1,17 @@
-# 成本台账单价表（单位：人民币元）
-# 2026-08 按百炼官网价校准（模型调用价格页），后续调价请同步更新。
-# unit: call=按次 | second=按视频秒数 | char=按字符 | token_k=按千 token
-defaults:
-  text: {unit: call, price_cny: 0.03}
-  t2i: {unit: call, price_cny: 0.18}
-  i2v: {unit: second, price_cny: 0.11}
-  talk: {unit: second, price_cny: 0.50}
-  tts: {unit: call, price_cny: 0.0}
-  vlm: {unit: call, price_cny: 0.01}
+# ── 已迁移：单价表现在在 pyproject.toml 的 [tool.fastvideo3.pricing] ──────────────
+#
+# 这里只保留**兼容兜底**（`core/pricing.py` 的解析顺序：远端价目表 → pyproject 单价表
+# → 本文件 → 能力默认价）。日常改价一律改 pyproject，或跑：
+#
+#     fastvideo3 refresh-prices          # 抓官网价目页回写，含 checked_at
+#
+# ⚠ 本文件以前放着几条 **¥0 的"免费额度期"占位价**（qwen3.7-flash / wan3.0-video /
+#   qwen-image-3.0 …）。那是 2026-10-12 成本失真的直接成因：额度用尽后账单照收，
+#   台账仍按 ¥0 记，那条 run 合计显示 ¥6.30，而 i2v/talk/text 全是 0.000 ——
+#   成本上限形同虚设。本项目不判断哪个模型免费，只客观记成本，所以**不再留 ¥0 占位**：
+#   要么填官网原价，要么干脆不写（回落到能力默认价并被明确标成"估算"）。
+#   唯一合法的 ¥0 是 pyproject 里显式标 `free = true` 的真免费端点（edge-tts）。
 
-models:
-  # 文本
-  qwen3.7-plus: {unit: call, price_cny: 0.03}     # 专属端点计费以控制台为准, 此为估算
-  deepseek-chat: {unit: token_k, price_cny: 0.004}
-  # 视觉评审（降价后）
-  qwen-vl-plus: {unit: call, price_cny: 0.01}
-  qwen-vl-max: {unit: call, price_cny: 0.05}
-  # 文生图
-  wanx2.1-t2i-turbo: {unit: call, price_cny: 0.18}
-  wanx2.1-t2i-plus: {unit: call, price_cny: 0.20}   # high/cinema 档主力（缺失时曾回退 0.18 低估）
-  wan2.6-t2i: {unit: call, price_cny: 0.20}
-  wan2.7-image: {unit: call, price_cny: 0.25}       # cinema 档参考图锁脸首帧（估算，以控制台为准）
-  black-forest-labs/FLUX.1-dev: {unit: call, price_cny: 0.10}
-  # 图生视频（480P 价；720P≈0.24/秒）
-  wan2.2-i2v-flash: {unit: second, price_cny: 0.11}
-  wan2.2-i2v-plus: {unit: second, price_cny: 0.70}  # 1080P 交付档（缺失时曾按 0.11 记账，低估约 6 倍）
-  Wan-AI/Wan2.2-I2V-A14B: {unit: second, price_cny: 0.35}
-  # 万相 2.7 商业级档（1080P 估算价，以控制台账单为准）
-  wan2.7-i2v: {unit: second, price_cny: 1.00}
-  wan2.7-r2v: {unit: second, price_cny: 1.00}
-  # 数字人口型（480P 价；720P=0.9/秒；新账号送 100 秒）
-  wan2.2-s2v: {unit: second, price_cny: 0.50}
-  videoretalk: {unit: second, price_cny: 0.50}      # v2v_overlay 口型替换
-  kling-v2-master: {unit: second, price_cny: 0.90}
-  # 语音（¥2/万字符）
-  cosyvoice-v2: {unit: char, price_cny: 0.0002}
-  edge-tts: {unit: call, price_cny: 0.0}
+defaults: {}
+worst_case: {}
+models: {}

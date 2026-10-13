@@ -4,26 +4,95 @@ providers:
   text: {default: dashscope_qwen, fallback: deepseek}
   t2i: {default: dashscope_t2i, fallback: siliconflow_flux}
   i2v: {default: dashscope_wan22_i2v, fallback: siliconflow_wan22}
-  talk: {default: dashscope_wan22_s2v, fallback: kling_lipsync}   # v2v_overlay 模式可换 dashscope_videoretalk(视频口型替换)
-  tts: {default: edge_tts, fallback: dashscope_cosyvoice}   # edge-tts 免费已验证; 账号开通 cosyvoice 后对调即可
+  # 口型通道（2026-10-11 **五次定档**：口型模式就是通道选择器，唯一映射表在
+  # `fastvideo3/core/talkmode.py`；本文件的 generation.talk_mode 决定实际装配哪一条）
+  #   s2v_direct    = **A 链** `dashscope_wan22_s2v`：百炼 wan2.2-s2v 数字人（官方 API 参考
+  #     help.aliyun.com/zh/model-studio/wan-s2v-api：单张图片 + 音频 → 说话视频，
+  #     480P ¥0.5/秒、720P ¥0.9/秒，新账号 100 秒免费额度，并发 1）。
+  #     优点：吃**我们的**语音 → 全片音色一致、且对白镜头不过 i2v（省一份运动费）；
+  #     缺点：只能单人同屏、只到 720P、画面由模型从静帧重新发明（不出动作视频）。
+  #   v2v_overlay   = **B 链** `dashscope_videoretalk`：m4 的 1080P 运动片段 + 音频 →
+  #     只重绘嘴部（¥0.08/秒 + 新账号 1800 秒免费额度）。不重画画面 → 身份继承 m3 锁脸，
+  #     输出分辨率/帧率=输入（1080P 不降级）；代价是两段付费、链路最慢，
+  #     且要求运动片段边长 ≥640 → economy 的 480P 用不了。
+  #   scripted_talk = **C 链** `dashscope_wan30_talk`：首帧 + **提示词（台词写在里面）** →
+  #     一条调用出口型 + 动作 + 音轨，原生 1080P、显式 9:16，且是唯一能做**多人同屏各自
+  #     对口型**的链路。音色由模型决定 → 用 generation.voice_source 决定成片用不用我们的配音。
+  #     本链**没有兜底通道**（fal 要音频、videoretalk/kling 要视频，都不吃"纯提示词自发声"）。
+  #   audio_overlay = 不做口型，m7 只叠音轨（教学零成本演示与四臂消融用它）。
+  # 本路由的 default/fallback 现在**只在形态相容时**作为"换供应商"的覆盖（例：B 链把
+  # videoretalk 换成 fal 的 /video-to-video）；形态不相容的名字会被忽略。这是为了消灭
+  # "模式与路由各写一份、漂一次就静默降级"的老失效（run_20261002_235904、run_20261011_164152）。
+  talk: {default: dashscope_wan22_s2v, fallback: fal_infinitalk}
+  # 配音（2026-10-05 定档）：主 = 百炼 cosyvoice-v2，兜底 = 免费 edge-tts。
+  # 换掉"economy 用 edge-tts"的理由：用户听片反馈"人物音频很奇怪"，实测根因是
+  # ① 旧音色池写的是无后缀的 v1 音色名 → 配 cosyvoice-v2 全句 418 → 悄悄降级 edge-tts；
+  # ② 音色按 md5 抽签、不看性别（唐僧可能拿女声）；③ 中文情绪词查不到韵律表 → 全片一个语调。
+  # 三处都修了（m5 按性别分桶分配 + utils/emotion 归一 + 降级写进 degradations.json）。
+  # 成本：¥2/万字符 → 30s 短片全部对白约 ¥0.02-0.05，相对 i2v/口型开销可忽略；
+  # 未开通 cosyvoice 时自动回落 edge-tts 并在看板/降级台账可见（不再是静默的"免费嗓"）。
+  tts: {default: dashscope_cosyvoice, fallback: edge_tts}
   vlm: {default: dashscope_vlm}
 
 generation:
   aspect_ratio: "9:16"          # 竖屏短剧默认; 可选 16:9 / 1:1
   shot_duration_sec: 5
-  talk_mode: s2v_direct         # s2v_direct | v2v_overlay | audio_overlay
+  talk_mode: s2v_direct         # 口型模式（=通道）：s2v_direct | v2v_overlay | scripted_talk | audio_overlay
+  # 模式**自己决定装配哪条通道**（映射表 core/talkmode.py，装配口 factory._talk_route），
+  # 所以"改本项必须同时改 providers.talk"这条旧规则**已经作废** —— 上一版就是因为
+  # 模式与路由各改各的，才出现"对白镜头先烧一份运动片段的钱、再 100% 降级成无口型叠音、
+  # 而生成镜头视频因缺口永远不绿"（run_20261011_164152 实测）。
+  # 上下游都跟着这张表走：`m4.shots_need_i2v`（A/C 链不为对白镜头出运动片段，B 链必须出）、
+  # `core/cost`（预估与 ¥/秒红线取**实际那条通道**的单价）、`core/progress`
+  # （只有 audio_overlay 算"不需要口型"，其余缺 talk 产物即缺口）。
+  # 前端三个选项与档位冲突提示由 `GET /api/talk-modes` 从同一张表生成，JS 里不抄第二份。
+  # ⚠ 两条仍然有效的优先级提醒：
+  #   1. `.env` 的 FV3_TALK_MODE **压过本文件**（core/config.py: env > yaml）。要按档位区分
+  #      就把它留空；`.env` 的 FV3_TALK_MODEL 是专家级覆盖，优先级最高（通道自己会拒绝错输入）。
+  #   2. run 实际生效的模式取自 **run_meta.json**（建任务那一刻定死），改 yaml/env 都不会
+  #      追改已经建好的 run。
+  # C 链（scripted_talk）的音轨来源：**model = 保留模型自发声（默认）** | master = 换回我们的配音
+  # 为什么默认用模型原声：口型是模型**对着自己发声的节奏**画的，换母带就必然声画分家 ——
+  # run_20261011_231024 逐镜量到语音领先口型 0～2.2 秒，**且每镜偏移不同**，加固定延迟也修不齐
+  # （测量表在 core/talkmode.py 的 DEFAULT_VOICE_SOURCE 上方）。
+  # master 的诱惑是全片音色统一（官方 first_frame/last_frame 与 reference_audio **互斥**，
+  # 锁脸就不能克隆音色），代价是嘴不上：要"音色统一 **且** 嘴型对着这条配音"，
+  # 正确的链路是 v2v_overlay（videoretalk 对着我们的母带重画嘴），不是在这里换音轨。
+  voice_source: model
   resolution: [540, 960]        # 成片统一规格(宽,高); 交付档用 profile_high 提到 [1080,1920]
   quality: economy              # economy=性价比 | high=交付画质(--quality high 覆盖)
   i2v_resolution: 480P          # wan 系 I2V 档位: 480P | 720P | 1080P
+  # 首尾帧生视频：给需要运动片段的镜头额外生成一张「动作结束态」尾帧，i2v/口型时一起发。
+  # 官方原文"用首帧（或首帧+尾帧）锁定画面起止，模型负责补全中间的运动过程"——
+  # 只给首帧时结束状态全靠模型自由发挥：镜头末尾姿态/构图乱飘、切下一镜接不上。
+  # 代价：每个需要运动片段的镜头多一次 t2i（约 ¥0.25；走免费额度模型时 ¥0）。
+  # 只对支持 last_frame 的通道生效（wan2.7/wan3.0 的 media 协议）；wan2.2 旧协议与
+  # r2v 参考生视频（官方 first/last_frame 与 reference_image 互斥）自动退回单首帧并记事件。
+  use_last_frames: true
   style_suffix: ""              # 全局风格锚(全片画风统一), high 档内置真人电影感锚
-  negative_prompt: ""           # 全局负向提示词(防卡通化)
+  # 全局负向提示词：防卡通化 + **防画面里出现文字**（字幕/水印/标题一律不许模型自己画：
+  # 成片字幕只由 m7 用剧本台词烧录，字体、位置、时间轴全部确定 —— 模型画出来的字幕
+  # 会错字、会与我们烧的那条叠成两层）。high/cinema 的 profile 在此基础上再加风格项。
+  negative_prompt: "字幕，文字，水印，logo，标题，台词，token，subtitles, text, caption, watermark"
   color_grade: false            # 成片轻度调色
   loudnorm: false               # 交付响度归一 -16 LUFS
   encode_crf: 23                # 中间编码 CRF(越小越清, high 档 20)
   encode_preset: ultrafast
   bgm_volume: 0.15
   storyboard_sample_rate: 0.5   # 分镜 VLM 一致性抽查比例
-  max_script_revisions: 2       # 编剧-评审迭代轮数上限
+  max_script_revisions: 1       # 台词句长违规后的重写上限（剧本一次生成，评审由人做）
+  # ── 三类闸门：**与分辨率无关，任何档都必须跑**（2026-10-12 用户裁定）──────────
+  # 1) 结构性闸门：产物存在性/覆盖率、音画同源、字幕与台词同源、规格合规、成本熔断
+  #    → 已常驻（progress.lipsync_coverage / m7.build_srt / utils/qc.check_spec / cost 熔断）
+  # 2) 技术 QC：黑帧/静帧/静音/时长偏差/黑边 → m7 成片落盘后必跑（utils/qc.py，纯 ffmpeg+PIL，
+  #    零 API 调用），报告落 final/qc_report.json。此前"画面完整性"完全靠 VLM 终审，
+  #    而它 JSON 解析失败时会落 0.6 兜底分并 passed=True —— 异常被写成"通过"。
+  # 3) 身份一致性客观层：SFace 人脸 embedding 余弦（utils/faceid.py，离线免费可复现）
+  #    → 所以 consistency_metric 出厂即 sample（**不再是 off**）：480P 也要量。
+  #    权重缺失时自动退回 Tier A/B 并在报告里写 faceid_available=false，绝不静默放行。
+  # 注意"量"与"花钱重做"是两件事：度量三档全开；`consistency_gate: reshoot`（自动重拍，
+  # 要花钱）仍只在 high/cinema 打开 —— 480P 教学档量出问题只报告、不自动烧钱。
+  consistency_metric: sample
 
 limits:
   max_parallel_jobs: 4          # 全局异步任务并发上限; 与供应商配额取小
@@ -34,8 +103,11 @@ limits:
   retry_per_shot: 2
 
 models:                        # 各能力实际调用的模型名(可热更新, 无需改代码)
-  # 文本: qwen3.7-plus(百炼模型市场专属端点, 见 .env 的 DASHSCOPE_TEXT_BASE_URL)
-  dashscope_text: qwen3.7-plus
+  # 文本出厂默认 = **qwen3.7-flash**（百炼模型市场专属端点，见 .env 的 DASHSCOPE_TEXT_BASE_URL）。
+  # 为什么用 flash 而不是 plus：剧本/评审是结构化 JSON 任务，flash 够用且在免费额度期（¥0）；
+  # 想要更强的编剧结构就在新建任务的「模型选择」里按任务指定 qwen3.7-plus / qwen3.7-max
+  # （可选清单与校验的唯一来源是 core/model_catalog.py，前端不抄第二份）。
+  dashscope_text: qwen3.7-flash
   deepseek_text: deepseek-chat
   # 图像: 万相最具性价比文生图
   dashscope_t2i: wanx2.1-t2i-turbo
@@ -43,11 +115,17 @@ models:                        # 各能力实际调用的模型名(可热更新,
   # 视频: flash 档 480P ¥0.11/秒（性价比之王）
   dashscope_i2v: wan2.2-i2v-flash
   siliconflow_i2v: Wan-AI/Wan2.2-I2V-A14B
-  # 口型: 数字人 480P ¥0.5/秒, 新账号送 100 秒
+  # 口型主通道: 数字人 wan2.2-s2v（480P ¥0.5/秒、720P ¥0.9/秒，新账号送 100 秒）
   dashscope_s2v: wan2.2-s2v
-  # 口型替换(更先进档): 视频+音频→重对口型, 对应 v2v_overlay 模式
+  # 口型替换(视频+音频→重对口型): 用于 talk_mode=v2v_overlay 的组合
   dashscope_retalk: videoretalk
   kling_talk: kling-v2-master
+  # ── 口型兜底通道（fal.ai 托管 MeiGen InfiniteTalk 图像端点；KEY 在 .env 的 FAL_KEY）──
+  # 模型名 = fal 端点 ID。有运动片段→自动打 /video-to-video；无片段→用 i2v 端点。
+  # 想强制只走某一端点：把 fal_talk 改成 fal-ai/infinitalk/video-to-video 即可
+  # （providers/protocols.py 认得这两种名字，台账也按各自端点分档计价）。
+  fal_talk: fal-ai/infinitalk
+  fal_talk_v2v: fal-ai/infinitalk/video-to-video
   # 语音: ¥2/万字符; 失败自动降级 edge-tts(免费)
   dashscope_tts: cosyvoice-v2
   # 视觉评审: 降价后极便宜

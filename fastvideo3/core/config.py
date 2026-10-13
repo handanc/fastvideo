@@ -5,17 +5,85 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from dotenv import dotenv_values
 from pydantic import BaseModel, Field
+
+# 口型模式的唯一映射表（`core/talkmode.py`）。这里只取它的默认值常量，
+# 不在 config 里重复定义"哪个模式用哪个通道"——那件事抄两份就会漂一份。
+from fastvideo3.core.talkmode import DEFAULT_VOICE_SOURCE
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = Path(os.getenv("FV3_OUTPUT_DIR", PROJECT_ROOT / "output"))
 CONFIGS_DIR = PROJECT_ROOT / "configs"
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
 MODELS_DIR = PROJECT_ROOT / "models"
+
+#: 分辨率 ↔ 内部画质档的**单一映射**。面板上用户只选分辨率（480P/720P/1080P），
+#: 档位继续在后端驱动"一致性深度 + 单价量级 + 是否自动重拍"这些用户不该逐条记的东西。
+#: 为什么保留档位而不是删掉：`consistency_gate: reshoot`（自动重拍）是**花钱**的动作，
+#: 480P 教学档量出问题只该报告不该烧钱；而三类闸门本身（结构性 / 技术 QC / 身份客观层）
+#: 与分辨率无关，任何档都跑 —— 见 configs/default.yaml 的注释。
+#: 目标时长的合法区间（秒）。**单一来源**：API 的 pydantic 校验、CLI 的参数校验、
+#: 前端表单都引用它 —— 三处各写一份就是"面板能填、后端 422"那种对不上。
+#: 下限 1 而不是 0：0 会让剧本没有目标长度、成本预估归零，且熔断判据（`exceeded()` 用
+#: `>=`）在第一步就跳闸；上限 3600 对齐"一集短剧"的量级。
+DURATION_MIN = 1
+DURATION_MAX = 3600
+
+RESOLUTIONS: tuple[str, ...] = ("480P", "720P", "1080P")
+RESOLUTION_TO_QUALITY: dict[str, str] = {
+    "480P": "economy",
+    "720P": "high",
+    "1080P": "cinema",
+}
+QUALITY_TO_RESOLUTION: dict[str, str] = {v: k for k, v in RESOLUTION_TO_QUALITY.items()}
+
+
+#: 分辨率 × 画幅 → 成片尺寸（宽, 高）。**显式列出来而不按比例算**：480P 档沿用项目既有
+#: 约定 540×960（不是 480×853），按短边反推会和存量 run 的尺寸对不上。
+#: 为什么必须有这张表：档位 yaml 里写着各自的 resolution（profile_high 是 1080×1920），
+#: 面板显示"720P"却按 1080P 出片就是**骗人** —— 分辨率是用户唯一看得见的规格承诺。
+RESOLUTION_SIZES: dict[tuple[str, str], tuple[int, int]] = {
+    ("480P", "9:16"): (540, 960),
+    ("480P", "16:9"): (960, 540),
+    ("480P", "1:1"): (540, 540),
+    ("720P", "9:16"): (720, 1280),
+    ("720P", "16:9"): (1280, 720),
+    ("720P", "1:1"): (720, 720),
+    ("1080P", "9:16"): (1080, 1920),
+    ("1080P", "16:9"): (1920, 1080),
+    ("1080P", "1:1"): (1080, 1080),
+}
+
+
+def apply_resolution(cfg: "AppConfig", resolution_tier: str) -> "AppConfig":
+    """让**分辨率标签真的决定成片尺寸与 I2V 档位**（就地改 cfg 并返回它）。
+
+    档位 yaml 只负责"一致性深度 / 抽卡数 / 单价量级 / 是否自动重拍"这些用户不该逐条记的
+    东西；规格承诺（分辨率）由面板选的那一项说了算。两者分工写死在这里，避免
+    "面板显示 720P、实际按 high 档的 1080P 出片"这种对不上。
+    """
+    tier = (resolution_tier or "").strip().upper()
+    if tier not in RESOLUTIONS:
+        return cfg  # 认不出来就不动（不猜规格）
+    size = RESOLUTION_SIZES.get((tier, cfg.aspect_ratio))
+    if size:
+        cfg.resolution = size
+    cfg.i2v_resolution = tier
+    return cfg
+
+
+def quality_for_resolution(resolution: str, fallback: str = "economy") -> str:
+    """分辨率 → 档位；认不出的分辨率**不猜**，回落到给定档位（调用方负责报错或提示）。"""
+    return RESOLUTION_TO_QUALITY.get((resolution or "").strip().upper(), fallback)
+
+
+def resolution_for_quality(quality: str) -> str:
+    """档位 → 它对应的分辨率标签（给看板/列表显示用；老 run 没有 resolution_tier 时靠它）。"""
+    return QUALITY_TO_RESOLUTION.get(quality or "", "")
 
 
 class ProviderRouting(BaseModel):
@@ -33,17 +101,36 @@ class AppConfig(BaseModel):
     deepseek_base_url: str = "https://api.deepseek.com"
     dashscope_api_key: str = ""
     dashscope_text_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    # wan2.2-s2v（对口型主通道）的异步任务端点。官方文档要求"华北2（北京）地域 + 该地域
+    # 的 API Key"，并给出业务空间专属写法 https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1
+    # 默认用公共端点（同一把 KEY 已实测可调用其它百炼模型）；若该模型在公共端点报
+    # url/access 类错误，把本项换成业务空间端点即可，无需改代码（提交与轮询同端点）。
+    dashscope_video_base_url: str = "https://dashscope.aliyuncs.com/api/v1"
     siliconflow_api_key: str = ""
     kling_access_key: str = ""
     kling_secret_key: str = ""
+    # fal.ai（MeiGen InfiniteTalk 口型通道的托管方）。KEY 在 fal.ai dashboard →
+    # API Keys 生成后**手动**写进 .env 的 FAL_KEY。口型主通道没有它就无法构造，
+    # 因此它不是"可选第三方"，而是当前 talk 路由的硬依赖（见 providers/fal.py）。
+    fal_api_key: str = ""
+    fal_acceleration: str = "regular"  # none | regular | high（fal 的加速档，影响质量/速度）
 
     # ── 文本模型特性 ──
     enable_thinking: bool = False  # qwen3 系思考模式(流式); 结构化 JSON 场景默认关闭
 
     # ── 运行模式 ──
     profile: str = "edu-sqlite"  # edu-sqlite | prod-postgres
-    review_mode: str = "auto"  # auto | gated
-    talk_mode: str = "s2v_direct"  # s2v_direct | v2v_overlay | audio_overlay
+    # 口型模式：取值语义与它调用的通道**同出一表**（`core/talkmode.py`），不在这里重复定义，
+    # 也不再由 `providers.talk` 路由决定（路由只在形态相容时作为覆盖/兜底来源）。
+    #   s2v_direct     = wan2.2-s2v（图片+语音+提示词 → 口型视频）
+    #   v2v_overlay    = videoretalk（wan3.0 出动作片段 → 再重加口型）
+    #   scripted_talk  = wan3.0-video（图片+提示词 → 口型+动作一体）
+    #   audio_overlay  = 不做口型，m7 只叠音轨
+    talk_mode: str = "s2v_direct"
+    # C 链（scripted_talk）的音轨来源：master = 换成 m5 的 TTS 母带（**默认**，保语音一致性：
+    # 全项目音色由 cosyvoice 按性别分桶统一）；model = 保留模型自发声的音轨（嘴型与声音同轨，
+    # 但同一角色跨镜头可能换嗓子）。判据与代价见 `core/talkmode.py`。
+    voice_source: str = DEFAULT_VOICE_SOURCE  # 不写死字面量：默认值只认 talkmode 那一处
     fake: bool = False
 
     # ── 预算与并发 ──
@@ -58,17 +145,55 @@ class AppConfig(BaseModel):
     shot_duration_sec: float = 5.0
     resolution: tuple[int, int] = (540, 960)
     storyboard_sample_rate: float = 0.5
-    max_script_revisions: int = 2
+    max_script_revisions: int = 1  # 台词句长违规后的重写上限（不是 AI 评审回路，那条已删）
 
     # ── 画质档位（economy=教学 | high=交付 | cinema=商业级，见 configs/profile_*.yaml）──
     quality: str = "economy"
+    ablation: str = ""  # 消融配置名（写入 run_meta，续跑原样恢复）
     use_r2v_for_characters: bool = False  # 角色动作镜头走 wan2.7-r2v 参考生视频（像素级一致）
     use_reference_keyframes: bool = False  # 首帧带角色立绘参考图生成（硬锁脸，wan2.7-image）
+    require_reference_keyframes: bool = False  # 硬门控：主供应商不支持参考图时直接报错（cinema）
+    ref_max_chars: int = 1  # 首帧最多带几张角色参考图（双人镜头=2；探单通过前保持 1）
+    keyframe_seed_scope: Literal["cast", "scene_cast", "shot"] = "cast"
+    # 种子作用域：scene_cast（旧行为）会把"场景"编进种子 → 角色换场景即换采样起点，
+    # 实测主角 4 个场景 4 张脸；cast = 同角色跨场景同种子。
+    asset_style_gate: Literal["off", "warn", "block"] = "off"  # 立绘写实风格闸门
+    look_extraction: bool = False  # m1 抽取结构化外貌卡（蒸馏校验/一致性度量的属性来源）
+    consistency_metric: Literal["off", "sample", "full"] = "off"  # m9 一致性度量档位
+    # 场景概念图参与下游生成的方式：off=不用；scenery_only=只给空镜（默认，零身份风险）；
+    # all=含角色镜头也带（必须等 m9 证明人脸达标率不降，且带自动回退）
+    scene_ref_mode: Literal["off", "scenery_only", "all"] = "scenery_only"
+    # 成片前一致性闸门：off=不拦；reshoot=不达标镜头自动带参考图重做（≤2 轮）后仍不达标
+    # 则 quality_verdict 标不合格。high/cinema 强制 reshoot，economy 不做要求。
+    consistency_gate: Literal["off", "reshoot"] = "off"
+    # 双人（多人）对白镜头的口型策略：
+    #   overlay     = 运动片段 + 音轨叠加，**不模拟口型**（默认）
+    #   s2v_merged  = 全部台词拼成单音轨喂口型模型
+    # 默认 overlay 的原因：API 侧口型模型都是"单音轨驱动整幅画面"，没有参考项目
+    # MultiTalk 那种"每人一条音轨 + bbox 绑定"的能力；单音轨喂双人画面会让**没在
+    # 说话的人**也跟着动嘴，观感比无口型更糟。想赌合并音轨效果可显式设 s2v_merged。
+    two_person_talk: Literal["overlay", "s2v_merged"] = "overlay"
+    # 口型同步闸门：嘴部运动×音频包络相关系数低于该值 → 判"口型与语音不同步"，
+    # 标 stale 待重做（gate=reshoot 时进自动重做）。实测无口型叠音片段 ≈ 0.0-0.12，
+    # 真口型片段应显著更高；阈值保守取 0.25，宁可漏拦不误删。
+    lipsync_min_corr: float = 0.25
+    # 视频类通道（i2v/talk/r2v）单价上限（元/秒）。用户红线：口型视频成本不应超过
+    # ¥5/s。装配 provider 时按 pricing.yaml 校验，超上限直接报错而非静默烧钱。
+    max_video_cost_per_sec: float = 5.0
+    consistency_min_face: float = 0.8  # 逐镜 face 属性位达标率阈值
+    consistency_min_outfit: float = 0.8
     candidates_per_shot: int = 1  # >1 时 best-of-N + VLM 选优（商业管线"抽卡"）
     asset_candidates: int = 1  # 角色立绘 best-of-N（源头防立绘崩，全链路继承放大）
-    script_review: bool = False  # auto 模式剧本 critic 评审（high/cinema 开启）
     auto_reshoot: bool = False  # auto 终审未过时自动重拍 ≤2 镜（默认关，防成本失控）
     i2v_resolution: str = "480P"  # wan 系 I2V 档位：480P | 720P | 1080P
+    # 首尾帧生视频：给需要运动片段的镜头额外生成一张「动作结束态」尾帧，i2v 时一起发。
+    # 官方原文"用首帧（或首帧+尾帧）锁定画面起止，模型负责补全中间的运动过程"——
+    # 只给首帧时结束状态全靠模型自由发挥，镜头末尾姿态/构图乱飘、切下一镜接不上。
+    # 代价：每个需要运动片段的镜头多一次 t2i（约 ¥0.25，走免费额度模型时 ¥0）。
+    # 只对**支持 last_frame 的通道**生效（wan2.7/wan3.0 的 media 协议）；wan2.2 旧协议
+    # 与 r2v 参考生视频拿不到（官方 first/last_frame 与 reference_image 互斥），
+    # 那种情况自动退回单首帧并记事件，绝不阻断交付。
+    use_last_frames: bool = True
     style_suffix: str = ""  # 全局风格锚：追加到所有文生图提示词尾部（统一全片画风）
     negative_prompt: str = ""  # 全局负向提示词（防卡通化/防劣化）
     color_grade: bool = False  # 成片轻度调色（对比/饱和/锐化）
@@ -82,6 +207,10 @@ class AppConfig(BaseModel):
     # ── 路由与模型 ──
     routing: dict[str, ProviderRouting] = Field(default_factory=dict)
     models: dict[str, str] = Field(default_factory=dict)
+    # .env 能力级模型名覆盖（FV3_TEXT_MODEL / FV3_T2I_MODEL / FV3_I2V_MODEL /
+    # FV3_TALK_MODEL / FV3_VLM_MODEL / FV3_TTS_MODEL）：优先级高于 yaml 的 models:，
+    # 并且会连带把 provider 改道到该模型真正使用的协议（见 providers/protocols.py）。
+    model_overrides: dict[str, str] = Field(default_factory=dict)
 
     # ── 数据库 ──
     pg_host: str = "localhost"
@@ -103,6 +232,14 @@ class AppConfig(BaseModel):
     def model_name(self, key: str, default: str = "") -> str:
         return self.models.get(key, default)
 
+    def model_for(self, capability: str, provider_key: str, default: str = "") -> str:
+        """某能力实际调用的模型名：.env 覆盖 > yaml models[provider_key] > 内置默认。
+
+        factory 必须走这个入口而不是直接 `models.get(...)`，否则 .env 里设的
+        `FV3_T2I_MODEL` 之类会被静默忽略（用户改了 .env 却没生效最难查）。
+        """
+        return self.model_overrides.get(capability) or self.models.get(provider_key, default)
+
 
 def _load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
@@ -121,15 +258,39 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return base
 
 
+def _resolve_ablation(name: str) -> Path:
+    """消融配置路径解析：必须落在 configs/ 内（防路径穿越，同 api.py 的三重防护风格）。
+
+    接受裸名（"ref_only"）、带目录名（"ablations/ref_only"）或绝对路径三种写法。
+    """
+    cand = Path(name)
+    if not cand.is_absolute():
+        if not cand.parts or cand.parts[0] != "ablations":
+            cand = CONFIGS_DIR / "ablations" / name
+        else:
+            cand = CONFIGS_DIR / name
+        if not cand.suffix:
+            cand = cand.with_suffix(".yaml")
+    resolved = cand.resolve()
+    if not resolved.is_relative_to(CONFIGS_DIR.resolve()):
+        raise ValueError(f"消融配置必须位于 configs/ 内: {name}")
+    if not resolved.exists():
+        raise ValueError(f"消融配置不存在: {resolved}")
+    return resolved
+
+
 def load_config(
     config_path: str | Path | None = None,
     dotenv_path: str | Path | None = None,
     quality: str | None = None,
+    ablation: str | None = None,
 ) -> AppConfig:
     """构建运行时配置。优先级：显式参数 > 环境变量 > .env 文件 > yaml > 默认值。
 
     用 dotenv_values 只读不注入 —— 避免污染进程环境变量（测试隔离的关键）。
     画质档位（--quality / FV3_QUALITY）通过 configs/profile_<quality>.yaml overlay 生效。
+    消融配置（--ablation）在质量档**之后**再叠一层：若当 base 传入会被质量档反向
+    覆盖（overlay 顺序陷阱），消融就测不到它想测的开关。
     """
     dotenv_vals = dotenv_values(dotenv_path or PROJECT_ROOT / ".env")
 
@@ -144,6 +305,8 @@ def load_config(
         overlay = _load_yaml(CONFIGS_DIR / f"profile_{quality}.yaml")
         if overlay:
             _deep_merge(yml, overlay)
+    if ablation:
+        _deep_merge(yml, _load_yaml(_resolve_ablation(ablation)))
     gen = yml.get("generation", {})
     limits = yml.get("limits", {})
     routing = {cap: ProviderRouting(**route) for cap, route in (yml.get("providers") or {}).items()}
@@ -156,6 +319,21 @@ def load_config(
 
     resolution = tuple(gen.get("resolution", [540, 960]))
 
+    # `.env` 的 FV3_TALK_MODEL 显式点名了口型模型时，**talk_mode 必须跟着它走**。
+    # 否则会踩这个坑（用户 .env 实测形状）：FV3_TALK_MODEL=wan3.0-video 让工厂改道到
+    # `dashscope_wan30_talk`（只吃"图片+提示词"），而 talk_mode 仍是 yaml 的 s2v_direct
+    # → m6 按 A 链把**音频**喂过去 → 每个对白镜头 CapabilityMismatchError → 全部降级成
+    # 无口型叠音，而"生成镜头视频"因缺口永远不绿。模式与通道必须同源，这里就是那个源。
+    # 校准规则是"**相容就别动、不相容才纠正**"（`talkmode.reconcile_mode`）：
+    # fal 两个端点由同一 provider 承接、两种模式都吃得下，一律按协议反推会把 cinema 的
+    # v2v_overlay 悄悄改成 s2v_direct（对白镜头不再出运动片段，成本与画面都变了）。
+    talk_model_override = env("FV3_TALK_MODEL")
+    talk_mode_val = env("FV3_TALK_MODE", gen.get("talk_mode", "s2v_direct"))
+    if talk_model_override and not env("FV3_TALK_MODE"):
+        from fastvideo3.core.talkmode import reconcile_mode
+
+        talk_mode_val = reconcile_mode(talk_model_override, talk_mode_val)
+
     return AppConfig(
         deepseek_api_key=env("DEEPSEEK_API_KEY"),
         deepseek_base_url=env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
@@ -163,13 +341,18 @@ def load_config(
         dashscope_text_base_url=env(
             "DASHSCOPE_TEXT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
         ),
+        dashscope_video_base_url=env(
+            "FV3_S2V_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"
+        ),
         enable_thinking=env("FV3_ENABLE_THINKING", "0") in ("1", "true", "yes"),
         siliconflow_api_key=env("SILICONFLOW_API_KEY"),
         kling_access_key=env("KLING_ACCESS_KEY"),
         kling_secret_key=env("KLING_SECRET_KEY"),
+        fal_api_key=env("FAL_KEY"),
+        fal_acceleration=env("FAL_ACCELERATION", "regular"),
         profile=env("FV3_PROFILE", "edu-sqlite"),
-        review_mode=env("FV3_REVIEW_MODE", gen.get("review_mode", "auto")),
-        talk_mode=env("FV3_TALK_MODE", gen.get("talk_mode", "s2v_direct")),
+        talk_mode=talk_mode_val,
+        voice_source=env("FV3_VOICE_SOURCE", gen.get("voice_source", DEFAULT_VOICE_SOURCE)),
         fake=env("FV3_FAKE", "0") in ("1", "true", "yes"),
         budget_limit_cny=float(env("FV3_BUDGET_LIMIT_CNY", "0") or 150),
         max_parallel_jobs=int(limits.get("max_parallel_jobs", 4)),
@@ -180,15 +363,31 @@ def load_config(
         shot_duration_sec=float(gen.get("shot_duration_sec", 5)),
         resolution=(int(resolution[0]), int(resolution[1])),  # type: ignore[index]
         storyboard_sample_rate=float(gen.get("storyboard_sample_rate", 0.5)),
-        max_script_revisions=int(gen.get("max_script_revisions", 2)),
+        max_script_revisions=int(gen.get("max_script_revisions", 1)),
         quality=quality or "economy",
+        ablation=ablation or "",
         use_r2v_for_characters=bool(gen.get("use_r2v_for_characters", False)),
         use_reference_keyframes=bool(gen.get("use_reference_keyframes", False)),
+        require_reference_keyframes=bool(gen.get("require_reference_keyframes", False)),
+        ref_max_chars=int(gen.get("ref_max_chars", 1)),
+        keyframe_seed_scope=gen.get("keyframe_seed_scope", "cast"),
+        asset_style_gate=gen.get("asset_style_gate", "off"),
+        look_extraction=bool(gen.get("look_extraction", False)),
+        consistency_metric=gen.get("consistency_metric", "off"),
+        scene_ref_mode=gen.get("scene_ref_mode", "scenery_only"),
+        consistency_gate=gen.get("consistency_gate", "off"),
+        two_person_talk=gen.get("two_person_talk", "overlay"),
+        lipsync_min_corr=float(gen.get("lipsync_min_corr", 0.25)),
+        max_video_cost_per_sec=float(
+            env("FV3_MAX_VIDEO_COST_PER_SEC", "") or gen.get("max_video_cost_per_sec", 5.0)
+        ),
+        consistency_min_face=float(gen.get("consistency_min_face", 0.8)),
+        consistency_min_outfit=float(gen.get("consistency_min_outfit", 0.8)),
         candidates_per_shot=int(gen.get("candidates_per_shot", 1)),
         asset_candidates=int(gen.get("asset_candidates", 1)),
-        script_review=bool(gen.get("script_review", False)),
         auto_reshoot=bool(gen.get("auto_reshoot", False)),
         i2v_resolution=gen.get("i2v_resolution", "480P"),
+        use_last_frames=bool(gen.get("use_last_frames", True)),
         style_suffix=gen.get("style_suffix", ""),
         negative_prompt=gen.get("negative_prompt", ""),
         color_grade=bool(gen.get("color_grade", False)),
@@ -200,12 +399,43 @@ def load_config(
         bgm_volume=float(gen.get("bgm_volume", 0.15)),
         routing=routing,
         models=yml.get("models", {}),
+        model_overrides={
+            cap: v
+            for cap, v in (
+                ("text", env("FV3_TEXT_MODEL")),
+                ("t2i", env("FV3_T2I_MODEL")),
+                ("i2v", env("FV3_I2V_MODEL")),
+                ("r2v", env("FV3_R2V_MODEL")),
+                ("talk", env("FV3_TALK_MODEL")),
+                ("tts", env("FV3_TTS_MODEL")),
+                ("vlm", env("FV3_VLM_MODEL")),
+            )
+            if v  # 未设置的项不进表，避免空串把 yaml 的模型名覆盖掉
+        },
         pg_host=env("FV3_PG_HOST", "localhost"),
         pg_port=int(env("FV3_PG_PORT", "5432") or 5432),
         pg_db=env("FV3_PG_DB", "fastvideo3"),
         pg_user=env("FV3_PG_USER", "fv3"),
         pg_password=env("FV3_PG_PASSWORD", ""),
     )
+
+
+def apply_run_overrides(cfg: AppConfig, meta: dict | None) -> AppConfig:
+    """把 run_meta.json 里的 run 级模型选择盖到 cfg 上（**唯一恢复入口**）。
+
+    优先级：run 选择 > `.env` 的 FV3_*_MODEL > yaml 的 `models:`。
+    之所以 run 级最高：用户在这次生成里点名要的模型，不该被机器上那份全局 .env 顶掉
+    —— 反过来，没点名的能力继续跟随 .env/yaml，行为与改造前完全一致。
+
+    必须只有一份实现：CLI 的 `_cfg_from_meta` 与 API 的 `_cfg_for_run` 是两条独立路径，
+    各写一遍就会出现"同一个 run 在网页和命令行下用的是不同模型"（本项目反复出现的
+    静默分歧根因）。
+    """
+    chosen = (meta or {}).get("model_overrides") or {}
+    clean = {k: v for k, v in chosen.items() if isinstance(v, str) and v.strip()}
+    if clean:
+        cfg.model_overrides = {**cfg.model_overrides, **clean}
+    return cfg
 
 
 @lru_cache

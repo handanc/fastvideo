@@ -19,12 +19,15 @@ from fastvideo3.core.schema import BaseInfo, ReviewResult, Script
 from fastvideo3.providers.base import (
     I2VProvider,
     ImageResult,
+    ModelT,
+    RefImage,
     T2IProvider,
     TalkProvider,
     TextProvider,
     TTSProvider,
     VideoJobStatus,
     VLMProvider,
+    ref_paths,
 )
 from fastvideo3.utils.ffmpeg import image_to_video
 from fastvideo3.utils.image import make_placeholder_image
@@ -159,6 +162,24 @@ class FakeTextProvider(TextProvider):
         json_schema: type[BaseModel] | None = None,
         **kwargs: Any,
     ) -> str:
+        out = self._reply(messages, json_schema)
+        # 真实供应商会把 API 回传的 token 用量放在 `last_usage` 上，台账据此按 token 记账。
+        # Fake 不调任何 API，这里按**字符数**造一个量级（≈4 字符/token），并把来源标成
+        # `fake_estimate`：金额因此是"演示用的量级"，绝不会被当成真实账单 —— 假装真实
+        # 才是这里最坏的失败模式。
+        tin = sum(len(m.get("content") or "") for m in messages) / 4
+        self.last_usage = {
+            "tokens_in": round(tin, 1),
+            "tokens_out": round(len(out) / 4, 1),
+            "source": "fake_estimate",
+        }
+        return out
+
+    def _reply(
+        self,
+        messages: list[dict[str, str]],
+        json_schema: type[BaseModel] | None,
+    ) -> str:
         if self.scripted:
             return self.scripted.pop(0)
         if json_schema is Script:
@@ -221,9 +242,14 @@ def _sample_model(model: type[BaseModel]) -> dict:
 class FakeT2IProvider(T2IProvider):
     name = "fake_t2i"
     model = "fake-t2i"
+    # Fake 声明支持参考图/种子：让 --fake --quality cinema 的冒烟能跑通真实拓扑
+    # （m3 的 _char_refs 门控、m4 的 r2v 路由），而不是在 fake 里悄悄绕过。
+    supports_reference_image = True
 
     def __init__(self, fail_first: int = 0):
         self.fail_first = fail_first  # 测试重试用
+        self.last_refs: list[Path] = []
+        self.last_seed: int | None = None
 
     async def generate(
         self,
@@ -231,7 +257,7 @@ class FakeT2IProvider(T2IProvider):
         *,
         size: str = "1024*1024",
         dest: Path,
-        ref_image: Path | None = None,
+        ref_image: RefImage = None,
         negative_prompt: str = "",
         seed: int | None = None,
     ) -> ImageResult:
@@ -240,9 +266,14 @@ class FakeT2IProvider(T2IProvider):
             from fastvideo3.providers.base import TransientAPIError
 
             raise TransientAPIError("fake transient failure")
+        self.last_refs = ref_paths(ref_image)
+        self.last_seed = seed
         dest.parent.mkdir(parents=True, exist_ok=True)
         make_placeholder_image(dest, label=prompt[:16], color=_color_of(prompt))
-        return ImageResult(uri=dest, meta={"prompt": prompt, "fake": True})
+        return ImageResult(
+            uri=dest,
+            meta={"prompt": prompt, "fake": True, "ref_count": len(self.last_refs)},
+        )
 
 
 # ───────────────────────── 视频（I2V / Talk） ─────────────────────────
@@ -268,19 +299,37 @@ class _FakeVideoJobMixin:
 class FakeI2VProvider(I2VProvider, _FakeVideoJobMixin):
     name = "fake_i2v"
     model = "fake-i2v"
+    # Fake 也声明支持首尾帧：否则离线演示与回归测试永远走不到"发 last_frame"那条分支，
+    # 真实通道坏了也发现不了（这类"测试绿但路径没覆盖"是本项目踩过的坑）
+    supports_last_frame = True
 
     def __init__(self, fail_first: int = 0):
         super().__init__()
         self._fail_first = fail_first
+        self.last_refs: list[Path] = []
+        self.last_frames: list[Path] = []  # 收到过的尾帧（测试断言用）
 
     async def submit(  # type: ignore[override]
-        self, dest: Path, image: Path, prompt: str = "", **params: Any
+        self, dest: Path, image: Path | None = None, prompt: str = "", **params: Any
     ) -> str:
+        """image 可选：m4 的 r2v 分支只传 refs=（参考生视频没有首帧）。
+
+        此前 image 是必填位置参数 → r2v 分支 TypeError 被 except 吞掉 →
+        fake cinema 冒烟里候选全失败、静帧兜底，r2v 拓扑零覆盖。
+        """
         self._fail_if_needed()
+        self.last_refs = list(params.get("refs") or [])
+        lf = params.get("last_frame")
+        if lf is not None:
+            self.last_frames.append(Path(lf))
+        src = image
+        if src is None:
+            src = dest.parent / f"{dest.stem}_refsrc.png"
+            make_placeholder_image(src, label=prompt[:16] or "r2v")
         job_id = uuid.uuid4().hex[:12]
         dest.parent.mkdir(parents=True, exist_ok=True)
-        image_to_video(image, dest, duration=2.0)  # Fake 用 2 秒片段, 加快冒烟
-        self._jobs[job_id] = (dest, image)
+        image_to_video(src, dest, duration=2.0)  # Fake 用 2 秒片段, 加快冒烟
+        self._jobs[job_id] = (dest, src)
         return job_id
 
     async def poll(self, job_id: str) -> VideoJobStatus:
@@ -290,6 +339,10 @@ class FakeI2VProvider(I2VProvider, _FakeVideoJobMixin):
 class FakeTalkProvider(TalkProvider, _FakeVideoJobMixin):
     name = "fake_talk"
     model = "fake-talk"
+    # 与 FakeT2IProvider 声明 supports_reference_image 同一个理由：让 --fake 冒烟跑通
+    # **真实拓扑**。C 链的 wan3.0 通道确实收 last_frame，桩不声明的话 m6 会按"通道不支持"
+    # 退回单首帧，首尾帧这条路径在离线冒烟里就永远测不到。
+    supports_last_frame = True
 
     def __init__(self, fail_first: int = 0):
         super().__init__()
@@ -342,13 +395,61 @@ class FakeVLMProvider(VLMProvider):
     def __init__(self, always_pass: bool = True):
         self.always_pass = always_pass
 
+    def _fake_usage(self, media: list[Path], rubric: str) -> None:
+        """与 FakeTextProvider 同一套口径：按字符数量造 token 量级，来源标 `fake_estimate`。
+
+        VLM 评审也按 token 计价（qwen3-vl-plus 输入 1 元/百万、输出 10 元/百万），
+        不给用量的话台账上这一行永远是 ¥0.000 —— 面板看起来就像"又漏记了"。
+        标成 fake_estimate 后 `CostLedger` 会把它算进"不确定金额"，不冒充真实账单。
+        """
+        text_in = len(rubric or "") + 400 * len(media or [])  # 图片按经验折算 token 量级
+        self.last_usage = {
+            "tokens_in": round(text_in / 4, 1),
+            "tokens_out": 60.0,
+            "source": "fake_estimate",
+        }
+
     async def review(
         self, media: list[Path], *, rubric: str, dest: Path | None = None
     ) -> ReviewResult:
+        self._fake_usage(media, rubric)
         return ReviewResult(
             target=media[0].name if media else "",
             passed=self.always_pass,
             score=0.9 if self.always_pass else 0.3,
             feedback="Fake VLM 评审",
             rubric=rubric,
+            verified=True,
+            judge=self.model,
         )
+
+    async def review_json(
+        self,
+        media: list[Path],
+        *,
+        schema: type[ModelT],
+        rubric: str,
+        dest: Path | None = None,
+    ) -> ModelT:
+        """Fake 结构化评审：全字段填"通过"，供 m9 度量离线跑通拓扑。"""
+        self._fake_usage(media, rubric)
+        payload: dict[str, Any] = {}
+        for name, field in schema.model_fields.items():
+            payload[name] = self._sample_value(field.annotation)
+        return schema.model_validate(payload)
+
+    def _sample_value(self, anno: Any) -> Any:
+        """按字段类型造合法样本：Literal 取首个候选（StyleVerdict.medium 要落在枚举内）。"""
+        from typing import Literal, get_args, get_origin
+
+        if get_origin(anno) is Literal:
+            return get_args(anno)[0]
+        if get_origin(anno) is list or anno == list[str]:
+            return []
+        if anno is bool:
+            return self.always_pass
+        if anno is float:
+            return 0.9 if self.always_pass else 0.3
+        if anno is int:
+            return 1
+        return "fake"

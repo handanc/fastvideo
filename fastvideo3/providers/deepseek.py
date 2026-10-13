@@ -31,6 +31,33 @@ def parse_sse_data(line: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def usage_tokens(data: dict | None) -> dict[str, Any]:
+    """从 OpenAI 兼容响应里取**计费 token 量**，归一成 `{tokens_in, tokens_out, source}`。
+
+    为什么必须有它：文本类模型官网是按 token 计价的（元/百万 Token，输入/输出两个价），
+    "一次调用"不是计费单位。丢掉 usage 就只能按次估 —— 台账显示 `text ¥0.000`、
+    账单却在跑，就是 2026-10-12 那次成本失真的直接原因。
+    字段名两家不一样（`prompt_tokens/completion_tokens` 与 `input_tokens/output_tokens`），
+    所以两套都认；都没有就返回空 dict（调用方据此标"未量到"，**不许猜**）。
+    """
+    usage = (data or {}).get("usage")
+    if not isinstance(usage, dict):
+        return {}
+
+    def pick(*names: str) -> float:
+        for n in names:
+            v = usage.get(n)
+            if isinstance(v, (int, float)) and v > 0:
+                return float(v)
+        return 0.0
+
+    tin = pick("prompt_tokens", "input_tokens")
+    tout = pick("completion_tokens", "output_tokens")
+    if not (tin or tout):
+        return {}
+    return {"tokens_in": tin, "tokens_out": tout, "source": "api_usage.usage"}
+
+
 class OpenAICompatTextProvider(TextProvider):
     name = "openai_compat"
     model = ""
@@ -94,6 +121,8 @@ class OpenAICompatTextProvider(TextProvider):
             else {}
         )
         raise_for_status(resp, data if isinstance(data, dict) else None)
+        # 计费量落到实例上，台账按 token 记（见 Provider.last_usage）
+        self.last_usage = usage_tokens(data if isinstance(data, dict) else None)
         try:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:
@@ -101,10 +130,17 @@ class OpenAICompatTextProvider(TextProvider):
 
     @api_retry(attempts=2)
     async def _stream_chat(self, body: dict[str, Any]) -> str:
-        """SSE 流式收集 content（跳过 reasoning_content 思考过程）。"""
+        """SSE 流式收集 content（跳过 reasoning_content 思考过程）。
+
+        同时要 `usage`：思考模式**必须**流式，而按 token 计价的钱就在这条响应里。
+        不开 `stream_options.include_usage` 的话，流式调用一个计费量都拿不到 →
+        台账只能记 ¥0，那正是这次成本失真的形状。取不到就留空（标"未量到"），不猜。
+        """
         body = dict(body)
         body["stream"] = True
+        body["stream_options"] = {"include_usage": True}
         parts: list[str] = []
+        usage: dict[str, Any] = {}
         async with httpx.AsyncClient(timeout=600) as client:
             async with client.stream(
                 "POST", f"{self.base_url}/chat/completions", headers=self._headers(), json=body
@@ -116,6 +152,9 @@ class OpenAICompatTextProvider(TextProvider):
                     data = parse_sse_data(line)
                     if data is None:
                         continue
+                    got = usage_tokens(data)
+                    if got:  # usage 在最后一个分片上（choices 为空），先于 delta 取
+                        usage = got
                     try:
                         delta = data["choices"][0].get("delta") or {}
                     except (KeyError, IndexError, TypeError):
@@ -125,6 +164,7 @@ class OpenAICompatTextProvider(TextProvider):
                         parts.append(content)
         if not parts:
             raise ProviderError(f"{self.name}: 流式响应为空")
+        self.last_usage = usage
         return "".join(parts)
 
 

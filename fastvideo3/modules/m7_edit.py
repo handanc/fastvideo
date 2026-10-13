@@ -14,6 +14,60 @@ from fastvideo3.core.schema import AudioLine, Script
 from fastvideo3.core.storage import RunStorage
 from fastvideo3.utils import ffmpeg as ff
 
+# 旁挂字幕的文件名**必须与成片不同基名**。字幕已经烧进画面，而 VLC / PotPlayer / MPC
+# 的默认行为是自动挂载与视频同基名的 .srt —— 于是画面上出现两层字幕（2026-10-07
+# run_20261007_130730 用户实测：抽帧确认片内只有一层，多出来的是播放器挂的旁挂层）。
+# 想单独要字幕轨（上传平台/改字幕）的人仍能从看板下载到这份文件。
+SUBTITLE_SIDECAR_NAME = "subtitles.srt"
+LEGACY_SUBTITLE_NAME = "final.srt"  # 改名前的旧 run 还叫这个，读取时兼容
+
+
+def subtitle_sidecar_path(storage: RunStorage) -> Path:
+    """旁挂字幕的实际路径：新名优先，旧 run 回退到 `final.srt`。"""
+    new = storage.path("final", SUBTITLE_SIDECAR_NAME)
+    return new if new.is_file() else storage.root / "final" / LEGACY_SUBTITLE_NAME
+
+
+def subtitle_font_family() -> str:
+    """全片唯一中文字体的 libass 家族名（与标题卡取的是同一份候选表）。"""
+    from fastvideo3.utils.image import cjk_font
+
+    return cjk_font()[0]
+
+
+def subtitle_style(fontsize: int = 12, margin_v: int = 14) -> str:
+    """字幕样式（**唯一来源**）：白字、黑描边、加粗、底部安全区、居中。
+
+    为什么要有这个函数：字幕可能被烧两次（终审母版 + 母版失败时的回退链），两处各自
+    写一份 force_style 字符串就会漂 —— 一深一浅、一高一低，看起来就像"两层字幕"。
+    现在两条路径共用这一份。
+
+    注意：`force_style` 用 libass 的脚本单位（PlayResY≈288）而非像素，尺寸随分辨率
+    自动缩放；家族名必须**不带空格**（带空格的 "Microsoft YaHei" 在 libass 里静默
+    渲染失败 → 悄悄退回系统默认字体，没人会发现字体变了）。
+    """
+    family = subtitle_font_family() or "DejaVuSans"
+    parts = [
+        f"Fontname={family}",
+        f"Fontsize={fontsize}",
+        "PrimaryColour=&H00FFFFFF",
+        "OutlineColour=&H00000000",
+        "BackColour=&H00000000",
+        "BorderStyle=1",
+        "Outline=1",
+        "Shadow=1",
+        "Alignment=2",
+        "Bold=1",
+        f"MarginV={margin_v}",
+    ]
+    return ",".join(parts)
+
+
+# 字幕首条相对镜头起点的延迟 / 两条字幕之间的最小间隔 / 镜头尾部预留（不压到转场）
+SRT_LEAD_IN = 0.3
+SRT_MIN_GAP = 0.12
+SRT_TAIL = 0.15
+
 
 def build_srt(
     script: Script,
@@ -22,27 +76,83 @@ def build_srt(
     clip_durations: dict[str, float],
     transition_out: dict[str, str],
     fade_dur: float,
+    *,
+    lead_in: float = SRT_LEAD_IN,
+    min_gap: float = SRT_MIN_GAP,
+    tail: float = SRT_TAIL,
+    model_audio_shots: set[str] | None = None,
 ) -> str:
-    """按镜头顺序累积时间轴，导出 SRT。"""
+    """按镜头窗口排字幕，并**保证任意两条字幕不重叠**。
+
+    字幕文本永远直接取剧本台词（`AudioLine.text`）—— 不做语音识别、不让模型"生成"字幕：
+    AI 画的字幕会错字、会漏句、字体还不受控。画面里出现的每一个字都由这里决定。
+
+    实测病灶（run_20261005_130208/final.srt，成片上表现为"两层字幕"）：
+        1  00:00:08,320 --> 00:00:10,240  色即是空...哎？
+        2  00:00:09,519 --> 00:00:14,032  师傅！观音菩萨还在天上看着呢！   ← 重叠 0.72s
+    旧实现把"字幕时长 = 音频时长、下一条起点 = 下一镜头起点 + 偏移"直接拼起来，
+    而口型模型回传的片段**比它的驱动音频短**（s2v 片段 1.70s vs 音频 1.92s），
+    上一条字幕于是溢出进下一个镜头的时间窗，两条同时挂在画面上。
+
+    规则（顺序敏感）：
+    1. 每条字幕只在自己的镜头窗口 `[t+lead_in, t+dur-tail]` 内排布；
+    2. 窗口装不下时**跨过边界也要保证不重叠** —— 后一条被推迟到前一条结束之后
+       （重叠是观感事故，轻微滞后不是）；
+    3. 同镜头内相邻两句之间留 min_gap，避免字"跳"在一起。
+    """
     by_shot: dict[str, list[AudioLine]] = {}
     for ln in audio_lines:
         by_shot.setdefault(ln.shot_id, []).append(ln)
 
-    entries: list[str] = []
-    idx = 1
+    model_audio_shots = model_audio_shots or set()
+    cues: list[tuple[float, float, str]] = []
     t = 0.0
+    prev_end = 0.0
     for i, sid in enumerate(clips_order):
-        dur = clip_durations.get(sid, 5.0)
-        local = 0.3
-        for ln in by_shot.get(sid, []):
-            start = t + local
-            end = start + ln.duration_sec
-            entries.append(f"{idx}\n{_fmt(start)} --> {_fmt(end)}\n{ln.text}\n")
-            idx += 1
-            local += ln.duration_sec
+        dur = float(clip_durations.get(sid, 5.0))
+        window_start = t + lead_in
+        window_end = t + max(lead_in + 0.5, dur - tail)  # 镜头太短时不能让窗口塌成负数
+        cursor = window_start
+        lines = by_shot.get(sid, [])
+        if sid in model_audio_shots and lines:
+            # C 链（wan3.0-video 自发声）的镜头：音轨是模型的，**我们手上没有它每句的时刻**
+            # （做 ASR 对齐是红线之外的新依赖，且会引入识别错误）。但知道台词全文与整段时长，
+            # 于是按**字数比例**把这个镜头窗口分给各句：
+            # 为什么不能用 TTS 时长 —— 那是另一条音轨的节奏，实测与模型的发声相差 0～2.2 秒，
+            # 照它排就是"第二层错位"（语音已经不对嘴，字幕再跟着语音跑，观众会以为字幕也错）。
+            # 按比例铺满整个窗口，最坏情况是某句早出现/晚消失半秒，而不会整条串位。
+            span = max(0.5, window_end - window_start)
+            weights = [max(1, len((ln.text or "").strip())) for ln in lines]
+            total = sum(weights) or 1
+            for ln, w in zip(lines, weights):
+                want = span * w / total
+                start = max(cursor, prev_end + min_gap)
+                end = min(start + want, window_end)
+                if end - start < 0.35:
+                    end = start + want  # 与 TTS 分支同一规则：不压成闪现
+                cues.append((start, end, ln.text))
+                prev_end = end
+                cursor = end + min_gap
+            t += dur
+            if i < len(clips_order) - 1 and transition_out.get(sid, "cut") != "cut":
+                t -= fade_dur
+            continue
+        for ln in lines:
+            want = float(ln.duration_sec or 0) or 1.2
+            start = max(cursor, prev_end + min_gap)
+            end = min(start + want, window_end)
+            if end - start < 0.35:
+                end = start + want  # 窗口装不下：宁可跨镜头，也不把一句话压成 0.3 秒闪现
+            cues.append((start, end, ln.text))
+            prev_end = end
+            cursor = end + min_gap
         t += dur
         if i < len(clips_order) - 1 and transition_out.get(sid, "cut") != "cut":
             t -= fade_dur
+
+    entries: list[str] = []
+    for idx, (start, end, text) in enumerate(cues, start=1):
+        entries.append(f"{idx}\n{_fmt(start)} --> {_fmt(end)}\n{text}\n")
     return "\n".join(entries)
 
 
@@ -77,6 +187,11 @@ async def compose_final(
     int_preset = "veryfast" if cfg.encode_preset == "ultrafast" else cfg.encode_preset
 
     # 1) 选取每个镜头的最终素材并按需挂音轨
+    # model_audio：成片里**用的是口型模型自带音轨**的那些镜头。字幕时间轴要认这个集合 ——
+    # 见 `build_srt`：模型发声的节奏与我们 TTS 母带的节奏不是一回事（实测差 0～2.2 秒）。
+    # 只有 C 链 + `voice_source=model` 才是"模型原声进成片"；A/B 链的音轨始终是我们的母带。
+    scripted_model_track = cfg.talk_mode == "scripted_talk" and cfg.voice_source == "model"
+    model_audio: set[str] = set()
     selected: list[tuple[str, Path]] = []
     for shot in shots:
         from_talk = shot.shot_id in talk_clips
@@ -90,6 +205,30 @@ async def compose_final(
             # state 里可能残留已删产物的路径（reshoot 重生成失败/预算熔断）——缺文件不进时间线
             storage.log_event("m7_edit", "missing_shot", shot=shot.shot_id)
             continue
+        if from_talk:
+            # 音轨取舍**以配置为准**（cfg.voice_source），不是"driver.wav 存不存在"。
+            # 曾经的写法是先看文件在不在 → 一条用 master 跑过的 run 即使把 voice_source
+            # 改成 model，盘上遗留的 driver.wav 仍会压过配置，成片继续声画错位
+            # （run_20261011_231024 实测：改了配置、重合成，语音照样领先口型）。
+            driver = storage.path("audio", f"shot_{shot.shot_id}_driver.wav")
+            if scripted_model_track:
+                # C 链 + 模型原声：口型就是对着这条音轨画的，不换（换了必然错位 0～2.2s）
+                model_audio.add(shot.shot_id)
+                storage.log_event(
+                    "m7_edit", "talk_audio_kept_model", shot=shot.shot_id,
+                    hint="保留模型原声（voice_source=model）：嘴型与声音同轨；字幕按窗口比例排",
+                )
+            elif driver.exists():
+                # 口型片段**只取它的画面**，音轨换回我们自己的 TTS 母带。
+                # 实测原因（run_20261005_130208）：wan2.2-s2v 回传的 mp4 自带一条
+                # 44.1kHz/stereo/AAC-101kbps 音轨，那是我们 16k 单声道驱动音频经模型
+                # 上变换的产物（高频受损 = 发闷/电话音），而且片段只有 4.30s 而音频是
+                # 4.51s —— **句尾被截 0.21s**。嘴型在视频流里，换音轨不影响口型对齐；
+                # 音频更长时 mux_audio 会克隆末帧补足（不截句子）。
+                swapped = norm_dir / f"{shot.shot_id}_a.mp4"
+                ff.mux_audio(src, driver, swapped, preset=int_preset, crf=int_crf)
+                src = swapped
+                storage.log_event("m7_edit", "talk_audio_replaced", shot=shot.shot_id)
         if not from_talk:
             # 对白音轨直叠：audio_overlay 模式，或对话镜头无口型产物（S2V 降级路径）
             wavs = [Path(ln.wav_uri) for ln in audio_lines if ln.shot_id == shot.shot_id]
@@ -185,18 +324,17 @@ async def compose_final(
 
     # 4) SRT 字幕（旁挂产物；烧录失败不阻塞）
     order = [sid for sid, _ in normalized]
-    srt_text = build_srt(script, audio_lines, order, durations, trans_map, fade)
-    srt_path = storage.path("final", "final.srt")
+    srt_text = build_srt(
+        script, audio_lines, order, durations, trans_map, fade, model_audio_shots=model_audio
+    )
+    srt_path = storage.path("final", SUBTITLE_SIDECAR_NAME)
     srt_path.write_text(srt_text, encoding="utf-8")
 
     # 短剧字幕样式：大号、白字、黑描边、底部留安全区（对齐主流微短剧观感）。
-    # 注意：force_style 用 libass 脚本单位（PlayResY≈288）而非像素——
-    # Fontname 不能带空格（Microsoft YaHei 会静默渲染失败），尺寸随分辨率自动缩放。
-    style = (
-        "Fontname=SimHei,Fontsize=12,PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&H00000000,BackColour=&H00000000,BorderStyle=1,"
-        "Outline=1,Shadow=1,Alignment=2,Bold=1,MarginV=14"
-    )
+    # 字体与标题卡**同源**（utils.image.cjk_font），全片只有一种中文字体。
+    style = subtitle_style()
+    storage.log_event("m7_edit", "subtitle_font", family=subtitle_font_family(),
+                      note="字幕与片头/片尾标题卡共用同一款字体")
     bgm = _pick_bgm(bgm_dir)
     final_path = storage.path("final", "final.mp4")
     # 终审母版 preset：economy 的 ultrafast 只用于中转，母版至少 medium（对齐旧 safe_encode 行为）
@@ -265,11 +403,55 @@ async def compose_final(
             audio_filter="loudnorm=I=-16:TP=-1.5:LRA=11" if cfg.loudnorm else "",
         )
 
+    # 5) 技术 QC：**确定性数值判据**，零 API 调用（黑帧/静帧/静音/时长偏差/黑边/规格合规）。
+    # 为什么不交给 VLM 终审：m8 已经翻过两次车 —— JSON 缺字段时落 0.6 兜底分并 passed=True，
+    # 异常被写成"通过"。这类问题不需要模型判断，量到了就是硬事实。
+    from fastvideo3.utils import qc
+
+    target_sec = float(script.base_info.target_duration_sec or 0)
+    items = [
+        qc.check_media(
+            final_path,
+            storage.dir("final") / "_qc",
+            expected_duration=target_sec or None,
+            # 成片总时长 vs 用户填的目标 = **意图**偏差（实际由镜头数×每镜时长决定），
+            # 只警告不判死；素材级的时长偏差（片段 vs 它自己的驱动音频）仍然是 failed
+            strict_duration=False,
+            label="成片",
+        ),
+        qc.check_spec(
+            final_path,
+            size=size,
+            fps=cfg.output_fps,
+            aspect=cfg.aspect_ratio,
+            target_duration=target_sec or None,
+        ),
+    ]
+    report = qc.qc_report(items)
+    storage.save_json("final/qc_report.json", report)
+    storage.log_event(
+        "m7_edit",
+        "tech_qc",
+        passed=report["passed"],
+        failed=[f["problem"] for f in report["failed"]][:6],
+        warnings=[w["problem"] for w in report["warnings"]][:6],
+        not_checked=report["not_checked"],
+        hint=(
+            "确定性判据（黑帧/静帧/静音/时长偏差/黑边/规格）；"
+            "not_checked 是「没量」不是「量了没问题」"
+        ),
+    )
+    for f in report["failed"]:
+        storage.log_degradation(
+            "m7_edit", "tech_qc_failed", f["problem"], impact=f"成片技术不合格：{f['item']}"
+        )
+
     storage.log_event(
         "m7_edit",
         "done",
         final=str(final_path),
         duration=round(ff.probe_duration(final_path), 2),
+        tech_qc_passed=report["passed"],
     )
     return final_path
 

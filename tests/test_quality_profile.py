@@ -38,14 +38,20 @@ def test_load_config_economy_default_untouched(tmp_path):
     assert not cfg.color_grade
     # 新增质量开关的默认值（economy 零成本教学定位不变）
     assert cfg.asset_candidates == 1
-    assert not cfg.script_review
+    # 剧本评审交给人工：一次生成，只有台词句长违规才允许重写一次
+    assert cfg.max_script_revisions == 1
     assert not cfg.auto_reshoot
     assert cfg.output_fps == 24
     assert cfg.intermediate_crf == 18
 
 
 def test_load_config_cinema_profile_overlay(tmp_path, monkeypatch):
-    """cinema 档：商业级配置全量生效（抽卡/锁脸/评审/选优模型）。"""
+    """cinema 档：商业级配置全量生效（抽卡/锁脸/评审/选优模型）。
+
+    剧本 critic 已下线（评审剧本的是人），但**其他评审必须还在**：分镜 VLM 一致性全检、
+    镜头 best-of-N 选优、结构化外貌卡 —— 这三条是锁脸链路的判定来源，掉了就是"看起来
+    跑了、实际没通电"。
+    """
     monkeypatch.setenv("FV3_QUALITY", "cinema")
     cfg = load_config(dotenv_path=tmp_path / "none.env")
     assert cfg.quality == "cinema"
@@ -54,17 +60,28 @@ def test_load_config_cinema_profile_overlay(tmp_path, monkeypatch):
     assert cfg.use_r2v_for_characters and cfg.use_reference_keyframes
     assert cfg.candidates_per_shot == 2
     assert cfg.asset_candidates == 2  # 角色立绘抽卡选优
-    assert cfg.script_review is True  # auto 剧本 critic 评审
-    assert cfg.storyboard_sample_rate == 1.0
+    assert cfg.storyboard_sample_rate == 1.0  # 分镜 VLM 一致性全检
+    assert cfg.look_extraction is True  # 外貌卡：蒸馏校验与度量的属性来源
     # 兑现"qwen-vl-max 打分取优"（此前 yaml 未覆盖 vlm，静默继承 plus 档）
     assert cfg.models["dashscope_vlm"] == "qwen-vl-max"
 
 
-def test_load_config_high_profile_enables_script_review(tmp_path, monkeypatch):
+def test_load_config_high_profile_keeps_other_reviews(tmp_path, monkeypatch):
+    """high 档：剧本评审没了，但抽卡/外貌卡/分镜抽查都还在（成本只降在立绘上）。"""
     monkeypatch.setenv("FV3_QUALITY", "high")
     cfg = load_config(dotenv_path=tmp_path / "none.env")
-    assert cfg.script_review is True
+    assert cfg.look_extraction is True
+    assert cfg.storyboard_sample_rate > 0
     assert cfg.asset_candidates == 1  # high 档不抽卡（成本取舍）
+
+
+def test_script_critic_knob_is_gone(tmp_path, monkeypatch):
+    """`script_review` 这个配置位必须真的消失：留着不生效的开关就是下一个"假通电"故障。"""
+    monkeypatch.setenv("FV3_QUALITY", "cinema")
+    cfg = load_config(dotenv_path=tmp_path / "none.env")
+    assert not hasattr(cfg, "script_review")
+    for name in ("configs/default.yaml", "configs/profile_high.yaml", "configs/profile_cinema.yaml"):
+        assert "script_review" not in (PROJECT_ROOT / name).read_text(encoding="utf-8"), name
 
 
 def test_normalize_cover_fills_frame_no_black_bars(tmp_path):

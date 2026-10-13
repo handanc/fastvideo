@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fastvideo3"
 version = "0.1.0"
-description = "FastVideo3 —— 基于 LangGraph 多智能体的全 API 化短剧视频生成教学平台"
+description = "FastVideo3 —— 全 API 化短剧视频生成教学平台（按顺序分步执行，每步之间人可介入）"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -21,8 +21,6 @@ dependencies = [
     "imageio-ffmpeg>=0.5",
     "sqlalchemy>=2.0",
     "aiosqlite>=0.20",
-    "langgraph>=1.0",
-    "langgraph-checkpoint-sqlite>=2.0",
     "edge-tts>=7.0",
     "dashscope>=1.20",
 ]
@@ -37,7 +35,7 @@ full = [
     "librosa>=0.10",
     "soundfile>=0.12",
 ]
-postgres = ["psycopg[binary]>=3.1", "langgraph-checkpoint-postgres>=2.0"]
+postgres = ["psycopg[binary]>=3.1"]  # prod-postgres：JobStore 的异步任务台账走 PG
 web = [
     "fastapi>=0.111",
     "uvicorn>=0.30",
@@ -78,7 +76,111 @@ exclude = ["tests/", "build/", ".venv/"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# 默认**不跑** api 标记用例：它们用真实 KEY 打真实计费端点。
+# 2026-10-03 实测：漏了这条 deselect 时，一句 `pytest` 就向百炼提交了真实任务
+# （那次返回 400 才没花钱）—— 冒烟套件绝不能是隐性付费入口。
+# 需要真跑时显式执行：pytest -m api
+addopts = "-m 'not api'"
 markers = [
     "api: 需要真实 API KEY 的冒烟测试 (nightly)",
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+# BEGIN fastvideo3-pricing（由 fastvideo3 refresh-prices 维护，别手改格式）
+# ── 成本单价表（权威）─────────────────────────────────────────────
+# 记账顺序：**真实账单(API) → 本表 → 能力默认价**。本表由 `fastvideo3 refresh-prices`
+# 抓官网价目页回写，手工改记得同步 `checked_at`（doctor 会把"这价多久没校准"显示出来）。
+# 口径：按官网**原价**记。页面上的"限时7折/8折"到期就没了，按折扣价记账会让成本上限
+# **晚跳闸 = 实际超支**；按原价记只会早跳闸 = 少花。宁可少花，不可超支。
+# unit：token_m=元/百万Token（输入/输出两个价）| second=元/秒 | image=元/张 | char=元/字符 | call=元/次
+# tiers：按输出分辨率分档（元/秒）。会自动摊平成 `模型@480p` 这类计价键，
+#   裸键取**最高档**，供红线/预估按最坏情况用（见 core/pricing.py 的 _flatten）。
+[tool.fastvideo3.pricing]
+checked_at = "2026-10-12"
+source = "https://help.aliyun.com/zh/model-studio/model-pricing"
+basis = "list_price"
+
+[tool.fastvideo3.pricing.defaults]
+# 没登记单价的模型按这里兜底，并标 price_certain=false（看板会说"其中 ¥X 是估算"）
+text = { unit = "token_m", price_cny = 2.0, in_cny = 2.0, out_cny = 8.0, note = "按 plus 档兜底" }
+t2i = { unit = "image", price_cny = 0.20 }
+i2v = { unit = "second", price_cny = 0.6, note = "按 720P 档兜底" }
+talk = { unit = "second", price_cny = 0.6 }
+tts = { unit = "char", price_cny = 0.0002 }
+vlm = { unit = "token_m", price_cny = 1.0, in_cny = 1.0, out_cny = 10.0 }
+
+[tool.fastvideo3.pricing.worst_case]
+dashscope_wan22_s2v = "wan2.2-s2v@720p"
+fal_infinitalk = "fal-ai/infinitalk/video-to-video@720p"
+dashscope_videoretalk = "videoretalk"
+dashscope_wan27_audio = "wan2.7-i2v@1080p"
+dashscope_wan30_talk = "wan3.0-video@1080p"
+kling_lipsync = "kling-v2-master"
+
+[tool.fastvideo3.pricing.models]
+# ── 文本（元/百万 Token：输入 | 输出）── 一次调用真实花多少 = 用 API 回传的 usage 算
+"qwen3.7-flash" = { unit = "token_m", in_cny = 0.2, out_cny = 0.8, note = "0<Token≤32K 档" }
+"qwen3.7-flash-2026-07-15" = { unit = "token_m", in_cny = 0.2, out_cny = 0.8, note = "0<Token≤32K 档" }
+"qwen3.7-plus" = { unit = "token_m", in_cny = 2.0, out_cny = 8.0, note = "0<Token≤256K；256K-1M 是 6/24" }
+"qwen3.7-plus-2026-05-26" = { unit = "token_m", in_cny = 2.0, out_cny = 8.0 }
+"qwen3.7-max" = { unit = "token_m", in_cny = 12.0, out_cny = 36.0 }
+"qwen3.7-max-2026-06-08" = { unit = "token_m", in_cny = 12.0, out_cny = 36.0 }
+"qwen3.8-flash" = { unit = "token_m", in_cny = 0.8, out_cny = 2.7 }
+"qwen3.8-max" = { unit = "token_m", in_cny = 12.0, out_cny = 36.0 }
+"qwen3.8-max-0902" = { unit = "token_m", in_cny = 12.0, out_cny = 36.0 }
+"qwen3.8-max-prime" = { unit = "token_m", in_cny = 24.0, out_cny = 72.0, note = "无免费额度" }
+"qwen3.8-27b" = { unit = "token_m", in_cny = 3.0, out_cny = 12.0 }
+"qwen-plus" = { unit = "token_m", in_cny = 0.8, out_cny = 8.0, note = "输出取思考档（非思考 2.0）：与按原价记同理，取会花到的最高价" }
+"qwen3-vl-plus" = { unit = "token_m", in_cny = 1.0, out_cny = 10.0, note = "评审/VLM 档位" }
+"qwen-vl-ocr" = { unit = "token_m", in_cny = 0.3, out_cny = 0.5 }
+# verified=false 的条目：**当前官网价目页上没有这个模型**，值是旧表沿用的，没有出处。
+# 解析层据此把 certain 判成 false → 看板把它算进"其中 ¥X 是估算"，不假装是真实价。
+# （实测本账号 /models 里也没有 qwen-vl-max / qwen-vl-plus，只有 qwen3-vl-plus。）
+"qwen-vl-max" = { unit = "token_m", in_cny = 3.0, out_cny = 9.0, verified = false, note = "旧表沿用，官网价目页当前未列出" }
+"qwen-vl-plus" = { unit = "call", price_cny = 0.01, verified = false, note = "旧表沿用，官网价目页当前未列出" }
+"deepseek-chat" = { unit = "token_m", in_cny = 0.004, out_cny = 0.004, verified = false, note = "备选供应商，价在 DeepSeek 官网不在百炼" }
+"black-forest-labs/FLUX.1-dev" = { unit = "image", price_cny = 0.10, verified = false, note = "模型市场托管，不在百炼价目页" }
+
+# ── 图生视频 / 文生视频（元/输出秒，按分辨率分档）──
+"wan3.0-video" = { unit = "second", tiers = { "480p" = 0.3, "720p" = 0.6, "1080p" = 1.2 }, note = "限时7折 0.21/0.42/0.84" }
+"wan3.0-video-prime" = { unit = "second", tiers = { "480p" = 0.45, "720p" = 0.9, "1080p" = 1.8 } }
+"wan2.7-i2v" = { unit = "second", tiers = { "720p" = 0.6, "1080p" = 1.0 }, note = "有声视频" }
+"wan2.7-r2v" = { unit = "second", tiers = { "720p" = 0.6, "1080p" = 1.0 }, note = "参考视频/多主体，按同族价" }
+"wan2.6-i2v" = { unit = "second", tiers = { "720p" = 0.6, "1080p" = 1.0 } }
+"wan2.2-i2v-flash" = { unit = "second", tiers = { "480p" = 0.10, "720p" = 0.20, "1080p" = 0.48 }, note = "无声视频" }
+"wan2.2-i2v-plus" = { unit = "second", tiers = { "480p" = 0.14, "1080p" = 0.70 }, note = "官网只列 480P/1080P" }
+"wanx2.1-i2v-turbo" = { unit = "second", tiers = { "480p" = 0.24, "720p" = 0.24 } }
+"wanx2.1-i2v-plus" = { unit = "second", tiers = { "720p" = 0.70 } }
+"Wan-AI/Wan2.2-I2V-A14B" = { unit = "second", price_cny = 0.35, verified = false, note = "开源托管档，非百炼价目页" }
+
+# ── 文生图（元/张）──
+"wan2.7-image" = { unit = "image", price_cny = 0.20 }
+"wan2.7-image-pro" = { unit = "image", price_cny = 0.50 }
+"wan2.6-image" = { unit = "image", price_cny = 0.20 }
+"wan2.6-t2i" = { unit = "image", price_cny = 0.20 }
+"wanx2.1-t2i-turbo" = { unit = "image", price_cny = 0.14 }
+"wanx2.1-t2i-plus" = { unit = "image", price_cny = 0.20 }
+"qwen-image-3.0" = { unit = "image", price_cny = 0.18, note = "输出1k/2k均0.18；输入0.02/张" }
+"qwen-image-3.0-pro" = { unit = "image", price_cny = 0.50, note = "取 2k 档（1k 是 0.25）；输入另计 0.02/张" }
+"qwen-image-2.1-pro" = { unit = "image", price_cny = 0.25 }
+"qwen-image-2.1-turbo" = { unit = "image", price_cny = 0.1 }
+"qwen-image-2.0" = { unit = "image", price_cny = 0.20 }
+"qwen-image-2.0-pro" = { unit = "image", price_cny = 0.50 }
+
+# ── 口型 / 数字人（元/输出秒）──
+"wan2.2-s2v" = { unit = "second", tiers = { "480p" = 0.5, "720p" = 0.9 } }
+"wan2.2-s2v-detect" = { unit = "image", price_cny = 0.004, note = "输入图像检测，按张" }
+"videoretalk" = { unit = "second", price_cny = 0.08, note = "输出分辨率=输入，不分档" }
+"kling-v2-master" = { unit = "second", price_cny = 0.90, verified = false, note = "备选供应商，价在其官网不在百炼" }
+
+# ── fal.ai 托管 InfiniteTalk（美元×7.15 向上取整；端点 ID 即计价键前缀）──
+# 单价取自 fal 官方 OpenAPI 的 endpointBilling（2026-10-04 实取），页面明写 720p 翻倍。
+"fal-ai/infinitalk" = { unit = "second", tiers = { "480p" = 1.45, "720p" = 2.90 } }
+"fal-ai/infinitalk/video-to-video" = { unit = "second", tiers = { "480p" = 2.17, "720p" = 4.34 } }
+
+# ── 语音与真正免费的端点 ──
+"cosyvoice-v2" = { unit = "char", price_cny = 0.0002, note = "2元/万字符" }
+"cosyvoice-v3-flash" = { unit = "char", price_cny = 0.0001 }
+"cosyvoice-v3-plus" = { unit = "char", price_cny = 0.0002 }
+"edge-tts" = { unit = "call", price_cny = 0.0, free = true, note = "微软免费端点：¥0 是真实价，不是漏登记" }
+# END fastvideo3-pricing

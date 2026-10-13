@@ -3,11 +3,29 @@
 # 成本量级（90 秒片）：t2i-plus 约 21 张 ≈ ¥4 + i2v-plus 1080P 约 80s ≈ ¥50 量级，
 # 仍远低于 PRD 的 ¥150 熔断线；economy 档保持教学零压力。
 providers:
+  # 口型主通道 = 百炼 wan2.2-s2v 数字人：480P ¥0.5/秒、720P ¥0.9/秒（新账号 100 秒免费额度）。
+  # 本档 i2v_resolution=1080P 会被钳到 720P 提交（事件 resolution_clamped）；官方明确
+  # 输出"尽量保持与输入图像相同的宽高比"→ 竖屏不裁。
+  # 兜底 = fal.ai InfiniteTalk 图像端点（同输入形态，需 .env 的 FAL_KEY；未填则兜底为空，
+  # 走 I2V+叠音降级并落 degradations.json —— 那时成片就是"没有对口型"，看板会红标）。
+  talk: {default: dashscope_wan22_s2v, fallback: fal_infinitalk}
   i2v: {default: dashscope_wan22_i2v, fallback: siliconflow_wan22}
+  # 参考图锁脸：首帧以角色立绘为图像条件生成（wan2.7-image 同步端点）。
+  # 增量成本 ≈ ¥0.05/张 × 约21张 = +¥1/片；fallback 不支持参考图时会落
+  # fallback_used{dropped:[ref_image]} 事件，降级可见。
+  t2i: {default: dashscope_wan27_image, fallback: dashscope_t2i}
 
 generation:
   resolution: [1080, 1920]        # 竖屏交付标准（对齐主流微短剧平台）
   i2v_resolution: 1080P           # flash-480P 是"粗糙感"主因之一；plus-1080P 运动/细节质变
+  use_reference_keyframes: true   # 硬锁脸：首帧带角色立绘参考图
+  require_reference_keyframes: true  # 强制：t2i 不支持参考图就在花钱前报错（一致性是交付承诺）
+  consistency_gate: reshoot       # 成片前度量不达标 → 自动带参考图重做（≤2 轮）
+  scene_ref_mode: scenery_only    # 场景图只喂空镜；all 需 m9 证明人脸不降才允许
+  keyframe_seed_scope: cast       # 同角色跨场景同种子（旧 scene_cast 会换场景即换脸）
+  asset_style_gate: warn          # 立绘若被判动漫/3D → 事件+降级台账（不阻断交付）
+  look_extraction: true           # 结构化外貌卡：蒸馏校验与一致性度量的属性来源
+  consistency_metric: sample      # 抽样度量（全检留给 cinema），产出 consistency_report.json
   # 全局风格锚：所有文生图（角色立绘/场景/分镜首帧）统一追加，杜绝"一格动漫一格真人"。
   # 中英双语文本：万相对英文摄影术语更敏感，显著压低 3D/皮克斯风漏网率
   style_suffix: >-
@@ -25,8 +43,8 @@ generation:
   encode_crf: 20
   encode_preset: veryfast
   bgm_volume: 0.12
-  script_review: true            # auto 模式剧本 critic 评审（≈¥0.06-0.12/片）
 
 models:
   dashscope_t2i: wanx2.1-t2i-plus     # plus 档：构图/质感/提示词遵循度显著优于 turbo
+  dashscope_t2i27: wan2.7-image       # 参考图锁脸首帧（messages 协议，支持多参考图）
   dashscope_i2v: wan2.2-i2v-plus      # plus 档：运动连贯、无闪帧、细节保留

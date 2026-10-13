@@ -7,18 +7,50 @@
 providers:
   t2i: {default: dashscope_wan27_image, fallback: dashscope_t2i}  # 参考图锁脸首帧
   i2v: {default: dashscope_wan27_i2v, fallback: dashscope_wan22_i2v}
-  talk: {default: dashscope_wan27_audio, fallback: dashscope_wan22_s2v}  # 原生口型，无账号门控
+  # 口型：**模式自己就是通道选择器**（唯一映射表 core/talkmode.py，五次定档 2026-10-11）。
+  # 本文件只决定 cinema 档的**默认模式**（下面 generation.talk_mode=v2v_overlay），三条链在
+  # 任何档位都能选，所以这里**不再需要**"改模式必须同时改本路由"那条成对规则 —— 上一版正是
+  # 这两份事实各漂一次，才出现"对白镜头先烧一份运动片段的钱、再 100% 降级成无口型叠音"。
+  #   s2v_direct(wan2.2-s2v)：图片+我们的语音 → 口型视频。只到 720P（1080P 成片会被钳位后
+  #     由 m7 cover）、单人同屏、音频 <20s 要分段拼接；优点是语音一致、对白镜头不过 i2v。
+  #   v2v_overlay(videoretalk)：m4 的 1080P 运动片段 + 语音 → 只重绘嘴部。**cinema 的默认值**：
+  #     不重画画面 → 继承 m3 参考图锁脸；「输出分辨率与帧率=输入」→ 1080P 不降级；
+  #     ¥0.08/秒 + 1800 秒免费额度；音频上限 120s 免分段。代价：两段付费、最慢。
+  #   scripted_talk(wan3.0-video)：图片+提示词（台词在里面）→ 一条调用出口型+动作+音轨，
+  #     原生 1080P、多人同屏有解；音色由模型决定 → 见 generation.voice_source。
+  # ⚠ videoretalk 硬门槛：输入视频边长 ≥640（本档 i2v 1080P 满足；economy 的 480P 会被拒）。
+  # ⚠ 兜底 fal_infinitalk 当前等于没有：2026-10-11 实测 403「User is locked. Reason: Exhausted
+  #   balance」。主通道失败时会多花一次 403 往返，不影响交付。
+  talk: {default: dashscope_videoretalk, fallback: fal_infinitalk}
   r2v: {default: dashscope_wan27_r2v}
-  tts: {default: dashscope_cosyvoice, fallback: edge_tts}   # 情感 TTS 优先，未开通自动降级
+  # tts 继承 default.yaml：主 = cosyvoice-v2、兜底 = edge-tts（三档同一套配音口径）
 
 generation:
   resolution: [1080, 1920]
   i2v_resolution: 1080P
   use_reference_keyframes: true   # 首帧带角色立绘参考图（硬锁脸）
+  require_reference_keyframes: true  # 硬门控：t2i 主供应商不支持参考图 → 花钱前报错
+  consistency_gate: reshoot       # 不达标镜头自动带参考图重做（≤2 轮），仍不过则标不合格
+  scene_ref_mode: scenery_only    # 场景图只喂空镜；all 需 m9 证明人脸不降才允许
+  ref_max_chars: 1   # 多图协议待 scripts/probe_multi_ref.py 探单通过后再放开到 2（风险 R1）
+  # 本档**默认**走 B 链：videoretalk 吃"运动片段+音频" → 模式即 v2v_overlay（模式自己装配
+  # 对应通道，见 core/talkmode.py，不需要再动上面的 providers.talk）。这一档下对白镜头**也要过
+  # m4 i2v**（m4.shots_need_i2v），而 videos 步骤的顺序已是 片段 → 配音 → 口型，前置依赖天然满足。
+  # 想换 C 链（wan3.0-video 一条调用出口型+动作）在建任务时选 `scripted_talk` 即可，
+  # 不必改本文件；对白镜头会**不再**过 i2v（省那份运动费），但音轨来源要认一下 voice_source。
+  talk_mode: v2v_overlay
+  # C 链的成片音轨：**model = 保留模型自发声（默认）** | master = 换回 m5 的 TTS 母带。
+  # 不换母带是实测结论：换了以后语音领先口型 0～2.2 秒且每镜偏移不同（测量表在
+  # core/talkmode.py）。商业交付真要"音色统一 + 嘴型对着这条配音"，走本档默认的
+  # v2v_overlay（对着我们的母带重画嘴），而不是在 C 链里换音轨。
+  voice_source: model
   use_r2v_for_characters: true
+  keyframe_seed_scope: cast      # 同角色跨场景同种子（旧 scene_cast 换场景即换脸）
+  asset_style_gate: warn         # 立绘写实闸门：动漫/3D 立绘记事件+降级台账
+  look_extraction: true          # 结构化外貌卡（蒸馏校验 + 度量属性来源）
+  consistency_metric: full       # 全检 + 自校准锚 + 顺序互换 + 双人二选一
   candidates_per_shot: 2
   asset_candidates: 2            # 角色立绘抽卡选优（源头闸门，<¥1/片）
-  script_review: true            # auto 模式剧本 critic 评审（生成性量表把关）
   storyboard_sample_rate: 1.0    # VLM 一致性全检
   style_suffix: >-
     真人写实电影剧照，院线级画质，自然皮肤纹理，电影级三点布光，

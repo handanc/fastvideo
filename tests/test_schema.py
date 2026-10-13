@@ -37,7 +37,8 @@ def test_shot_defaults():
 def test_project_config_defaults():
     pc = ProjectConfig(run_id="r1", base_info=BaseInfo(topic="t"))
     assert pc.profile == "edu-sqlite"
-    assert pc.review_mode == "auto"
+    # 与 configs/*.yaml、AppConfig、api.RunCreate、cli 选项同值；且与主通道
+    # wan2.2-s2v 的输入形态成对（s2v 不吃视频输入）。默认值散落多处=静默分歧。
     assert pc.talk_mode == "s2v_direct"
     assert pc.budget_limit_cny == 150.0
 

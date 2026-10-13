@@ -24,12 +24,14 @@ fastvideo3 serve   # 打开 http://127.0.0.1:8000
 src/
 ├── main.js               # 入口
 ├── App.vue               # 顶栏 + 视图切换（新建/历史/详情/自检）
-├── api.js                # fetch 封装（统一错误解包）
+├── api.js                # fetch 封装（统一错误解包；422 的多条校验按行拼好）
 ├── status.js             # 运行状态 → 中文徽章映射
 ├── style.css             # 设计令牌 + 组件样式（亮/暗自动适配）
 └── components/
-    ├── NewRunForm.vue    # 新建任务表单（字段与 CLI run 一一对应）
+    ├── NewRunForm.vue    # 新建任务表单（字段与 CLI `new` 一一对应）→ 一颗「▶ 开始生成」只建任务
     ├── RunList.vue       # 运行历史（5s 自动刷新）
-    ├── RunDetail.vue     # 详情：事件流(3s 轮询)/成本/画廊/成片/审片续跑
+    ├── RunDetail.vue     # 详情：StepBar + 制作看板/事件流与成本（3s 轮询）
+    ├── StepBar.vue       # 六步进度条 + 「▶ 开始生成 · <下一步>」（点一次补一步）
+    ├── ProductionBoard.vue # 制作看板：剧本三动作（改稿/按 prompt 重写/删除）、角色图/场景图/分镜/成片、上传替换
     └── DoctorView.vue    # 环境自检
 ```

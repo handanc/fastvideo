@@ -1,0 +1,24 @@
+# 消融臂 3：全量一致性机制（锁脸 + r2v + 立绘抽卡 + 风格闸门 + 外貌卡 + 全检度量）。
+# ref_max_chars 保持 1：多图协议未经真实探单验证（风险 R1），探单通过后再开 2。
+providers:
+  t2i: {default: dashscope_wan27_image, fallback: dashscope_t2i}
+  r2v: {default: dashscope_wan27_r2v}
+generation:
+  use_reference_keyframes: true
+  require_reference_keyframes: true
+  ref_max_chars: 1
+  use_r2v_for_characters: true
+  candidates_per_shot: 1          # 消融只比一致性，抽卡另计成本不在此臂展开
+  asset_candidates: 2
+  storyboard_sample_rate: 1.0
+  keyframe_seed_scope: cast
+  asset_style_gate: warn
+  look_extraction: true
+  consistency_metric: full
+  resolution: [540, 960]
+  i2v_resolution: 480P
+  talk_mode: audio_overlay
+models:
+  dashscope_t2i27: wan2.7-image
+  dashscope_r2v: wan2.7-r2v
+  dashscope_vlm: qwen-vl-max

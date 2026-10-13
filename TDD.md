@@ -14,7 +14,7 @@
 
 ### 1.1 技术目标
 
-实现 PRD 的两大约束：**① 所有生成类推理全部 API KEY 化（零 GPU）；② LangGraph 多智能体编排，架构可教学、可演进。**
+实现 PRD 的两大约束：**① 所有生成类推理全部 API KEY 化（零 GPU）；② 流水线可教学、可演进 —— 一条执行路径、一份阶段装配、每一步之间人可介入。**
 
 ### 1.2 设计原则
 
@@ -23,15 +23,16 @@
 | **API-first** | 一切生成能力（文本/图像/视频/口型/语音/视觉评审）均通过 Provider 抽象调用云端 API；本地只保留 CPU 级能力（YOLOv8-seg、rembg、FFmpeg） |
 | **Schema-first** | Pydantic v2 定义全链路数据契约（剧本→资产→分镜→镜头→成片），LLM 输出强制 JSON Schema 校验 |
 | **Provider 模式** | 每类能力一个抽象接口，供应商是可插拔实现；新增供应商零业务代码改动 |
-| **图即流程** | 生产流程 = LangGraph 状态图；评审循环、并行镜头、人工审片、断点续跑全部由图机制承载 |
-| **可离线教学** | Fake Provider 用本地占位素材替代全部 API，零成本跑通全图（教学与单测默认模式） |
-| **失败可恢复** | 所有外部调用幂等化 + 检查点持久化 + 任务台账，任何位置中断可续跑 |
+| **盘上即状态** | 生产流程 = 六步顺序；"下一步做什么"由 `core/progress.py` 从盘上产物 + 血缘台账算出来，不依赖内存/图状态 |
+| **一份装配** | 所有阶段装配只在 `core/stages.py` 一处（参考图锁脸、抽卡、风格闸门、r2v、降级台账）；同一逻辑出现两份实现就是静默退化的温床 |
+| **可离线教学** | Fake Provider 用本地占位素材替代全部 API，零成本跑通全链路（教学与单测默认模式） |
+| **失败可恢复** | 所有外部调用幂等化 + 产物与血缘落盘 + 任务台账，任何位置中断后再点一次只补缺口 |
 
 ### 1.3 总体技术选型结论
 
 | 关注点 | 选型 | 理由 |
 |---|---|---|
-| 多智能体编排 | **LangGraph ≥1.0**（Python） | 生产级事实标准：状态图、循环、检查点、human-in-the-loop、Send 并行 |
+| 流程编排 | **自研顺序状态机**（`core/progress.py` + `core/stages.py`） | 六步依赖关系是线性的，盘上产物就是状态：不需要图引擎，也就不用为"检查点/中断恢复"维护第二套真相（2026-10-06 删除 LangGraph 端到端路径，见 §5） |
 | LLM 接入层 | LangChain + OpenAI 兼容 SDK | DeepSeek/百炼均兼容 OpenAI 协议，一套代码双供应商 |
 | 数据契约 | Pydantic v2 + pydantic-settings | 类型安全 + 配置管理一体 |
 | 异步 | asyncio + httpx | 视频/图像 API 均为异步任务，天然适配 |
@@ -48,11 +49,11 @@
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│ 接入层    Streamlit Web 面板  │  Typer CLI  │  (扩展期) A2A 网关  │
+│ 接入层    Vue Web 面板(FastAPI)  │  Typer CLI  │  Streamlit(教学观测)  │
 ├────────────────────────────────────────────────────────────────┤
-│ 编排层    LangGraph StateGraph                                  │
-│           Supervisor(导演) + 7 专职 Agent + Critic 回路          │
-│           Checkpointer: SqliteSaver / PostgresSaver             │
+│ 编排层    core/progress.py 六步状态机（下一步该做什么）           │
+│           core/stages.py 阶段执行器（唯一装配入口）                │
+│           人工闸门：每一步之间（改剧本稿 / 换图 / 删图重生成）      │
 ├────────────────────────────────────────────────────────────────┤
 │ 模块层    m1 剧本 │ m2 资产 │ m3 分镜 │ m4 镜头 │ m5 配音        │
 │           m6 口型/双人同屏 │ m7 剪辑合成 │ m8 评审                │
@@ -143,24 +144,24 @@ dependencies:
 
 | 分组 | 依赖 | 用途 |
 |---|---|---|
-| 编排 | `langgraph>=1.0`、`langchain`、`langchain-openai`、`langchain-community` | 多智能体图与 LLM 接入 |
-| LLM/SDK | `openai>=1.x`（DeepSeek 及一切 OpenAI 兼容端点）、`dashscope>=1.24` | 文本/图像/视频/口型/语音/视觉 |
+| LLM/SDK | `dashscope>=1.20`（百炼：文本/图像/视频/口型/语音/视觉）、`httpx` 直连其余兼容端点 | 全部生成能力 |
 | 数据 | `pydantic>=2.7`、`pydantic-settings`、`python-dotenv`、`pyyaml` | 契约与配置 |
 | 网络 | `httpx`、`tenacity` | 异步 HTTP 与重试 |
 | 语音 | `edge-tts`（免费默认 TTS）、`librosa`、`soundfile` | 对白合成与音频处理 |
 | 视觉本地 | `torch`（**仅 CPU 版**，经 cpu index 安装）、`ultralytics`（YOLOv8n-seg）、`rembg[cpu]`、`onnxruntime`、`opencv-python`、`pillow`、`numpy` | 双人分割/抠图/合成（无 GPU 依赖） |
 | 视频 | `ffmpeg-python`（薄封装，复杂滤镜仍走原生命令） | 转场/拼接/混音/字幕 |
-| 界面 | `streamlit`、`typer`、`rich` | Web 面板与 CLI |
-| 数据库 | `SQLAlchemy>=2`、`langgraph-checkpoint-sqlite`（默认）；可选组 `[postgres]`: `psycopg[binary]`、`langgraph-checkpoint-postgres` | 检查点与任务台账 |
+| 界面 | `fastapi`、`uvicorn`（Vue 面板后端）、`typer`、`rich`、可选 `streamlit` | Web 面板与 CLI |
+| 数据库 | `SQLAlchemy>=2`、`aiosqlite`（默认）；可选组 `[postgres]`: `psycopg[binary]` | 异步任务台账（JobStore） |
 | 开发 | `pytest`、`pytest-asyncio`、`pytest-cov`、`ruff`、`mypy`、`respx`（HTTP mock） | 测试与 CI |
+
+> 编排框架已移除：`langgraph` / `langchain` 及其 checkpoint 包不再是依赖（2026-10-06，见 §5）。
 
 ### 3.5 数据库设计：两档模式
 
-**为什么需要数据库**：① LangGraph Checkpointer 持久化图状态（断点续跑的根基）；② 异步生成任务台账（I2V/S2V 任务的 job_id、状态、产物路径）；③ 成本流水与评审记录。
+**为什么需要数据库**：① 异步生成任务台账（I2V/S2V 任务的 job_id、状态、产物路径）——"任务 SUCCEEDED 且产物在盘"双条件跳过就靠它，避免重复付费；② 成本流水与评审记录（同时以 JSON 落 run 目录，便于人读）。
 
 **模式 A：`edu-sqlite`（教学默认，零配置）**
-- SQLite 文件 `output/fastvideo3.db`，随项目目录走，无需任何安装。
-- LangGraph 使用 `SqliteSaver`；任务台账用 SQLAlchemy 同一文件。
+- SQLite 文件随项目目录走，无需任何安装；任务台账用 SQLAlchemy。
 
 **模式 B：`prod-postgres`（进阶/多人并发，Docker 一键）**
 
@@ -194,7 +195,7 @@ volumes:
 ```
 
 - 一键命令：`docker compose up -d`（拉镜像 + 起服务 + 健康检查）；`docker compose down` 停止；数据卷持久化。
-- 应用侧通过配置切换：`config.profile: edu-sqlite | prod-postgres`，Checkpointer 工厂据此选择 `SqliteSaver` 或 `PostgresSaver`，**业务代码零感知**。
+- 应用侧通过配置切换：`config.profile: edu-sqlite | prod-postgres`，JobStore 的 `db_url` 据此选择 SQLite 或 PostgreSQL，**业务代码零感知**。
 - 无 Docker 的学生永远不需要碰这一节——这是教学设计，不是妥协。
 
 ### 3.6 环境自检 `fastvideo3 doctor`
@@ -283,12 +284,11 @@ class Script(BaseModel):
 
 
 class ProjectConfig(BaseModel):
-    """一次生成任务的全部运行配置（写入 run_meta.json，续跑时原样恢复）"""
+    """一次生成任务的全部运行配置（写入 run_meta.json，每一步都按它原样恢复）"""
 
     run_id: str
     base_info: BaseInfo
     profile: Literal["edu-sqlite", "prod-postgres"] = "edu-sqlite"
-    review_mode: Literal["gated", "auto"] = "gated"
     talk_mode: Literal["s2v_direct", "v2v_overlay", "audio_overlay"] = "s2v_direct"
     budget_limit_cny: float = 150.0
     max_parallel_jobs: int = 4
@@ -349,81 +349,91 @@ output/<run_id>/
 
 ---
 
-## 5. 多智能体设计（LangGraph）
+## 5. 执行编排设计（顺序阶段 + 人工闸门）
 
-### 5.1 Agent 角色清单
+> **2026-10-06 变更**：删除 LangGraph 端到端路径（`graph/builder.py`/`nodes.py`/`state.py`、
+> `interrupt()` 审片门、`SqliteSaver` 检查点、`/continue`、`/resume`、CLI `run`/`resume`）。
+> 理由：逐步路径已经具备图路径的全部产出能力（成片终审、一致性度量与 ≤2 轮自动重做、
+> best-of-N 选优、风格闸门、降级台账），图只多出"两处人工中断门 + shots‖audio 图级并行 +
+> 检查点续跑"；而人工中断门在分步模式下由"每步等人点一次"天然覆盖，续跑由盘上产物 +
+> 血缘台账覆盖。**同一逻辑存在两份实现，是本项目历史上所有静默质量退化的共同根源**，
+> 因此收敛为一条路径、一份装配。
 
-| Agent | 职责 | 主要能力依赖 | 关键提示词要点 |
+### 5.1 阶段（原 Agent 角色）清单
+
+| 阶段 | 执行器 | 职责 | 主要能力依赖 |
 |---|---|---|---|
-| **director（导演/Supervisor）** | 总调度：解析输入、推进阶段、分配重试预算、熔断决策 | LLM | 只调度不生产；输出结构化调度指令 |
-| **screenwriter（编剧）** | 主题→结构化剧本；按评审意见迭代修订 | LLM（JSON 输出） | 三幕结构；每场景含对话/动作/转场；台词口语化 |
-| **art_director（美术）** | 角色立绘、场景概念图的提示词工程与生成 | T2I | 外貌描述固化（同一角色逐字复用）；风格锚定 |
-| **storyboarder（分镜师）** | 每镜头首帧生成（含参考图注入） | T2I + 资产图 | 构图/景别与 camera 字段一致 |
-| **shot_worker（镜头生成，×N 并行）** | **动作/风景镜头**的 I2V 提交与轮询（对话镜头仅在 v2v_overlay/audio_overlay 模式进入） | I2V | 提示词 = action + camera + 风格后缀 |
-| **sound_engineer（配音）** | 对白 TTS、音色管理、时长对齐 | TTS | 情感标签注入 |
-| **talk_worker（口型，×N 并行）** | 对话镜头：默认模式 S2V 直出（首帧+音频 → 说话视频，不依赖 I2V）；双人对话每角色各生成一条说话视频后合成同屏 | Talk + YOLO/rembg | — |
-| **editor（剪辑）** | 转场策略执行、字幕、BGM、混音、成片 | FFmpeg | 转场类型来自剧本 `transition_out` |
-| **critic（评审）** | 剧本评审、分镜一致性抽查、镜头抽查、成片终审 | LLM + VLM | 统一 Rubric 量表；输出结构化评审结论 |
+| **剧本** | `stage_script` (m1) | 主题→结构化剧本（**一次生成**）；按**人工**意见改写这份剧本（解析模式） | TEXT（JSON 输出） |
+| **资产** | `stage_assets` (m2) | 角色立绘、场景概念图的提示词工程与生成（一致性锚点） | T2I + VLM（抽卡选优） |
+| **分镜** | `stage_storyboard` (m3) | 每镜头首帧生成（参考图注入按**有效在场**：`characters` + 台词说话人 + 画面点名，漏标补进槽位并落 `cast_implied`）+ VLM 一致性抽查 | T2I + TEXT（提示词蒸馏）+ VLM |
+| **镜头** | `stage_shots` (m4) | 动作/风景镜头的 I2V（或 r2v 参考生视频）提交与轮询、best-of-N 选优 | I2V / R2V + VLM |
+| **配音** | `stage_audio` (m5) | 对白 TTS、音色管理、时长对齐 | TTS |
+| **口型** | `stage_talk` (m6) | 对话镜头 S2V 直出（首帧+音频→说话视频）；失败降级叠音并留痕 | TALK + VLM（口型度量） |
+| **剪辑** | `stage_edit` (m7) | 规格统一、xfade 转场、字幕、BGM、混音、成片 | FFmpeg |
+| **度量** | `stage_metrics` (m9) | 人物一致性度量 + 闸门（不达标自动重做 ≤2 轮） | VLM |
+| **终审** | `stage_review` (m8) | 成片终审：抽代表帧送 VLM，失败放行但留痕（分数不可伪造） | VLM |
 
-### 5.2 状态定义
+> 剧本评审不在表内：它已**移交人工**（改剧本稿 / 按 prompt 重写 / 删除重生成）。
+
+### 5.2 状态定义：run 目录就是状态
+
+没有内存态/图状态需要持久化 —— 真相全在盘上，重启后重算即可：
 
 ```python
-class ProductionState(TypedDict):
-    project: ProjectConfig
-    phase: str  # 当前阶段
-    script: Script | None
-    assets: dict[str, Asset]  # asset_id -> Asset
-    storyboard: dict[str, str]  # shot_id -> 首帧路径
-    jobs: Annotated[dict[str, RunJob], merge_jobs]  # 异步任务台账
-    clips: dict[str, str]  # shot_id -> 片段路径
-    audio: dict[str, str]  # line_id -> wav 路径
-    talks: dict[str, str]  # shot_id -> 口型片段路径
-    reviews: list[ReviewResult]
-    final_video: str | None
-    cost: list[CostEntry]
-    retry_budget: dict[str, int]  # target -> 剩余重试次数
-    messages: Annotated[list, add_messages]  # Agent 间消息轨迹
+# core/progress.py：六步状态机的输出（前端只读展示，判定一律在后端）
+STEP_ORDER = ["script", "chars", "scenes", "frames", "videos", "compose"]
+
+@dataclass
+class StepState:
+    id: str                       # script | chars | scenes | frames | videos | compose
+    label: str                    # 生成剧本 | 生成角色图 | …
+    state: Literal["pending", "gap", "done", "active", "failed"]
+    missing: list[str]            # 缺口（该有却没有的产物 id）
+    stale: list[str]              # 待重做（血缘判据标记为过期的产物）
+    error: str | None
+
+@dataclass
+class ProgressReport:
+    steps: list[StepState]; next: StepState | None
+    running: bool; spent_cny: float; budget_cny: float
 ```
 
-### 5.3 图拓扑（含循环、并行、人工介入）
+盘上真相的三本台账：`script.json` 等产物文件、`lineage.json`（产物 ← 上游的血缘 + `stale` 标记）、
+`run_meta.json`（配置快照）；另有 `cost.json`（成本）、`events.jsonl`（事件流）、
+`degradations.json`（降级台账）、`run_summary.json`（判定与终审结论）。
+
+### 5.3 流程（线性六步，每步之间是人工闸门）
 
 ```mermaid
 graph TD
-    START --> intake[intake 解析输入/校验KEY/建run目录]
-    intake --> screenwriter[编剧 Agent]
-    screenwriter --> critic_script{critic 剧本评审}
-    critic_script -- "驳回且预算>0" --> screenwriter
-    critic_script -- 通过 --> gate_script["人工审片 interrupt()<br/>(可配置跳过)"]
-    gate_script --> art[美术 Agent 资产库]
-    art --> storyboard[分镜师 Agent]
-    storyboard --> critic_board{critic VLM 分镜抽查}
-    critic_board -- 驳回个别镜头 --> storyboard
-    critic_board -- 通过 --> fanout
-    fanout{{Send 并行分发}} --> sound[TTS 对白 xN]
-    fanout --> shots[I2V 动作/风景镜头 xN]
-    sound --> talk[S2V 对话镜头直出 xN<br/>含双人同屏合成]
-    shots --> collect[收集与规格统一]
-    talk --> collect
-    collect --> critic_shots{critic 镜头抽查}
-    critic_shots -- "动作/风景镜头重试" --> shots
-    critic_shots -- "对话镜头重试" --> talk
-    critic_shots -- 通过 --> editor[剪辑 Agent 转场/合成]
-    editor --> critic_final{critic 成片终审}
-    critic_final -- 驳回定位到环节 --> fanout
-    critic_final -- 通过 --> gate_final["人工看片 interrupt()<br/>(可配置跳过)"]
-    gate_final --> END
+    U[建任务 new / POST /api/runs] --> S1["① 剧本 m1<br/>一次生成 + 台词硬约束重试≤1"]
+    S1 --> G1{{"✋ 人工：改剧本稿 / 按 prompt 重写 / 删除重生成"}}
+    G1 --> S2["②③ 角色图 + 场景图 m2<br/>抽卡选优 · 一致性锚点"]
+    S2 --> G2{{"✋ 人工：换定妆照 / 上传 / 删图重生成"}}
+    G2 --> S4["④ 分镜首帧 m3<br/>参考图锁脸硬门控 + VLM 抽查"]
+    S4 --> G3{{"✋ 人工：付视频钱前换掉坏帧"}}
+    G3 --> S5["⑤ 镜头视频<br/>m4 片段 ‖ m5 配音 → m6 口型（模块内信号量并发）"]
+    S5 --> S6["⑥ 成片 m7 → m9 度量+闸门 → m8 终审"]
+    S6 --> Q{一致性闸门}
+    Q -- 不达标 --> R[删帧/片段/口型重出 ≤2 轮] --> S6
+    Q -- 达标 --> RV{终审合格?}
+    RV -- 不合格且 auto_reshoot --> R2[重拍 ≤2 个动作/空镜镜头<br/>重合成后再审一次] --> RV
+    RV --> OUT[final.mp4 + run_summary.json]
 ```
 
 ### 5.4 关键机制
 
 | 机制 | 实现 |
 |---|---|
-| 并行镜头生成 | `Send("shot_node", shot_ctx)` map-reduce 模式；并发上限由配置 `max_parallel_jobs` 约束（防限流），**且不得超过供应商账号的异步任务并发配额**（百炼新账号视频任务并发常仅 2–5，按供应商单独配置） |
-| 检查点续跑 | `SqliteSaver`（默认）/ `PostgresSaver`（进阶）；`run_id` 即 `thread_id`；`fastvideo3 resume <run_id>` 恢复 |
-| 人工介入 | `interrupt()` 于两处审片门；配置 `review_mode: auto \| gated`，教学全自动演示用 `auto` |
-| 评审循环 | 条件边读 `ReviewResult.passed` 与 `retry_budget`；预算耗尽 → 降级放行并记录（保证流程不卡死） |
-| 成本熔断 | 每笔 `CostEntry` 后检查 `budget_limit_cny`，超限进 `HALT` 态等待人工决策 |
-| 可观测 | 每节点进出写事件流（时间/耗时/花费/输入输出摘要）→ Streamlit 时间线与 `run_meta.json` |
+| 下一步该做什么 | `progress.compute_progress`：从盘上产物 + `is_stale` + 事件流算六步状态，取最靠前的 `gap`；纯函数、可单测 |
+| 并行 | 只在**模块内**：m4/m5/m6 用 `asyncio.Semaphore` 并发提交多个异步任务；并发上限 `max_parallel_jobs`，且不得超过供应商账号的异步任务配额（百炼新账号视频并发常仅 2–5）。图级扇出（shots‖audio）已随端到端路径删除；逐镜头 map-reduce 编排留作进阶练习 |
+| 中断恢复 | 不需要检查点：产物在盘、`JobStore` 记着每个异步任务的 SUCCEEDED 与产物路径，跳过条件是"任务成功 **且** 产物在盘"；再点一次「开始生成」只补缺口与 `stale`，已付费的不重跑 |
+| 人工介入 | **每一步之间**都是闸门（点一次走一步）；剧本另给三个动作：改剧本稿（本地确定性解析）/ 按 prompt 重写（`revise` 保留剧情、`rewrite` 推倒重写）/ 删除重生成。`interrupt()` 审片门与 `review_mode` 配置位已删除 |
+| 评审分工 | 剧本 = 人工（Web 面板）；分镜/镜头/成片 = 自动评审（VLM 抽查、best-of-N 选优、成片终审）+ m9 一致性闸门 |
+| 评审循环 | 一致性闸门 ≤2 轮自动重做（`gate_failures` 点名镜头）；终审不合格时 `auto_reshoot`（默认关）重拍一轮再审一次；预算耗尽 → 降级放行并落台账（流程不卡死） |
+| 成本熔断 | 每笔 `CostEntry` 后检查 `budget_limit_cny`，超限抛错终止本步（已产出的产物保留，续点不重复花钱） |
+| 可观测 | 每步进出写 `events.jsonl`（时间/花费/输入输出摘要/降级），看板与 CLI 同源读取 |
+| 单任务锁 | `core/tasklock.py`：全局一次只允许一个生成任务（文件锁 + 心跳 + TTL），所有 spawn 子进程的端点先持锁 |
 
 ---
 
@@ -491,19 +501,22 @@ talkA.mp4 ─┐                     ┌→ 画中画/左右布局合成(FFmpeg)
 talkB.mp4 ─┘  + rembg 抠图前景  ──┘
 ```
 
-### 6.3 编排层 `graph/`
+### 6.3 编排层 `core/`（进度 + 执行器）
 
 | 文件 | 职责 |
 |---|---|
-| `state.py` | ProductionState 定义与 reducer |
-| `nodes.py` | 每个图节点 = 对模块层的一次编排调用（含 Send 并行节点） |
-| `edges.py` | 条件边：评审路由、预算检查、熔断路由 |
-| `builder.py` | `build_graph(profile) -> CompiledGraph`，注入 Checkpointer 与配置 |
+| `core/progress.py` | 六步状态机：从盘上产物 + 血缘 `stale` 算 `StepState`/`ProgressReport`；血缘作废（字段级 diff / 全量 / 单产物）；口型覆盖率与成片判定 |
+| `core/stages.py` | 阶段执行器：`stage_script/assets/storyboard/shots/audio/talk/edit/metrics/review` 的**唯一装配入口**（vlm/text/fallback/r2v/assets 一个都不能少）+ `StageContext`/`build_context` + `clear_shot_products`/`collect_shot_products` |
+| `core/script_text.py` | 剧本稿 ⇄ `Script` 的可读文本层（本地确定性解析，带行号报错） |
+| `core/scriptio.py` | 剧本落盘的单一事务：备份 → 版本+1 → 转场补齐 → 血缘作废 → 刷新外貌卡 |
+| `core/tasklock.py` | 全局单任务锁（文件锁 + 心跳 + TTL），所有 spawn 子进程的入口先持锁 |
 
 ### 6.4 接入层 `app/`
 
-- `app/cli.py`（Typer）：`run / stage / resume / doctor / cost / ls-runs`
-- `app/streamlit_app.py`：新建任务（主题表单）→ 进度时间线 → Agent 事件流 → 产物画廊（图片网格/视频播放）→ 成本看板 → 审片交互（通过/驳回+意见）
+- `app/api.py`（FastAPI）：建任务 / `/steps` / `/step` / 剧本 CRUD（JSON、剧本稿、按 prompt 重写、删除）/ 上传替换与删除产物 / 定妆照挑选 / 看板与详情 / 任务锁状态；静态托管 `web/dist`
+- `app/cli.py`（Typer）：`new / step / script-regen / stage / consistency / compare-consistency / doctor / cost / ls-runs / serve`
+- `app/streamlit_app.py`（教学观测）：建任务 → 点一步 → 事件时间线 → 产物画廊 → 成本看板
+- `web/`（Vue 3 + Vite）：新建任务、StepBar 步骤条、制作看板（剧本三动作 / 角色图 / 场景图 / 分镜与镜头 / 成片）、事件流与成本
 
 ---
 
@@ -517,15 +530,21 @@ talkB.mp4 ─┘  + rembg 抠图前景  ──┘
 | VLM 评审 | **百炼** `qwen-vl-max` | `qwen-vl-plus`（低价档） | OpenAI 兼容，同步 |
 | T2I | **百炼** `wan2.6-t2i`（1024²，最大 1440²） | SiliconFlow `FLUX.1-dev`、百炼 `wan2.5-i2i`（参考图编辑） | 异步任务 |
 | I2V | **百炼** `wan2.2-i2v`（480P 教学默认/720P） | `wan2.7-i2v`（高质量）、SiliconFlow Wan2.2、可灵 I2V | 异步任务（`X-DashScope-Async`） |
-| 口型/Talk | **百炼** `wan2.2-s2v`（图+音频→说话视频，替代本地 MultiTalk）；更先进档 `videoretalk`（视频+音频→口型替换，v2v_overlay 模式） | 可灵 Lip Sync、HeyGen Avatar API、InfiniteTalk | 异步任务；输入需临时 OSS URL（`utils/dashscope_upload.py`） |
-| TTS | **edge-tts**（免费、无需 KEY，教学默认） | 百炼 `cosyvoice-v2`、MiniMax | 同步 |
+| 口型/Talk | **百炼 `wan2.2-s2v` 数字人**（单张图片 + 音频 → 说话/唱歌/表演视频；480P ¥0.5/秒、720P ¥0.9/秒；新账号 100 秒免费额度；并发 1） | `fal-ai/infinitalk`（MeiGen InfiniteTalk，需 FAL_KEY，同输入形态）、百炼 `videoretalk`（视频+音频重对口型，需 `talk_mode=v2v_overlay`） | 异步任务；输入须公网 URL（百炼临时 OSS `utils/dashscope_upload.py`，fal `providers/fal.py`） |
+| TTS | **百炼 `cosyvoice-v2`**（三档统一口径，¥2/万字符；音色按性别分桶分配） | 免费 `edge-tts`（未开通/418 时接管，并落降级台账） | 同步；**音色名必须与模型版本配套**（v2 要 `_v2` 后缀） |
 | BGM | 本地免版权曲库 `assets/bgm/`（零成本） | 扩展期接音乐生成 API | 本地 |
 
-> 说明：① **edge-tts 免费但依赖微软在线服务**，存在限流与可用性波动，正式课堂演示建议切 `cosyvoice`；② wan2.2-s2v 为**单图+音频**生成说话视频，故默认模式下对话镜头无需等待 I2V——关键路径更短、且省下对话镜头的 I2V 费用。
+> 说明：① **配音三档统一用 cosyvoice-v2**（edge-tts 只作兜底：它依赖微软在线服务、只有 5 个可用中文音色、没有中文情绪指令）；降级会在 `degradations.json` 与看板留痕，不再静默；② **`talk_mode` 与 talk 路由必须成对**：默认 `s2v_direct` 配只吃"图片+音频"的 `wan2.2-s2v`（对白镜头不再过 I2V，省下那份费用）；`v2v_overlay` 只在路由换成 `videoretalk`/`fal_infinitalk`（能吃视频）时才成立。通道收到不支持的输入会**响亮失败**（`CapabilityMismatchError`）而不是静默丢掉已花钱的运动片段。
 
-> **最小 KEY 集**：`DEEPSEEK_API_KEY` + `DASHSCOPE_API_KEY` 两把即可跑通全功能。
-> **极简模式**：LLM 也切到百炼 `qwen`，则**仅需一把** `DASHSCOPE_API_KEY`。
-> **MultiTalk 说明**：MeiGen MultiTalk 无公开云 API，FastVideo3 将其职责（多人说话视频）由 `TalkProvider` 承接，默认走百炼 wan2.2-s2v；本地 MultiTalk 部署列为扩展期课题（需 GPU）。
+> **KEY 集**：**一把 `DASHSCOPE_API_KEY`** 就够跑通全部生成能力（含对口型 wan2.2-s2v）。
+> `FAL_KEY` 是**可选**的口型兜底通道（fal.ai InfiniteTalk）：主通道挂掉时换它再试一次。
+> 两者都不可用时对白镜头降级为 `audio_overlay` 语义（无口型叠音），并落 `degradations.json`
+> —— 口型覆盖缺口由 `progress.lipsync_coverage()` 判定，high/cinema 直接判不合格、看板红标。
+> **极简模式**：LLM 也切到百炼 `qwen`，则文本/图像/视频/语音/评审**仅需一把** `DASHSCOPE_API_KEY`。
+> **MultiTalk/多人镜头说明**：MeiGen MultiTalk 的后续模型 InfiniteTalk 已可通过 fal API 调用（单人）；
+> 多人各自口型需要 `multi/` 权重 + 每人一条音轨 + 人脸 bbox 绑定，fal 的 `multi-text` 端点
+> 尚未 GA（endpointBilling 仍为 0、enterprise_status=pending）→ 双人镜头仍按策略**显式豁免**
+> （`two_person_talk=overlay` + `lipsync_waived.json`），宁可无口型也不给错口型。
 
 ### 7.2 异步任务统一契约
 
@@ -546,7 +565,7 @@ poll(job_id)   ──→ {status: pending|running|succeeded|failed, progress, ou
 | T2I（立绘+场景+分镜） | ~50 张 | ≈ ¥5–15 |
 | I2V 480P（动作/风景；降级模式含对话镜头） | ~20 段 | ≈ ¥12–25 |
 | S2V（对话镜头，默认模式，按时长计费） | ~16 段 × 5s | ≈ ¥30–80，**主要变量** |
-| TTS | 全片 | ¥0（edge-tts） |
+| TTS | 全片 | ≈¥0.02-0.05（cosyvoice-v2，¥2/万字符） |
 | **合计** | | **默认模式（S2V）≤ ¥150/片；audio_overlay 降级模式 ≤ ¥50/片** |
 
 > S2V 单价显著高于 I2V 且定价变动快。**P1 完成 Provider 实现前，必须先实测校准 `pricing.yaml` 并做成本模拟**，预算熔断阈值据此设定；这也是教学点之一（"先算账，再开工"）。
@@ -588,16 +607,16 @@ D:\FastVideo3\
 ├── scripts/                       # setup.sh / setup.ps1 一键环境
 ├── configs/
 │   ├── default.yaml               # provider 路由 + 并发/预算/评审门控
-│   └── ablations/                 # 教学消融配置(无资产锚定/换供应商...)
+│   ├── ablations/                 # 教学消融四臂: consistency_off / ref_only / ref_plus_r2v / full_cinema
+│   │                              #   （--ablation 在质量档之后叠加；scripts/run_ablation.py 逐臂跑并出对比表）
 ├── prompts/                       # 提示词模板(版本化: scriptwriter.v1.md ...)
 ├── pricing.yaml                   # 各模型单价(成本台账依据)
 ├── fastvideo3/
-│   ├── core/                      # config/schema/storage/cost/jobs
-│   ├── providers/                 # base/deepseek/dashscope/siliconflow/kling/edge_tts/fake/factory
-│   ├── modules/                   # m1_scripting ... m8_review
-│   ├── graph/                     # state/nodes/edges/builder
-│   ├── app/                       # cli.py / streamlit_app.py
-│   └── utils/                     # ffmpeg/yolo/matting/audio/fetch_models
+│   ├── core/                      # config/schema/storage/cost/jobs + progress/stages/script_text/scriptio/tasklock
+│   ├── providers/                 # base/deepseek/dashscope/siliconflow/kling/edge_tts/fal/fake/factory
+│   ├── modules/                   # m1_scripting ... m8_review + m9_metrics(一致性度量)
+│   ├── app/                       # api.py / cli.py / streamlit_app.py
+│   └── utils/                     # ffmpeg/yolo/matting/audio/fetch_models/quality(Tier-B 度量)/dashscope_upload
 ├── tests/                         # 镜像结构; providers/fakes.py 全局复用
 ├── assets/bgm/                    # 免版权音乐
 ├── models/                        # yolov8n-seg.pt(setup 下载)
@@ -620,8 +639,7 @@ SILICONFLOW_API_KEY=
 KLING_ACCESS_KEY=
 KLING_SECRET_KEY=
 # ── 运行配置 ──
-FV3_PROFILE=edu-sqlite          # edu-sqlite | prod-postgres
-FV3_REVIEW_MODE=gated           # gated(人工审片) | auto(全自动)
+FV3_PROFILE=edu-sqlite          # edu-sqlite | prod-postgres（JobStore 任务台账）
 FV3_BUDGET_LIMIT_CNY=50
 # ── 进阶数据库(prod-postgres 时生效) ──
 FV3_PG_HOST=localhost
@@ -638,13 +656,13 @@ providers:
   text:  {default: deepseek, fallback: dashscope_qwen}
   t2i:   {default: dashscope_wan26, fallback: siliconflow_flux}
   i2v:   {default: dashscope_wan22_i2v, fallback: siliconflow_wan22}
-  talk:  {default: dashscope_wan22_s2v, fallback: kling_lipsync}
-  tts:   {default: edge_tts, fallback: dashscope_cosyvoice}
+  talk:  {default: dashscope_wan22_s2v, fallback: fal_infinitalk}
+  tts:   {default: dashscope_cosyvoice, fallback: edge_tts}
   vlm:   {default: dashscope_qwen_vl_max}
 generation:
   aspect_ratio: "9:16"          # 竖屏短剧默认
   shot_duration_sec: 5
-  talk_mode: s2v_direct         # s2v_direct | v2v_overlay | audio_overlay
+  talk_mode: s2v_direct         # 与 talk 路由成对（s2v 不吃视频输入）
 limits:
   max_parallel_jobs: 4          # 全局上限; 与供应商配额取小
   per_provider_concurrency: {dashscope: 3, kling: 2}   # 按账号实际配额调整
@@ -675,10 +693,15 @@ eq+unsharp 调色、程序化 BGM（`scripts/make_bgm.py` → `assets/bgm/`）�
 |---|---|
 | API 瞬时失败/限流 | tenacity 3 次指数退避；429 专门长退避；连续失败切 `fallback_provider` |
 | 异步任务卡死 | 轮询超时 30min 判失败 → 重试（预算内） |
-| 进程中断/断网 | Checkpointer 恢复图状态；`core.jobs` 台账识别"未完成 job"，续跑时**先查旧 job 状态再决定重提交**（不重复花钱） |
+| 进程中断/断网 | 不需要恢复内存态：产物与血缘在盘上，`core.jobs` 台账识别"未完成 job"，再点一次「开始生成」时**先查旧 job 状态再决定重提交**（不重复花钱） |
 | 镜头级失败 | 隔离重试 ≤2；仍失败 → 人工处理队列（不阻塞其他镜头） |
 | 成本失控 | `pricing.yaml` 实时记账；`FV3_BUDGET_LIMIT_CNY` 熔断；成本看板预警 80% |
-| 口型高成本 | `talk_mode` 三档配置：默认 `s2v_direct` 且由编剧控制对话镜头占比；一键降级 `audio_overlay` 全片（对话镜头回退 I2V+音频直叠）；成本看板 80% 预警 |
+| 口型成本 | 主通道按输出秒计价（480P ¥0.5、720P ¥0.9）。四道闸：① 装配期单价红线 `max_video_cost_per_sec`（¥5/秒，按**最坏档**校验）；② 花钱前预估 `estimate_run_cost_cny()` + `GET /api/cost-estimate`（cli 预飞、新建表单、看板三处共用）；③ `pricing.yaml` 分档计价 + 熔断逐镜头检查；④ 显式降级档 `talk_mode=audio_overlay`。**熔断低于预估时对白镜头会静默降级成无口型叠音**，因此 coverage 判定会把它标成缺口并让 high/cinema 判不合格 |
+| 驱动音频超通道上限 | 官方硬限制（wan2.2-s2v 音频必须 <20s，超限**任务报错**）：`m6.plan_talk_groups` 按**句子边界**把对白切成 <上限 的多段（句中切开会让嘴型在拼接点跳变），逐段生成后 `concat_demux(-c copy)` 拼回一个镜头片段；分段上限取**主通道与兜底通道里更严的那个**，段号同时进 `job_id` 与台账 `note`（否则续跑时后一段会被前一段的 job 行判成"已完成"） |
+| 账号未开通/欠费 | `doctor --probe` 用**不可达媒体 URL** 触发提交期 400（`providers/dashscope.probe_model_activation`）：不建任务、不计费、不消耗免费额度，却能把"Model not exist/未开通"与"参数不对"分开 —— 8/30 与 9/25 两次都是跑到烧钱阶段才发现欠费，此检查把它提前到花钱之前 |
+| 配音静默降级 | 主 TTS 连续失败 → 兜底供应商接管，但**必须**落 `degradations.json` + 事件 `tts_fallback_used`（此前只藏在台账 note 的 `(fallback)` 后缀里，看板显示"配音正常"）；418/未开通这类永久错误**不空转重试**，立刻止损 |
+| 口型片段音轨降质 | 口型模型回传的音轨是 16k 驱动音频的上变换产物（且时长比音频短）→ m6 落 `shot_{id}_driver.wav`（真实驱动音频，分段时为零间隔拼接），m7 用它替换片段音轨，音频更长时克隆末帧补足而不是截句尾 |
+| 字幕重叠/字体不一致 | 字幕时间轴按**镜头窗口**排布并强制不重叠（后一条被推迟而不是叠上去）；字幕样式与标题卡字体取同一份候选表（`utils/image.cjk_font()`）；字幕文本逐字来自剧本，**禁止模型在画面里画字**（负向提示词 + 运动/口型提示词显式禁止） |
 | 内容审核拒绝 | 改写措辞重试（m1 剧本）/ 调整提示词重试（m2–m4），各 ≤2 次，仍失败转人工；错误码识别供应商审核类响应，不计入普通失败重试 |
 
 ---
@@ -709,7 +732,7 @@ eq+unsharp 调色、程序化 BGM（`scripts/make_bgm.py` → `assets/bgm/`）�
 lint      → ruff check + ruff format --check
 type      → mypy fastvideo3
 unit      → pytest -m "not api" --cov ≥ 80%
-smoke     → Fake 全图冒烟(生成占位素材走完整流水线, 验证图拓扑与 FFmpeg)
+smoke     → Fake 全链路冒烟(占位素材走完六步, 验证进度状态机与 FFmpeg)
 nightly   → pytest -m api (真实 KEY, secrets 注入, 最小用例, 成本 < ¥5)
 ```
 
@@ -724,18 +747,18 @@ nightly   → pytest -m api (真实 KEY, secrets 注入, 最小用例, 成本 < 
 | P0 脚手架 | pyproject/environment.yaml/requirements/docker-compose/config/.env.example/目录骨架 + `doctor` | `fastvideo3 doctor` 全绿 |
 | P1 基础与 Provider | core 全部 + providers（含 Fake）+ pricing | Provider 契约测试全绿；**实测校准 `pricing.yaml`（各模型当前单价 + 单片成本模拟）** |
 | P2 业务模块 | m1 → m2 → m3 → m4 → m5 → m6 → m7 → m8 逐个 | 每个模块独立 DoD 达标 |
-| P3 编排 | graph/（state/nodes/edges/builder）+ 检查点 + 审片门 | Fake 全图冒烟通过 |
-| P4 接入 | CLI 全命令 + Streamlit 面板 | 两入口均可驱动全流程 |
+| P3 编排 | `core/progress.py` 六步状态机 + `core/stages.py` 阶段执行器 + 血缘作废 + 单任务锁 | Fake 全链路点六次跑通；中断后再点只补缺口 |
+| P4 接入 | CLI 全命令 + FastAPI/Vue 面板（+ Streamlit 观测） | 两个入口均可驱动全流程 |
 | P5 联调 | 见 13.2 | 验收清单全过 |
 
 ### 13.2 系统联调用例（IT-1 ~ IT-5）
 
 | 用例 | 内容 | 通过标准 |
 |---|---|---|
-| IT-1 | **Fake 全链路**：无 KEY 主题→成片 | 占位素材成片产出，图事件流完整，耗时 < 3min |
+| IT-1 | **Fake 全链路**：无 KEY 主题→成片（`new` + 六次 `step`，或 `scripts/smoke_web_api.py`） | 占位素材成片产出，事件流完整，耗时 < 3min |
 | IT-2 | **真实 API 冒烟**：主题"校园喜剧"→30 秒微短剧（6 镜头） | 成片可播放；成本 < ¥15；含 ≥1 对话镜头口型 |
 | IT-3 | **全量短剧**：3 分钟/36 镜头，含双人同屏场景 | 成片时长偏差 ≤15%；转场 ≥3 种；双人同屏正常；成本 ≤ ¥150（默认口型模式）；另跑一遍 `audio_overlay` 模式 ≤ ¥50 |
-| IT-4 | **断点续跑演练**：I2V 等待期间杀进程 → `resume` | 无重复提交已成功任务；成本无重复计账 |
+| IT-4 | **中断恢复演练**：I2V 等待期间杀进程 → 再点一次「开始生成」 | 无重复提交已成功任务；成本无重复计账（`cost.json` 无重复条目） |
 | IT-5 | **教学验收**：按新生文档搭环境 + 跑 IT-1 | 30 分钟内完成；完成一次供应商切换对比 |
 
 ### 13.3 联调验收总清单
@@ -758,34 +781,35 @@ nightly   → pytest -m api (真实 KEY, secrets 注入, 最小用例, 成本 < 
 | 百炼 | 图生视频 wan2.2/2.x-i2v | [万相图生视频-首帧API参考（2.1-2.6）](https://help.aliyun.com/zh/model-studio/legacy-image-to-video-api-reference/) |
 | 百炼 | 图生视频 wan2.7-i2v | [万相2.7-图生视频API参考](https://help.aliyun.com/zh/model-studio/image-to-video-general-api-reference) |
 | 百炼 | 数字人/口型 wan2.2-s2v | [数字人wan2.2-s2v视频生成API参考](https://help.aliyun.com/zh/model-studio/wan-s2v-api) |
-| 百炼 | 口型替换 videoretalk | [VideoRetalk API参考](https://help.aliyun.com/zh/model-studio/videoretalk-api) |
+| 百炼 | 口型替换 videoretalk（现兜底通道） | [VideoRetalk API参考](https://help.aliyun.com/zh/model-studio/videoretalk-api) |
+| fal.ai | 口型**兜底**通道 InfiniteTalk | [fal-ai/infinitalk（图像+音频）](https://fal.ai/models/fal-ai/infinitalk) · [/video-to-video（视频+音频重对口型）](https://fal.ai/models/fal-ai/infinitalk/video-to-video) · 规格实测取 `api/openapi/queue/openapi.json?endpoint_id=…` |
+| MeiGen | InfiniteTalk 论文/权重/本地推理 | [GitHub MeiGen-AI/InfiniteTalk](https://github.com/MeiGen-AI/InfiniteTalk)（480p/720p、sample_fps=16、VAE 时间步长 4 → 帧数 4n+1） |
 | 百炼 | 临时文件上传（oss:// URL） | [上传本地文件获取临时URL](https://help.aliyun.com/zh/model-studio/get-temporary-file-url) |
 | 百炼 | 视觉理解 qwen-vl | [DashScope API 参考](https://help.aliyun.com/zh/model-studio/qwen-api-via-dashscope) |
 | 百炼 | 模型总览 | [选择模型](https://help.aliyun.com/zh/model-studio/models) |
 | 可灵 | 口型/视频 API | [Kling AI API](https://kling.ai/dev) |
 | HeyGen | Avatar IV API | [HeyGen Developers](https://developers.heygen.com/) |
-| LangGraph | 编排框架 | [LangGraph](https://www.langchain.com/langgraph) |
 
 ### 14.2 教学映射（模块 ↔ 课程章节）
 
 | 课程章节 | 对应模块 | 核心知识点 |
 |---|---|---|
-| 第 1 讲 结构化输出 | m1 + core.schema | LLM JSON 约束、Pydantic 校验、剧本迭代 |
-| 第 2 讲 角色一致性 | m2 + m3 | 资产锚定、参考图注入、消融实验设计 |
+| 第 1 讲 结构化输出 | m1 + core.schema | LLM JSON 约束、Pydantic 校验、剧本 ⇄ 可读文本的双向映射（`core/script_text.py`） |
+| 第 2 讲 角色一致性 | m2 + m3 + m9 | 资产锚定（种子/风格闸门）、参考图条件注入（首帧多图 + r2v）、蒸馏必留词校验、量化度量与消融实验（`scripts/run_ablation.py`） |
 | 第 3 讲 视频扩散应用 | m4 | I2V 异步任务、提示词工程、并发与限流 |
 | 第 4 讲 语音与口型 | m5 + m6 | TTS 选型、S2V 原理、本地视觉处理管线 |
 | 第 5 讲 剪辑合成 | m7 | FFmpeg 滤镜图、转场设计、混音 |
-| 第 6 讲 多智能体编排 | graph/ | LangGraph 状态图、Supervisor/Critic、检查点、HITL |
+| 第 6 讲 流水线编排 | core/progress.py + core/stages.py | 进度状态机与幂等续跑、血缘驱动的产物作废、单一装配入口、人工闸门与自动评审的分工、成本熔断与降级台账 |
 | 第 7 讲（进阶）互操作 | providers 封装 | A2A Agent Card 封装、MCP 工具接入 |
 
 ### 14.3 与 FastVideo2 的继承关系
 
 | FastVideo2 | FastVideo3 |
 |---|---|
-| main.py 单体 | core/modules/graph/app 分层 |
+| main.py 单体 | core/modules/providers/app 分层 |
 | 本地 FLUX + Wan + MultiTalk | 全 API（百炼/DeepSeek），MultiTalk → wan2.2-s2v |
 | 插入空镜+硬拼接 | 转场引擎（xfade 四种）+ 剧本驱动 |
-| 无一致性机制 | 资产库 + 参考图 + VLM 评审 |
-| 无断点、无成本控制 | Checkpointer + 成本台账 + 熔断 |
-| edge-tts | 保留为默认免费 TTS ✅ |
+| 无一致性机制 | 资产库（种子+写实闸门）+ 参考图条件（首帧多图/r2v）+ 量化度量（m9）+ 响亮降级台账 |
+| 无断点、无成本控制 | 盘上产物 + 血缘台账幂等续跑 + 成本台账 + 熔断 |
+| edge-tts | 降为 TTS **兜底**（主通道 cosyvoice-v2 未开通/418 时接管，降级留痕） ✅ |
 | YOLOv8-seg + rembg 双人同屏 | **原样保留（本地 CPU）** ✅ |

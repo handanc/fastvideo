@@ -11,6 +11,7 @@ from fastvideo3.providers.base import (
     I2VProvider,
     ImageResult,
     ProviderError,
+    RefImage,
     T2IProvider,
     VideoJobStatus,
     api_retry,
@@ -23,6 +24,10 @@ API_BASE = "https://api.siliconflow.cn/v1"
 
 class SiliconFlowT2IProvider(T2IProvider):
     name = "siliconflow_flux"
+    # FLUX.1-dev 的 /images/generations 端点既无参考图槽位也无 seed 参数：
+    # 此前签名收着两者却全部丢弃，作为 fallback 时会静默毁掉锁脸条件。
+    supports_reference_image = False
+    supports_seed = False
 
     def __init__(self, api_key: str, model: str = "black-forest-labs/FLUX.1-dev"):
         if not api_key:
@@ -37,10 +42,12 @@ class SiliconFlowT2IProvider(T2IProvider):
         *,
         size: str = "1024*1024",
         dest: Path,
-        ref_image: Path | None = None,
+        ref_image: RefImage = None,
         negative_prompt: str = "",
         seed: int | None = None,
     ) -> ImageResult:
+        self._require_reference(ref_image)
+        self._require_seed(seed)
         body = {"model": self.model, "prompt": prompt, "image_size": size.replace("*", "x")}
         async with httpx.AsyncClient(timeout=180) as client:
             resp = await client.post(

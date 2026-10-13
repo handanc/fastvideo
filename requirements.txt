@@ -3,10 +3,6 @@
 #   ⚠ 先装 CPU 版 torch（供可选的本地视觉组件），避免默认拉 CUDA 大包：
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-# ── 编排 ──
-langgraph>=1.0
-langgraph-checkpoint-sqlite>=2.0
-
 # ── 数据与配置 ──
 pydantic>=2.7
 pydantic-settings>=2.3
@@ -38,5 +34,5 @@ rich>=13.7
 # ── 数据库 ──
 sqlalchemy>=2.0
 aiosqlite>=0.20
-# 进阶 PostgreSQL 模式（docker compose up -d）另装:
-#   pip install "fastvideo3[postgres]"  或  psycopg[binary] langgraph-checkpoint-postgres
+# 进阶 PostgreSQL 模式（docker compose up -d，JobStore 任务台账走 PG）另装:
+#   pip install "fastvideo3[postgres]"  或  psycopg[binary]

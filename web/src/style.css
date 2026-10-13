@@ -150,6 +150,29 @@ video.final { width: 100%; max-width: 420px; border-radius: var(--radius); backg
 .vgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
 .vgrid video { width: 100%; border-radius: 8px; background: #000; }
 
+/* ── 卡片标题行（标题 + 右侧动作按钮，如"删除成片"）── */
+.cardHead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.cardHead h2 { margin: 0; }
+
+/* ── 详情页的模型选择（中途改模型）── */
+.modelBar { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 10px 0 4px; }
+.modelBar .field { min-width: 210px; flex: 1 1 210px; }
+.modelBar .field span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+
+/* ── 新建任务：时长（滑杆 + 手输）与分辨率说明 ── */
+/* 表单字段下方的行内错误（如时长越界）：不用 .alert 那种大块，免得把表单撑散 */
+.fieldErr { display: block; margin-top: 4px; font-size: 12px; color: var(--err); }
+.resNote { margin: 6px 0 2px; font-size: 12px; }
+
+/* ── 模型选择（新建任务里的"高级"折叠区）── */
+.models { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--line, #333); border-radius: 8px; }
+.models summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.modelsIntro { margin: 8px 0 10px; font-size: 12px; }
+.modelRow { margin-bottom: 12px; }
+.modelRow select { width: 100%; }
+.modelNote { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.modelNote.warnText { color: var(--warn); }
+
 /* ── 提示条 ── */
 .alert { padding: 10px 14px; border-radius: 8px; margin: 10px 0; font-size: 13px; }
 .alert.err { color: var(--err); background: color-mix(in srgb, var(--err) 10%, transparent); }
@@ -159,3 +182,161 @@ video.final { width: 100%; max-width: 420px; border-radius: var(--radius); backg
 .mono { font-family: Consolas, "Courier New", monospace; }
 .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 .toolbar .spacer { flex: 1; }
+
+/* ── 弹窗（剧本「按 prompt 重新生成」等需要人输入的场合） ── */
+.modal-mask {
+  position: fixed; inset: 0; z-index: 50; padding: 16px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.modal {
+  width: min(480px, 100%);
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 18px 20px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+}
+.modal h3 { margin: 0 0 10px; font-size: 15px; color: var(--warn); }
+.modal p { margin: 0 0 10px; font-size: 13px; }
+.modal-actions { display: flex; gap: 10px; margin-top: 16px; }
+
+/* ── 制作看板：分区页签 ── */
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 14px; }
+.tabs button {
+  border: 1px solid var(--line); background: var(--card); color: var(--muted);
+  padding: 7px 12px; border-radius: 999px; cursor: pointer; font-size: 13px;
+}
+.tabs button:hover { color: var(--text); background: var(--accent-soft); }
+.tabs button.active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.tabs .cnt {
+  margin-left: 6px; font-size: 11px; background: var(--accent-soft);
+  color: var(--accent); border-radius: 999px; padding: 1px 6px; font-variant-numeric: tabular-nums;
+}
+.subtabs { margin-top: 4px; }
+.small { font-size: 12px; }
+
+/* ── 剧本区 ── */
+.scene-block { margin: 22px 0 0; }
+.scene-block h3 { margin: 0 0 6px; font-size: 15px; color: var(--text); }
+.summary { color: var(--muted); margin: 0 0 8px; font-size: 13px; }
+.shot-table td { vertical-align: top; }
+.shot-table .action { font-size: 13px; }
+.line { font-size: 13px; margin: 3px 0; }
+.raw { margin-top: 18px; }
+.raw summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.raw pre {
+  max-height: 320px; overflow: auto; background: var(--accent-soft);
+  padding: 10px 12px; border-radius: 8px; font-size: 12px;
+}
+
+/* ── 角色卡 ── */
+.char-card {
+  display: grid; grid-template-columns: 200px 1fr; gap: 16px;
+  padding: 14px 0; border-top: 1px solid var(--line);
+}
+.char-card:first-of-type { border-top: 0; }
+.char-main img { width: 100%; border-radius: 8px; background: #000; }
+.char-body h3 { margin: 0 0 6px; font-size: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.appearance { margin: 0 0 8px; }
+.tokens { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+.chip {
+  display: inline-block; background: var(--accent-soft); color: var(--accent);
+  border-radius: 6px; padding: 1px 7px; margin: 2px 4px 2px 0; font-size: 12px;
+}
+.chip.warn { background: var(--bg); color: var(--muted); border: 1px dashed var(--line); }
+.roster {
+  display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center;
+  margin: 12px 0; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--bg); font-size: 13px;
+}
+.roster p { flex-basis: 100%; margin: 6px 0 0; }
+.cands { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.cand { width: 96px; }
+.cand img { width: 100%; border-radius: 6px; }
+.cand .btn { width: 100%; margin-top: 4px; font-size: 12px; padding: 4px 6px; }
+.missing {
+  display: flex; align-items: center; justify-content: center; min-height: 120px;
+  border: 1px dashed var(--line); border-radius: 8px; color: var(--err); font-size: 12px;
+}
+
+/* ── 场景与镜头 ── */
+.scene-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.scene-grid figure { margin: 0; }
+.scene-grid img { width: 100%; border-radius: 8px; }
+.scene-grid figcaption { font-size: 12px; margin-top: 4px; line-height: 1.5; }
+.shot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+.shot-card { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--bg); }
+.shot-media img, .shot-media video { width: 100%; display: block; background: #000; }
+.shot-media .no-video { padding: 10px; font-size: 12px; text-align: center; }
+.shot-info { padding: 10px 12px; }
+.shot-info .head { margin: 0 0 6px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.shot-info .action { margin: 0 0 6px; font-size: 13px; }
+.metrics { margin: 6px 0 0; display: flex; gap: 4px; flex-wrap: wrap; }
+.metrics .badge { font-size: 11px; padding: 1px 6px; }
+.degs { margin: 0; padding-left: 18px; font-size: 13px; }
+.degs li { margin-bottom: 6px; }
+
+@media (max-width: 720px) {
+  .char-card { grid-template-columns: 1fr; }
+  .char-main img { max-width: 200px; }
+}
+
+/* ── 上传替换 ── */
+.upl {
+  display: inline-block; margin-top: 6px; padding: 4px 8px; font-size: 12px;
+  border: 1px dashed var(--line); border-radius: 6px; color: var(--muted); cursor: pointer;
+}
+.upl:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.upl.tiny { display: block; text-align: center; margin: 0; border-radius: 0; border-left: 0; border-right: 0; border-bottom: 0; }
+.badge.small { font-size: 11px; padding: 1px 6px; margin-left: 6px; }
+
+/* ── 开始生成步骤条 ── */
+.stepbar { margin-bottom: 14px; }
+.steps { display: flex; align-items: stretch; gap: 4px; flex-wrap: wrap; }
+.step {
+  flex: 1; min-width: 108px; border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; background: var(--bg);
+}
+.step .idx {
+  width: 18px; height: 18px; border-radius: 50%; background: var(--line); color: var(--muted);
+  font-size: 11px; display: inline-flex; align-items: center; justify-content: center;
+}
+.step .lbl { font-size: 13px; font-weight: 600; }
+.step .st { font-size: 11px; color: var(--muted); }
+.step .gapnote { font-size: 11px; color: var(--warn); }
+.step.done { border-color: var(--ok); }
+.step.done .idx { background: var(--ok); color: #fff; }
+.step.done .st { color: var(--ok); }
+.step.gap { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 6%, var(--bg)); }
+.step.gap .idx { background: var(--warn); color: #fff; }
+.step.gap .st { color: var(--warn); }
+.step.active { border-color: var(--run); animation: pulse 1.2s ease-in-out infinite; }
+.step.active .idx { background: var(--run); color: #fff; }
+.step.active .st { color: var(--run); }
+.step.failed { border-color: var(--err); background: color-mix(in srgb, var(--err) 7%, var(--bg)); }
+.step.failed .idx { background: var(--err); color: #fff; }
+.step.failed .st { color: var(--err); }
+@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--run) 35%, transparent); } 50% { box-shadow: 0 0 0 5px transparent; } }
+.step-connector { width: 14px; align-self: center; height: 2px; background: var(--line); }
+
+/* ── 剧本编辑器 / 删除钮 ── */
+.script-editor {
+  width: 100%; margin-top: 8px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--card); color: var(--text);
+  font: 12px/1.6 Consolas, "Courier New", monospace; resize: vertical;
+}
+button.del { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, var(--line)); }
+button.del:hover { background: color-mix(in srgb, var(--err) 10%, transparent); color: var(--err); }
+
+/* ── 点文字即改（外貌/场景/镜头描述）── */
+.editable {
+  cursor: text; border-bottom: 1px dashed transparent; border-radius: 4px;
+}
+.editable:hover {
+  border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+}
+.inline-edit {
+  width: 100%; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--accent);
+  background: var(--card); color: var(--text); font-size: 13px; resize: vertical;
+  font-family: inherit; line-height: 1.5;
+}
+.inline-edit.one { width: 10em; display: inline-block; padding: 2px 6px; }
