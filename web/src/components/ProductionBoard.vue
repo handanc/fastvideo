@@ -425,7 +425,31 @@ watch(() => props.board?.script_version, (v, old) => {
                 <td><span class="tag">{{ typeLabel[sh.type] || sh.type }}</span></td>
                 <td>{{ sh.characters.join('、') || '—' }}</td>
                 <td>
-                  <div class="action">{{ sh.action }}</div>
+                  <!-- 画面描述/镜头语言是**场景提示词的原料**，就地改在这里（场景视频页只留
+                       将要发出去的那段提示词，不再复述一遍分镜，免得两份文字分不清哪份算数） -->
+                  <div
+                    v-if="!editKey('shot', sh.shot_id, 'action')"
+                    class="action editable" title="点击修改画面描述（会重算该场景的提示词并作废其片段）"
+                    @click="startInline('shot', sh.shot_id, 'action', sh.action)"
+                  >{{ sh.action || '（点击写画面描述）' }}</div>
+                  <textarea
+                    v-else class="inline-edit" rows="2" autofocus spellcheck="false"
+                    v-model="inline.text"
+                    @blur="commitInline"
+                    @keydown.esc.prevent="cancelInline"
+                    @keydown.ctrl.enter="commitInline"
+                  ></textarea>
+                  <div v-if="!editKey('shot', sh.shot_id, 'camera')" class="muted small">
+                    镜头语言：<span class="editable" title="点击修改镜头语言"
+                      @click="startInline('shot', sh.shot_id, 'camera', sh.camera)"
+                    >{{ sh.camera || '（点击写）' }}</span>
+                  </div>
+                  <input
+                    v-else class="inline-edit one" autofocus v-model="inline.text"
+                    @blur="commitInline"
+                    @keydown.esc.prevent="cancelInline"
+                    @keydown.enter="commitInline"
+                  />
                   <div v-for="(d, i) in sh.dialogues" :key="i" class="line">
                     <b>{{ d.who }}</b>：{{ d.text }}<span class="muted">（{{ d.emotion }}）</span>
                   </div>

@@ -20,12 +20,6 @@ function flash(text, ms = 2000) {
   noticeTimer = setTimeout(() => { notice.value = '' }, ms)
 }
 
-// 镜头文字就地改（画面描述/镜头语言）：与「剧本」页同一套 PUT /script 语义 ——
-// 提交后服务端做校验 + 血缘作废，改完不删图也会重画。
-const editing = ref(null)  // { gid, shot_id, field, text, original }
-
-const typeLabel = { dialogue: '对白', action: '动作', scenery: '空镜' }
-
 async function load() {
   try {
     const d = await api.sceneGroups(props.runId)
@@ -136,43 +130,6 @@ async function delClip(g) {
   busy.value = { ...busy.value, [g.group_id]: '' }
 }
 
-// ── 镜头文字：单击进入编辑，blur/Ctrl+Enter 提交，Esc 取消 ──────────────
-function startEdit(g, sh, field, current) {
-  editing.value = { gid: g.group_id, shot_id: sh.shot_id, field, text: current || '', original: current || '' }
-}
-function cancelEdit() { editing.value = null }
-function edit(g, sh, field) {
-  const e = editing.value
-  return !!e && e.gid === g.group_id && e.shot_id === sh.shot_id && e.field === field
-}
-
-async function commitEdit() {
-  const e = editing.value
-  editing.value = null
-  if (!e) return
-  const text = e.text.trim()
-  if (text === (e.original || '').trim()) return  // 没改：不涨版本、不作废、不打扰后端
-  try {
-    const res = await fetch(`/api/runs/${encodeURIComponent(props.runId)}/script`)
-    if (!res.ok) throw new Error(`读取剧本失败 HTTP ${res.status}`)
-    const script = await res.json()
-    const shots = (script.scenes || []).flatMap((s) => s.shots)
-    const target = shots.find((x) => x.shot_id === e.shot_id)
-    if (!target) throw new Error(`剧本里找不到 ${e.shot_id}`)
-    target[e.field] = text
-    const r = await api.putScript(props.runId, script)
-    msg.value = `✔ 已保存「${e.shot_id}」的${e.field === 'action' ? '画面描述' : '镜头语言'}`
-      + `（剧本 v${r.version}），作废 ${r.invalidated?.length || 0} 个产物；点「生成」按新描述重出`
-    await load()
-    emit('changed')
-  } catch (err) { error.value = err.message }
-}
-
-function win(g, sid) {
-  const w = (g.windows || {})[sid] || []
-  return w.length === 2 ? `${w[0]}–${w[1]}s` : ''
-}
-
 onMounted(load)
 onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
 </script>
@@ -227,34 +184,6 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
       <video v-if="g.clip" :src="g.clip" controls style="max-width: 260px"></video>
       <div v-if="g.clip_stale" class="alert warn">片段已作废（上游改过），点「生成」重出</div>
 
-      <!-- 组内分镜：这一段戏里按顺序发生什么（文字可点改，改完即作废本组片段） -->
-      <div class="secLabel">剧本分镜 · <b>只读展示，不发送给模型</b>（改这里的文字会作废本组片段，
-        并自动重算下面那份提示词）</div>
-      <ol class="shots">
-        <li v-for="(sh, j) in g.shots" :key="sh.shot_id">
-          <span class="mono">分镜{{ j + 1 }}</span>
-          <span class="muted small">{{ win(g, sh.shot_id) }} · {{ typeLabel[sh.type] || sh.type }} · {{ sh.duration_sec }}s</span>
-          <span v-if="sh.characters.length" class="muted small">· {{ sh.characters.join('、') }}</span>
-          <template v-if="!edit(g, sh, 'action')">
-            <span class="action editable" title="点击修改画面描述（本组提示词的原料）"
-                  @click="startEdit(g, sh, 'action', sh.action)">{{ sh.action || '（点击写画面描述）' }}</span>
-          </template>
-          <textarea v-else class="inline-edit" rows="2" autofocus spellcheck="false"
-                    v-model="editing.text"
-                    @blur="commitEdit"
-                    @keydown.esc.prevent="cancelEdit"
-                    @keydown.ctrl.enter="commitEdit"></textarea>
-          <div v-if="!edit(g, sh, 'camera')" class="muted small">镜头语言：
-            <span class="editable" title="点击修改镜头语言"
-                  @click="startEdit(g, sh, 'camera', sh.camera)">{{ sh.camera || '（点击写）' }}</span>
-          </div>
-          <input v-else class="inline-edit one" autofocus v-model="editing.text"
-                 @blur="commitEdit"
-                 @keydown.esc.prevent="cancelEdit"
-                 @keydown.enter="commitEdit" />
-          <div v-for="(d, k) in sh.dialogues" :key="k" class="line"><b>{{ d.who }}</b>：{{ d.text }}</div>
-        </li>
-      </ol>
 
       <!-- 参考形态：只允许在**已有**的图里选，不允许在这里改图 -->
       <!-- 编辑区跟着**用户的选择**走，不跟着"生效形态"走：选了首尾帧却只显示参考素材，
@@ -344,8 +273,4 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
 .field { display: flex; flex-direction: column; gap: 2px; min-width: 260px; }
 .field.wide { width: 100%; }
 .field.wide textarea { width: 100%; font-size: 12px; }
-.shots { margin: 6px 0; padding-left: 20px; }
-.shots li { margin: 4px 0; }
-.shots .action { display: block; }
-.secLabel { font-size: 12px; color: var(--muted, #888); margin: 8px 0 2px; }
 </style>
