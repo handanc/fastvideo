@@ -341,8 +341,16 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
   max-width: min(560px, calc(100vw - 32px));
 }
 .summary { margin: 2px 0; }
-.refRow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
-.refRow img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; cursor: pointer; opacity: .55; }
+.refRow { display: flex; align-items: flex-end; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+/* 缩略图按**原图比例**显示：只锁高度、宽度交给浏览器按固有比例算。
+   原来是 56×56 + object-fit:cover —— 9:16 的定妆照被裁成正方形，人只看到胸像，
+   而这张图正是发去锁脸的参考素材：被裁掉的构图信息（全身/头身比/服装下摆）恰恰是
+   判断"这张能不能用"的依据。场景图若是横构图，同样不该被压成方块。 */
+.refRow img {
+  height: 88px; width: auto; max-width: 100%;
+  object-fit: contain; border-radius: 4px; cursor: pointer; opacity: .55;
+  background: var(--panel, #f3f4f6);
+}
 .refRow img.picked { opacity: 1; outline: 2px solid var(--accent, #4a9); }
 .chk { display: flex; gap: 4px; align-items: center; }
 .field { display: flex; flex-direction: column; gap: 2px; min-width: 260px; }
