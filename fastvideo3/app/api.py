@@ -225,7 +225,9 @@ def _run_status(root: Path) -> str:
         return "done"
     events = _read_events(root, limit=5)
     last = str(events[-1].get("status", "")).lower() if events else ""
-    if last in ("failed", "error"):
+    # 本项目失败一律写成 `step_failed` / `xxx_failed`，不是裸 "failed"：只认死字符串的话，
+    # 一次 9 分钟的读超时在面板上只显示"已停止"，用户完全不知道发生了什么（2026-10-14 实测）。
+    if "fail" in last or "error" in last or "timeout" in last:
         return "failed"
     if time.time() - _mtime(root) < _RECENT_SEC:
         return "running"
@@ -630,7 +632,9 @@ def runs_list() -> list[dict]:
     return summaries
 
 
-def _clean_model_overrides(raw: dict[str, str], quality: str) -> dict[str, str]:
+def _clean_model_overrides(
+    raw: dict[str, str], quality: str, *, fake: bool = False
+) -> dict[str, str]:
     """校验 run 级模型选择，非法就 400（列清可选值）—— 不等到提交 API 才 400 才发现打错名。
 
     三道检查，都对应真实踩过的坑：
@@ -649,9 +653,10 @@ def _clean_model_overrides(raw: dict[str, str], quality: str) -> dict[str, str]:
         validate,
     )
 
+    cfg_now = load_config(quality=quality)
     # 目录之外、但**当前配置正在用**的模型名也要放行：面板的默认值就是从配置读的，
     # 若目录恰好没收录它，就会"界面显示着、一保存就 400"（自相矛盾比清单不全更糟）。
-    extra = set(configured_models(load_config(quality=quality)).values())
+    extra = set(configured_models(cfg_now).values())
 
     errors: list[str] = []
     clean: dict[str, str] = {}
@@ -662,7 +667,7 @@ def _clean_model_overrides(raw: dict[str, str], quality: str) -> dict[str, str]:
             continue
         err = (
             validate(cap, name, extra_allowed=extra)
-            or protocol_error(cap, name)
+            or protocol_error(cap, name, cfg_now, check_keys=not fake)
             or ref_image_warning(cap, name, quality)
         )
         if err:
@@ -701,7 +706,7 @@ def create_run(req: RunCreate) -> dict:
     cfg.aspect_ratio = req.aspect
     apply_resolution(cfg, resolution_tier)
     # run 级模型选择：校验后**立刻**盖到 cfg（预估、以及之后每一步都从 run_meta 恢复同一份）
-    chosen = _clean_model_overrides(req.model_overrides, quality)
+    chosen = _clean_model_overrides(req.model_overrides, quality, fake=req.fake)
     # 口型不再是选项：wan3.0 场景片段自带台词口型。老请求体里的 talk_mode/talk_model/
     # voice_source 接受但忽略（字段上注明），忽略要留痕 —— 静默丢弃会让老调用方以为生效了。
     ignored_legacy = [

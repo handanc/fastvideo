@@ -38,9 +38,17 @@ TALK_MEDIA_AUDIO = "i2v_driving_audio"  # media[{first_frame},{driving_audio}]�
 TALK_SCRIPTED = "wan30_scripted_talk"  # media[{first_frame(,last_frame)}] + 台词进 prompt
 TALK_FAL_I2V = "fal_infinitalk_image"  # fal.ai：image_url + audio_url + prompt → 说话视频
 TALK_FAL_V2V = "fal_infinitalk_v2v"    # fal.ai：video_url + audio_url + prompt → 重对口型
+# 文本这一族两家都是 OpenAI 兼容 `/chat/completions`，但**域名与 KEY 不同**。
+# 2026-10-14 事故：面板点名 `deepseek-v4-flash-0731`，而路由是 `dashscope_qwen` →
+# 这个名字被发到百炼端点，连上但不返回，180s × 3 次重试 = 9 分钟后才报 ReadTimeout。
+# 名字里就带着它属于哪家，所以让协议表把它配对到正确的 provider，而不是等 API 超时来告诉你。
+TEXT_OPENAI_DEEPSEEK = "openai_compat_deepseek"    # https://api.deepseek.com
+TEXT_OPENAI_DASHSCOPE = "openai_compat_dashscope"  # 百炼 OpenAI 兼容端点
 
 # (模型名 glob, 能力, 协议)：顺序敏感，越具体越靠前
 _PATTERNS: list[tuple[str, str, str]] = [
+    ("deepseek*", "text", TEXT_OPENAI_DEEPSEEK),
+    ("qwen*", "text", TEXT_OPENAI_DASHSCOPE),
     ("qwen-image*", "t2i", T2I_MULTIMODAL),
     ("wan2.7-image*", "t2i", T2I_MULTIMODAL),
     ("wan2.6-t2i*", "t2i", T2I_ASYNC),
@@ -64,6 +72,8 @@ _PATTERNS: list[tuple[str, str, str]] = [
 
 # (能力, 协议) → factory 里的 provider 名
 _PROVIDER_FOR: dict[tuple[str, str], str] = {
+    ("text", TEXT_OPENAI_DEEPSEEK): "deepseek",
+    ("text", TEXT_OPENAI_DASHSCOPE): "dashscope_qwen",
     ("t2i", T2I_ASYNC): "dashscope_t2i",
     ("t2i", T2I_MULTIMODAL): "dashscope_wan27_image",
     ("i2v", I2V_LEGACY): "dashscope_wan22_i2v",
@@ -79,6 +89,7 @@ _PROVIDER_FOR: dict[tuple[str, str], str] = {
 }
 
 _ENV_KEYS = {
+    "text": "FV3_TEXT_PROTOCOL",
     "t2i": "FV3_T2I_PROTOCOL",
     "i2v": "FV3_I2V_PROTOCOL",
     "r2v": "FV3_R2V_PROTOCOL",

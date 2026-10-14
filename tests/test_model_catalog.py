@@ -188,12 +188,16 @@ def test_explicit_panel_pick_of_unlisted_talk_model_uses_protocol_mode():
 def test_every_selectable_model_resolves_to_a_real_protocol():
     """t2i/i2v 的每一个可选项都要能解析出协议并落到一个真实 provider。
 
-    文本能力不校验：`dashscope_qwen` 走 OpenAI 兼容端点，模型名只是路由参数。
+    文本**同样**要校验：两家都是 OpenAI 兼容 `/chat/completions`，但域名与 KEY 不同。
+    曾经"文本不做协议校验"是错的 —— 把 `deepseek-v4-flash-0731` 发给百炼端点不会 400，
+    而是连上不返回，180s × 3 次重试 ≈ 9 分钟后才失败，面板全程只显示"卡住"
+    （2026-10-14 实测）。模型名带着它属于哪家，保存时就必须配对好端点。
     """
-    for cap in ("t2i", "i2v"):
+    for cap in ("t2i", "i2v", "text"):
         for c in CHOICES[cap]:
             assert protocol_error(cap, c.model) is None, (cap, c.model)
-    assert protocol_error("text", "随便什么名字") is None  # 文本不做协议校验
+    err = protocol_error("text", "随便什么名字")
+    assert err and "端点" in err, "认不出端点的文本模型名要在保存时就拦住，而不是等超时"
 
 
 def test_validate_rejects_unknown_names_and_non_selectable_caps():

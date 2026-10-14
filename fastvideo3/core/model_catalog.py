@@ -187,13 +187,27 @@ def configured_models(cfg: Any) -> dict[str, str]:
     return {k: v for k, v in out.items() if v}
 
 
-def protocol_error(capability: str, model: str) -> str | None:
-    """模型名解析不出调用协议 = 打不对端点 = 提交必 400，所以不收。
+#: 文本 provider → 它需要哪个 KEY（名字与端点配对之后，缺 KEY 是最常见的实际失败）
+_PROVIDER_KEY_ATTR = {
+    "deepseek": ("deepseek_api_key", "DEEPSEEK_API_KEY"),
+    "dashscope_qwen": ("dashscope_api_key", "DASHSCOPE_API_KEY"),
+}
 
-    只校验 t2i/i2v：这两类的 provider 键同时决定 HTTP 端点与请求体协议
-    （`providers/protocols.py`），文本类没有这种绑定。
+
+def protocol_error(
+    capability: str, model: str, cfg: object | None = None, *, check_keys: bool = True
+) -> str | None:
+    """模型名解析不出调用协议 = 打不对端点 = 提交必 400 / 读到超时，所以不收。
+
+    校验 t2i/i2v/text：这三类的 provider 键同时决定 HTTP 端点与请求体协议
+    （`providers/protocols.py`）。文本类以前"没有这种绑定"是错的 —— 2026-10-14 就是
+    把 `deepseek-v4-flash-0731` 发给了百炼端点，连上不返回，重试 3 次 ≈ 9 分钟才失败，
+    而面板全程只显示"卡住"。名字里带着它属于哪家，就在保存时配对并检查 KEY。
+
+    `cfg` 给了才做 KEY 检查；`check_keys=False`（Fake 模式）跳过 —— 零成本演示本来一把
+    KEY 都不配，名字与端点的**配对**照校验，**有没有 KEY** 不校验。
     """
-    if capability not in ("t2i", "i2v") or not model:
+    if capability not in ("t2i", "i2v", "text") or not model:
         return None
     from fastvideo3.providers import protocols
 
@@ -203,6 +217,17 @@ def protocol_error(capability: str, model: str) -> str | None:
     want = protocols.provider_for(capability, proto)
     if not want:
         return f"模型 {model} 的协议 {proto} 没有对应的 provider 实现"
+    if cfg is not None and check_keys:
+        pair = _PROVIDER_KEY_ATTR.get(want)
+        if pair:
+            attr, env_name = pair
+            if not str(getattr(cfg, attr, "") or ""):
+                return (
+                    f"模型 {model} 会打到 {want} 端点，但 {env_name} 未配置 —— "
+                    f"要么在 .env 补上该 KEY，要么换成一把 KEY 就够用的 "
+                    f"qwen3.7-flash（百炼）；确实由百炼托管的同名模型，"
+                    f"用 FV3_TEXT_PROTOCOL=openai_compat_dashscope 显式钉住端点"
+                )
     return None
 
 

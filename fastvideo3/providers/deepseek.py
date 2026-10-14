@@ -69,14 +69,22 @@ class OpenAICompatTextProvider(TextProvider):
         model: str,
         name: str = "openai_compat",
         enable_thinking: bool = False,
+        timeout_sec: float | None = None,
     ):
         if not api_key:
-            raise ProviderError(f"{name}: 缺少 API KEY，请在 .env 中配置")
+            raise ProviderError(
+                f"{name}: 缺少 API KEY，请在 .env 中配置"
+                f"（模型 {model} 需要的 KEY 没有，但请求仍会被发到 {base_url} —— 那样只会等到读超时）"
+            )
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.name = name
         self.enable_thinking = enable_thinking
+        # connect 单独给小值：端点不可达/DNS/证书问题必须在几秒内报出来，而不是占用
+        # 整个 read 预算；read 才是"模型真的在写长剧本"的时间（FV3_TEXT_TIMEOUT_SEC 可调）。
+        self.timeout_sec = float(timeout_sec or 180.0)
+        self.timeout = httpx.Timeout(self.timeout_sec, connect=15.0)
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
@@ -111,10 +119,20 @@ class OpenAICompatTextProvider(TextProvider):
             return await self._stream_chat(body)
         if json_schema is not None:
             body["response_format"] = {"type": "json_object"}
-        async with httpx.AsyncClient(timeout=180) as client:
-            resp = await client.post(
-                f"{self.base_url}/chat/completions", headers=self._headers(), json=body
-            )
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                resp = await client.post(
+                    f"{self.base_url}/chat/completions", headers=self._headers(), json=body
+                )
+            except httpx.TimeoutException as e:
+                # `str(httpx.ReadTimeout())` 是**空串** —— 事件里因此只留下 kind=ReadTimeout
+                # 和一个空的 error，人完全看不出"在等谁、等了多久、该怎么办"（2026-10-14 实测）。
+                raise ProviderError(
+                    f"{self.name} 模型 {self.model} 在 {self.base_url} 读取超时"
+                    f"（read={self.timeout_sec:.0f}s，含重试最多约 {self.timeout_sec * 3:.0f}s）。"
+                    f"出路：① 换成目录内模型（文本默认 qwen3.7-flash）；② 名字确实是这家模型的，"
+                    f"检查对应的 KEY 是否配置；③ 确实需要更久，设 FV3_TEXT_TIMEOUT_SEC=300。"
+                ) from e
         data = (
             resp.json()
             if resp.headers.get("content-type", "").startswith("application/json")
@@ -141,7 +159,8 @@ class OpenAICompatTextProvider(TextProvider):
         body["stream_options"] = {"include_usage": True}
         parts: list[str] = []
         usage: dict[str, Any] = {}
-        async with httpx.AsyncClient(timeout=600) as client:
+        stream_timeout = httpx.Timeout(max(300.0, self.timeout_sec * 2), connect=15.0)
+        async with httpx.AsyncClient(timeout=stream_timeout) as client:
             async with client.stream(
                 "POST", f"{self.base_url}/chat/completions", headers=self._headers(), json=body
             ) as resp:
@@ -170,9 +189,13 @@ class OpenAICompatTextProvider(TextProvider):
 
 class DeepSeekTextProvider(OpenAICompatTextProvider):
     def __init__(
-        self, api_key: str, base_url: str = "https://api.deepseek.com", model: str = "deepseek-chat"
+        self,
+        api_key: str,
+        base_url: str = "https://api.deepseek.com",
+        model: str = "deepseek-chat",
+        timeout_sec: float | None = None,
     ):
-        super().__init__(api_key, base_url, model, name="deepseek")
+        super().__init__(api_key, base_url, model, name="deepseek", timeout_sec=timeout_sec)
 
 
 def strip_code_fence(text: str) -> str:

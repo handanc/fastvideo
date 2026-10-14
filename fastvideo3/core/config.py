@@ -112,6 +112,9 @@ class AppConfig(BaseModel):
     fal_acceleration: str = "regular"  # none | regular | high（fal 的加速档，影响质量/速度）
 
     # ── 文本模型特性 ──
+    #: 文本/兼容端点的读超时秒数。默认 180 是给"一次写出整部 30 秒剧本"留的量；
+    #: 名字发错端点时不该靠重试硬等（那是 9 分钟黑盒），但慢模型确实需要它。
+    text_timeout_sec: float = 180.0
     enable_thinking: bool = False  # qwen3 系思考模式(流式); 结构化 JSON 场景默认关闭
 
     # ── 运行模式 ──

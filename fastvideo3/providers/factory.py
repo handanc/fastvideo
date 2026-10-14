@@ -239,6 +239,7 @@ def _build_real(
             cfg.deepseek_api_key,
             cfg.deepseek_base_url,
             mm("deepseek_text", "deepseek-chat"),
+            timeout_sec=cfg.text_timeout_sec,
         )
     if name == "dashscope_qwen":
         return dashscope.DashScopeTextProvider(
@@ -246,6 +247,7 @@ def _build_real(
             mm("dashscope_text", "qwen3.7-plus"),
             base_url=cfg.dashscope_text_base_url,
             enable_thinking=cfg.enable_thinking,
+            timeout_sec=cfg.text_timeout_sec,
         )
     if name == "dashscope_t2i":
         return dashscope.DashScopeT2IProvider(

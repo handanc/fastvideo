@@ -137,7 +137,7 @@ def new(
             continue
         err = (
             validate(cap, name, extra_allowed=extra)
-            or protocol_error(cap, name)
+            or protocol_error(cap, name, cfg, check_keys=not cfg.fake)
             or ref_image_warning(cap, name, cfg.quality)
         )
         if err:

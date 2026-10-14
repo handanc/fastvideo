@@ -1245,6 +1245,7 @@ class DashScopeTextProvider(OpenAICompatTextProvider):
         model: str = "qwen-plus",
         base_url: str | None = None,
         enable_thinking: bool = False,
+        timeout_sec: float | None = None,
     ):
         super().__init__(
             api_key,
@@ -1252,4 +1253,5 @@ class DashScopeTextProvider(OpenAICompatTextProvider):
             model,
             name="dashscope_qwen",
             enable_thinking=enable_thinking,
+            timeout_sec=timeout_sec,
         )
