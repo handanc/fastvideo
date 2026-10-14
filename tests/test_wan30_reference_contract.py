@@ -285,6 +285,8 @@ async def test_prompt_numbering_lockstep_with_media(run, monkeypatch):
     assert "第1个镜头" in prompt and "第2个镜头" in prompt, prompt[:400]
     # 场景图是**空景**：不写清楚模型会照搬背景里的人数
     assert "无人" in prompt, "必须声明场景参考图里没有人物"
+    # 音乐只由后期统一混一次：必须显式关掉模型自带 BGM（官方三档里的"完全不要"）
+    assert "无背景音乐" in prompt and "No background music" in prompt, prompt[-300:]
     # 负向清单折进提示词（wan3.0 的 parameters 里**没有** negative_prompt，按参数发被静默丢弃）
     assert "负向" in prompt, prompt[-300:]
     assert cfg.negative_prompt.split("，")[0].strip() in prompt, cfg.negative_prompt

@@ -228,6 +228,8 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
       <div v-if="g.clip_stale" class="alert warn">片段已作废（上游改过），点「生成」重出</div>
 
       <!-- 组内分镜：这一段戏里按顺序发生什么（文字可点改，改完即作废本组片段） -->
+      <div class="secLabel">剧本分镜 · <b>只读展示，不发送给模型</b>（改这里的文字会作废本组片段，
+        并自动重算下面那份提示词）</div>
       <ol class="shots">
         <li v-for="(sh, j) in g.shots" :key="sh.shot_id">
           <span class="mono">分镜{{ j + 1 }}</span>
@@ -312,7 +314,8 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
       </div>
 
       <!-- 视频提示词：两种形态都给人看、给人改（机器拼的模板是默认值，不是上限） -->
-      <label class="field wide"><span>本段视频的提示词（可改，点「生成」即按它出片）</span>
+      <label class="field wide"><span>提交给 wan3.0 的提示词 · <b>这才是实发内容</b>
+        （可改；改完点「保存提示词」，再点「生成」即按它出片）</span>
         <textarea v-model="g.prompt" rows="6" spellcheck="false"></textarea>
       </label>
       <div class="toolbar">
@@ -344,4 +347,5 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
 .shots { margin: 6px 0; padding-left: 20px; }
 .shots li { margin: 4px 0; }
 .shots .action { display: block; }
+.secLabel { font-size: 12px; color: var(--muted, #888); margin: 8px 0 2px; }
 </style>

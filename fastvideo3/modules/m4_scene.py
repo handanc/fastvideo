@@ -245,6 +245,12 @@ def scene_prompt(
         ),
         f"{timbre}，同一角色在整段视频中音色不变。" if timbre else "",
         "全片保持同一角色的长相、发型、服装配色一致，不换脸、不换衣服、不改画幅。",
+        # **显式关掉模型自带 BGM**。官方提示词指南把 BGM 分成三档，"什么都不写 = 由模型自选"
+        # —— 而我们的成片是在 m7 统一混 BGM 的（bgm_volume + sidechain ducking，让对白压得住）。
+        # 不写这句的后果很具体：三个场景各自配一套音乐，拼起来是双层音乐、且每切一次场景
+        # 换一次配乐风格，正是"AI 短剧像拼接"的听感来源。指南给的原话是
+        # 「无 bgm，只生成环境音和动作音」/「No background music.」，照抄。
+        "无背景音乐（BGM 由后期统一混入）：只保留台词、环境音与动作音。No background music.",
         (cfg.style_suffix or "").strip(),
         NO_ONSCREEN_TEXT,
     ]
