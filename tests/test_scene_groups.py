@@ -344,3 +344,33 @@ def test_coverage_never_swallows_lipsync_in_ab_chains(storage):
     assert scene_covered_shots(storage, script, cfg2) == {
         "shot_1_1": "scene_1", "shot_1_2": "scene_1",
     }
+
+def test_editing_a_shot_invalidates_its_scene_clip():
+    """改一镜的画面描述 → **它所属的那段场景片段必须作废**（别的组不受牵连）。
+
+    场景级生成下，画面描述/镜头语言/台词都是那一段 `clips/scene_{gid}.mp4` 提示词的原料。
+    漏掉这条的后果很具体：改完保存，提示词确实重算了，但已生成的片段仍被当成新鲜产物 →
+    点「生成」只回一句"已有视频片段"，改动永远进不了视频（2026-10-14 实测：字段级作废
+    清单里只有逐镜头产物，没有场景片段）。
+    """
+    from fastvideo3.core.progress import diff_invalidation
+
+    old = _script([
+        _scene("scene_1", "街道", "日", [_shot("shot_1_1", 4.0), _shot("shot_1_2", 5.0, dialogue="你听我说")]),
+        _scene("scene_2", "河岸", "黄昏", [_shot("shot_2_1", 4.0, dialogue="师傅别走")]),
+    ])
+    new = old.model_copy(deep=True)
+    new.scenes[0].shots[1].action = "改成新的画面描述"
+
+    rels = diff_invalidation(old, new)
+    assert "clips/scene_scene_1.mp4" in rels, rels
+    assert "clips/scene_scene_2.mp4" not in rels, "别的场景不该被牵连"
+    assert "storyboard/shot_shot_1_2.png" in rels, "首帧原料也变了，照旧作废"
+    assert "final/final.mp4" in rels, "成片必须跟着作废"
+
+    # 台词改动同样要牵连场景片段（台词逐字进提示词，且音色参考取自母带）
+    new2 = old.model_copy(deep=True)
+    new2.scenes[1].shots[0].dialogues[0].text = "换一句"
+    rels2 = diff_invalidation(old, new2)
+    assert "clips/scene_scene_2.mp4" in rels2, rels2
+    assert "clips/scene_scene_1.mp4" not in rels2, rels2

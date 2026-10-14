@@ -545,11 +545,24 @@ def diff_invalidation(old: Script, new: Script) -> list[str]:
     "保存一次无实质修改的剧本 → 全片作废"的误伤）与 `version`。
     """
     rels: set[str] = set()
+    # 镜头 → 它所属的**场景组**：场景级生成下，画面/台词/镜头语言的原料都进了那一段
+    # `clips/scene_{gid}.mp4` 的提示词里。一段戏在一个 mp4 里，改组内任何一镜 = 整段作废。
+    from fastvideo3.core.scenegroup import group_scenes
+
+    scene_of_shot = {
+        sid: g.group_id for g in group_scenes(new) for sid in g.shot_ids
+    }
 
     def shot_rels(shot_id: str, *, audio: bool = False) -> None:
         rels.add(f"storyboard/shot_{shot_id}.png")
         rels.add(f"clips/shot_{shot_id}.mp4")
         rels.add(f"talk/shot_{shot_id}.mp4")
+        gid = scene_of_shot.get(shot_id)
+        if gid:
+            # 漏掉这条的后果很具体：改了画面描述 → 提示词确实重算了，但已生成的片段仍被
+            # 当成新鲜产物，点「生成」只回一句"已有视频片段"，改动永远进不了视频
+            # （2026-10-14 实测：字段级作废清单里只有逐镜头产物，没有场景片段）。
+            rels.add(f"clips/scene_{gid}.mp4")
         if audio:
             rels.add(f"audio/line:{shot_id}")  # 标记：展开成盘上 line_{shot_id}_*.wav
 
