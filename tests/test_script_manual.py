@@ -275,3 +275,22 @@ async def test_step_consumes_script_prompt(cfg, outdir):
     assert produced == ["script.json"]
     assert storage.exists("script.json")
     assert not storage.exists("script_prompt.json"), "意见用完必须清除，否则会粘在下次重生成上"
+
+
+def test_put_script_title_only_change_invalidates_nothing(client, run):
+    """只改片名：剧本版本要涨，但**一个产物都不作废**。
+
+    片名不参与任何生成（不进立绘/场景图/首帧/场景片段的提示词），把它算进作废清单
+    等于"改个名字就把整片重画一遍" —— 那是几十块钱。前端现在支持点片名即改，
+    所以这条必须锁住：改名的代价是零。
+    """
+    root, script = run
+    payload = json.loads((root / "script.json").read_text(encoding="utf-8"))
+    payload["title"] = "师徒女儿国沦陷记（改名）"
+    r = client.put(f"/api/runs/{RUN}/script", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["invalidated"] == 0, body
+    assert body["items"] == [], body
+    assert _saved(root.parent).title == "师徒女儿国沦陷记（改名）"
+    assert _saved(root.parent).version == script.version + 1, "改名也要涨版本（可追溯）"

@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
+import { sceneLabel } from '../format'
 
 const props = defineProps({ runId: { type: String, required: true } })
 // 产物增删后通知父组件刷新看板计数/步骤条（父层再拉 board/steps）
@@ -59,7 +60,7 @@ async function resetPrompt(g) {
     const d = await api.patchSceneGroup(props.runId, g.group_id, { prompt: '' })
     groups.value = d.groups || groups.value
     for (const x of groups.value) originals.value[x.group_id] = x.prompt || ''
-    flash(`${g.group_id}：已恢复默认提示词`)
+    flash(`${sceneLabel(g.group_id)}：已恢复默认提示词`)
   } catch (e) { error.value = e.message }
 }
 
@@ -79,10 +80,10 @@ function pollUntil(gid, what, ms = 90000) {
       clearInterval(timer)
       busy.value = { ...busy.value, [gid]: '' }
       if (done) {
-        flash(`✔ ${gid} ${what === 'clip' ? '场景视频片段' : '首尾帧'}已生成`)
+        flash(`✔ ${sceneLabel(gid)} ${what === 'clip' ? '场景视频片段' : '首尾帧'}已生成`)
         emit('changed')
       } else {
-        msg.value = `${gid}：${what === 'clip' ? '片段' : '首尾帧'}还没出来 —— `
+        msg.value = `${sceneLabel(gid)}：${what === 'clip' ? '片段' : '首尾帧'}还没出来 —— `
           + '该组卡片下方的红字/「事件」页签里有原因（缺角色图/场景图、欠费、额度用尽是最常见的几种）'
       }
     }
@@ -124,7 +125,7 @@ async function savePrompts(g) {
     })
     groups.value = d.groups || groups.value
     for (const x of groups.value) originals.value[x.group_id] = x.prompt || ''
-    flash(`${g.group_id}：提示词已保存`)
+    flash(`${sceneLabel(g.group_id)}：提示词已保存`)
   } catch (e) { error.value = e.message }
 }
 
@@ -143,7 +144,7 @@ async function genClip(g) {
   // 已经有片段且不作废 → 不重复花钱，只告诉用户"这段已经有了"（2 秒后自动消失）。
   // 想重出就点「🗑 删除片段」再点生成：删了才会重新提交一次 wan3.0（一段 9 秒 720P 是 ¥5.4 量级）。
   if (g.clip && !g.clip_stale) {
-    flash(`场景 ${g.group_id} 已有视频片段，无需重复生成；要重出请先点「🗑 删除片段」`)
+    flash(`${sceneLabel(g.group_id)} 已有视频片段，无需重复生成；要重出请先点「🗑 删除片段」`)
     return
   }
   if (dirty(g)) {
@@ -159,7 +160,7 @@ async function genClip(g) {
 }
 
 async function delClip(g) {
-  if (!window.confirm(`确定删除场景片段 ${g.group_id}？\n删除后该组回到「待生成」，重出要再花一次钱。`)) return
+  if (!window.confirm(`确定删除 ${sceneLabel(g.group_id)} 的视频片段？\n删除后该组回到「待生成」，重出要再花一次钱。`)) return
   busy.value = { ...busy.value, [g.group_id]: 'delete' }
   try {
     await api.deleteSceneClip(props.runId, g.group_id)
@@ -184,7 +185,7 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
 
     <div v-for="(g, i) in groups" :key="g.group_id" class="sceneGroup">
       <div class="toolbar">
-        <b>场景{{ i + 1 }} <span class="muted small">{{ g.group_id }}</span></b>
+        <b>{{ sceneLabel(g.group_id) }}</b>
         <span v-if="g.scene_label" class="scenelabel">{{ g.scene_label }}</span>
         <span class="badge" :class="g.clip_stale ? 'warn' : (g.clip ? 'ok' : '')">
           {{ g.clip_stale ? '已作废·待重出' : (g.clip ? '已生成' : '待生成') }}

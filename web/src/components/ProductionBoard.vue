@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { api } from '../api'
+import { sceneLabel } from '../format'
 import SceneClips from './SceneClips.vue'
 
 const props = defineProps({
@@ -79,49 +80,9 @@ function metricBadges(m) {
   return out
 }
 
-const editing = ref(false)
-const editText = ref('')
 const saving = ref(false)
-const editResult = ref(null)
 
 // 看板只回 join 后的字段；编辑需要完整原文 → 直接拉 script.json 原始内容
-const rawScriptSource = ref(null)
-async function loadRawScript() {
-  try {
-    const res = await fetch(`/api/runs/${encodeURIComponent(props.runId)}/script`)
-    rawScriptSource.value = res.ok ? await res.json() : null
-  } catch {
-    rawScriptSource.value = null
-  }
-}
-
-async function startEdit() {
-  if (rawScriptSource.value === null) await loadRawScript()
-  editText.value = JSON.stringify(rawScriptSource.value ?? {}, null, 2)
-  editResult.value = null
-  editing.value = true
-}
-
-async function saveScript() {
-  saving.value = true
-  editResult.value = null
-  try {
-    const obj = JSON.parse(editText.value)
-    const r = await api.putScript(props.runId, obj)
-    editResult.value = {
-      ok: true,
-      msg: `✔ 已保存（v${r.version}），作废 ${r.invalidated} 个下游产物：` +
-        `${(r.items || []).slice(0, 6).join('、')}${(r.items || []).length > 6 ? '…' : ''}`,
-    }
-    editing.value = false
-    emit('changed')
-  } catch (e) {
-    editResult.value = { ok: false, msg: `保存被拒：${e.message}` }
-  } finally {
-    saving.value = false
-  }
-}
-
 // 删除剧本 → script.json 没了 → 后端下一步回到「生成剧本」，主按钮文案随之变化
 const deletingScript = ref(false)
 
@@ -138,7 +99,6 @@ async function delScript() {
   try {
     const r = await api.delScript(props.runId)
     notice.value = `✔ 已删除剧本，作废 ${r.count} 个下游产物（归档为 ${r.archived}）`
-    editing.value = false
     emit('changed')
   } catch (e) {
     error.value = e.message
@@ -305,14 +265,18 @@ async function saveDescription(e, text) {
     const script = await res.json()
     const shots = (script.scenes || []).flatMap((s) => s.shots)
     const target =
-      e.kind === 'char' ? (script.characters || []).find((c) => c.character_id === e.id)
+      e.kind === 'script' ? script  // 剧本自身字段（片名）：改它不作废任何产物
+      : e.kind === 'char' ? (script.characters || []).find((c) => c.character_id === e.id)
       : e.kind === 'scene' ? (script.scenes || []).find((s) => s.scene_id === e.id)
       : shots.find((sh) => sh.shot_id === e.id)
     if (!target) throw new Error(`剧本里找不到 ${e.id}`)
     target[e.field] = text
     const r = await api.putScript(props.runId, script)
-    notice.value = `✔ 已保存「${e.id}」的描述（剧本 v${r.version}），作废 ${r.invalidated} 个产物；`
-      + '点「开始生成」即按新描述重画（不删图也会重画）'
+    const what = e.kind === 'script' ? '片名' : `「${e.id}」的描述`
+    notice.value = e.kind === 'script'
+      ? `✔ 片名已保存（剧本 v${r.version}）—— 片名不参与生成，不作废任何产物`
+      : `✔ 已保存${what}（剧本 v${r.version}），作废 ${r.invalidated} 个产物；`
+        + '点「开始生成」即按新描述重画（不删图也会重画）'
     emit('changed')
   } catch (err) {
     error.value = err.message
@@ -340,7 +304,7 @@ async function pickPortrait(ch, candidateUrl) {
 watch(() => props.runId, () => {
   tab.value = 'script'; notice.value = ''; error.value = ''
   // 换 run 时剧本稿/JSON 编辑器不能带着上一个 run 的内容留在打开状态
-  draftEditing.value = false; editing.value = false; draftStale.value = false
+  draftEditing.value = false; draftStale.value = false
   draftVersion.value = props.board?.script_version ?? null
 })
 
@@ -386,7 +350,17 @@ watch(() => props.board?.script_version, (v, old) => {
 
       <!-- ── 剧本 ────────────────────────────────────────────── -->
       <div v-if="tab === 'script'" class="card">
-        <h2>{{ b.title || '(未命名)' }}</h2>
+        <h2
+          v-if="!editKey('script', 'title', 'title')"
+          class="editable" title="点击修改片名"
+          @click="startInline('script', 'title', 'title', b.title)"
+        >{{ b.title || '(未命名，点击填写)' }}</h2>
+        <input
+          v-else class="inline-edit one" autofocus v-model="inline.text"
+          @blur="commitInline"
+          @keydown.esc.prevent="cancelInline"
+          @keydown.enter="commitInline"
+        />
         <p class="muted">
           风格 {{ b.meta?.base_info?.style }} · 目标 {{ b.meta?.base_info?.target_duration_sec }}s ·
           画幅 {{ b.meta?.base_info?.aspect_ratio }} · 共 {{ counts.script }} 镜 /
@@ -394,24 +368,9 @@ watch(() => props.board?.script_version, (v, old) => {
         </p>
         <p class="muted small">剧本评审由<b>你</b>来做；分镜抽查、镜头选优、成片终审、一致性闸门自动跑。</p>
 
-        <!-- 角色清单（与剧本稿的「# 角色」同一份内容）：只出现在这里，看不到就以为没改出来 -->
-        <div class="roster">
-          <b>角色 {{ chars.length }}</b>
-          <span v-for="c in chars" :key="c.id" class="chip" :class="{ warn: c.used === false }">
-            {{ c.name }} <span class="mono muted">{{ c.id }}</span>
-            <template v-if="c.gender === 'female'">·女</template>
-            <template v-else-if="c.gender">·男</template>
-            <template v-if="c.age_band"> · {{ c.age_band }}</template>
-          </span>
-          <p v-if="chars.some((c) => c.used === false)" class="muted small">
-            ⚠ 灰底的角色没出现在任何镜头里（不会出场，但仍会生成一张定妆照）——
-            要它出场就在镜头里加「在场: 角色id」，不要就删掉这行。
-          </p>
-        </div>
-
         <section v-for="s in scenes" :key="s.id" class="scene-block">
           <h3>
-            <span class="tag">{{ s.id }}</span> {{ s.title }}
+            <span class="tag">{{ sceneLabel(s.id) }}</span> {{ s.title }}
             <span class="muted">· {{ s.location }} · {{ s.time_of_day }}</span>
           </h3>
           <p v-if="s.summary" class="summary">{{ s.summary }}</p>
@@ -469,7 +428,6 @@ watch(() => props.board?.script_version, (v, old) => {
             <button class="btn sm del" :disabled="deletingScript" @click="delScript">
               {{ deletingScript ? '删除中…' : '🗑 删除剧本' }}
             </button>
-            <span class="muted">改文字用「编辑剧本稿」，换思路用「按 prompt 重新生成」</span>
           </template>
           <template v-else>
             <button class="btn primary sm" :disabled="draftSaving" @click="saveDraft">
@@ -531,25 +489,6 @@ watch(() => props.board?.script_version, (v, old) => {
           </div>
         </Teleport>
 
-        <details class="raw">
-          <summary>高级：直接改结构（原始 JSON）</summary>
-          <template v-if="!editing">
-            <pre>{{ JSON.stringify(b.raw_script || { title: b.title, scenes: scenes.map(s => ({ id: s.id, title: s.title, shots: s.shots.length })) }, null, 2) }}</pre>
-            <button class="btn sm" @click="startEdit">✎ 直接编辑 JSON</button>
-            <p class="muted small">只用于改结构；改剧情请用「编辑剧本稿」</p>
-          </template>
-          <template v-else>
-            <textarea v-model="editText" class="script-editor" rows="18" spellcheck="false"></textarea>
-            <div class="toolbar" style="margin-top: 8px">
-              <button class="btn primary sm" :disabled="saving" @click="saveScript">
-                {{ saving ? '校验保存中…' : '💾 保存并校验' }}
-              </button>
-              <button class="btn sm" @click="editing = false">取消</button>
-              <span class="muted">保存后校验结构并作废受影响产物</span>
-            </div>
-          </template>
-        </details>
-        <div v-if="editResult" class="alert" :class="editResult.ok ? 'ok' : 'err'">{{ editResult.msg }}</div>
       </div>
 
       <!-- ── 角色图 ──────────────────────────────────────────── -->

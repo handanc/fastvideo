@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { api } from '../api'
+import { sceneLabel } from '../format'
 
 const props = defineProps({
   runId: { type: String, required: true },
@@ -28,7 +29,7 @@ const STATE_LABEL = {
 function gapText(s) {
   const n = (s.missing?.length || 0) + (s.stale?.length || 0)
   if (!n) return ''
-  const sample = [...(s.missing || []), ...(s.stale || [])].slice(0, 3).join(', ')
+  const sample = [...(s.missing || []), ...(s.stale || [])].slice(0, 3).map(sceneLabel).join(', ')
   return `缺/待重做 ${n}：${sample}${n > 3 ? '…' : ''}`
 }
 
