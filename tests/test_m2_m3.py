@@ -235,3 +235,57 @@ def test_scene_prompt_is_background_only_and_strips_characters():
     assert "唐僧" not in p and "猪八戒" not in p, p
     assert "街道繁华" in p and "灯笼高挂" in p, "不带人物的氛围子句要保留"
     assert p.startswith("空景场景概念图") and "没有任何人物" in p
+
+def test_scene_prompt_rejects_plot_fragments_and_portrait_style_words():
+    """空景提示词必须挡住四类泄漏：剧情残片、人像风格词、"真人"、构图句里的"演员/人物"。
+
+    2026-10-14 在真实 run（女儿国）上实测到的形状：
+    - summary 切成小句后，"拒绝前行""瞬间也被迷住，忘记了自己的身份和誓言""打破僵局"
+      这些**人的动作与心理状态**通过了旧黑名单（不含人名，也不含"走/说/看"那批字），
+      于是被当成"氛围与陈设"塞进背景图 —— 模型照着就会往画面里补人；
+    - 风格锚里带着"自然皮肤纹理 / realistic human skin"，那是定妆照的写法，
+      对空景等于正向强调皮肤；
+    - "真人写实电影剧照"里的"真人"同理：本意是压住卡通感，但 t2i 读到"真人"
+      就可能摆一个人，与开头"没有任何人物"直接对撞；
+    - 收尾那句"构图留给**演员**站位…留出**人物**将要站立的区域"正向提人了两次。
+    判据收成一句话：**正向描述里不许出现人**（开头那句固定否定式除外）。
+    """
+    import re
+
+    from fastvideo3.core.config import AppConfig
+    from fastvideo3.core.schema import BaseInfo, Character, Scene, Script
+    from fastvideo3.modules.m2_assets import scene_background_prompt
+
+    cfg = AppConfig(fake=True)
+    cfg.style_suffix = (
+        "真人写实电影剧照，院线级画质，自然皮肤纹理，电影级三点布光，"
+        "photorealistic live-action film still, realistic human skin, no CGI look"
+    )
+    script = Script(
+        base_info=BaseInfo(topic="t"),
+        characters=[
+            Character(character_id="char_bajie", name="猪八戒", appearance="黑帽"),
+            Character(character_id="char_queen", name="女儿国国王", appearance="红袍"),
+        ],
+        scenes=[Scene(
+            scene_id="scene_1", title="八戒滞留女儿国街头", location="女儿国街道",
+            time_of_day="日",
+            summary="猪八戒被路边的美女吸引，拒绝前行，唐僧试图劝诫；瞬间也被迷住，"
+                    "忘记了自己的身份和誓言；打破僵局",
+        )],
+    )
+    p = scene_background_prompt(cfg, script, script.scenes[0])
+
+    for leak in ("猪八戒", "唐僧", "女儿国国王", "char_bajie"):
+        assert leak not in p, f"角色名泄漏进正向描述：{leak}"
+    for frag in ("拒绝前行", "迷住", "忘记", "誓言", "僵局", "劝诫", "吸引"):
+        assert frag not in p, f"剧情/心理残片被当成空间描述：{frag}"
+    assert "真人" not in p, f'"真人" 是正向提人词：{p}'
+    assert "皮肤" not in p and "skin" not in p.lower(), f"人像风格词没剥掉：{p}"
+    assert "演员" not in p and "站位" not in p, "构图句正向提人"
+    assert not re.search(r"[,，]\s*[,，]", p), f"剥词后留下悬空逗号：{p}"
+    # 否定式那句仍在开头固定存在（这是唯一允许出现"人物"二字的地方）
+    assert p.startswith("空景场景概念图，画面中没有任何人物、人影或肢体"), p[:60]
+    assert p.count("人物") == 1, f"『人物』只应出现在开头那句否定式里：{p}"
+    # 地点与时间仍是主体：过滤不能把提示词滤成空壳
+    assert "女儿国街道" in p and "日" in p

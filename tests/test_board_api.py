@@ -79,6 +79,10 @@ def test_board_joins_products_to_shots(client, outdir):
     # 场景：概念图 + 逐镜头
     scene = d["scenes"][0]
     assert scene["concept"].split("?")[0].endswith(f"scene_{scene['id']}.png")
+    # 面板必须摆出**真正会发出去的**空景提示词：只显示 summary（剧情，必然带人名）
+    # 会让人以为"背景图要画角色"，然后来来回回追问（2026-10-14 实际发生）
+    assert scene["bg_prompt"].startswith("空景场景概念图"), scene["bg_prompt"][:60]
+    assert "人物" in scene["bg_prompt"]  # 开头那句否定式
     shot = scene["shots"][0]
     assert shot["frame"].split("?")[0].endswith(f"shot_{shot['shot_id']}.png")
     assert shot["clip"].split("?")[0].endswith(f"shot_{shot['shot_id']}.mp4")

@@ -1122,6 +1122,8 @@ def production_board(run_id: str) -> dict:
     此前接口只回一串 URL 列表，前端画廊看不出"哪张图属于哪个镜头、角色说了什么"，
     等于把剧本/分镜的信息全丢了。
     """
+    from fastvideo3.modules.m2_assets import scene_background_prompt
+
     root = _safe_run_root(run_id)
     meta = _load_meta(root) or {}
     consistency: dict = {}
@@ -1265,6 +1267,10 @@ def production_board(run_id: str) -> dict:
                 "summary": scene.summary,
                 "concept": _artifact(root, run_id, "assets", f"scene_{scene.scene_id}.png"),
                 "uploaded": f"assets/scene_{scene.scene_id}.png" in uploads,
+                # **场景概念图实际会发出的提示词**。面板原本只摆 `summary`（那是剧情梗概，
+                # 必然带人名），于是用户据此以为"背景图要画角色"——把真正发出去的提示词
+                # 摆出来，空景过滤是对的还是漏了，一眼可核，不需要信任何人的口头保证。
+                "bg_prompt": scene_background_prompt(cfg_run, script, scene),
                 "shots": shots,
             }
         )

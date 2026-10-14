@@ -217,6 +217,14 @@ video.final { width: 100%; max-width: 420px; border-radius: var(--radius); backg
 .scene-block { margin: 22px 0 0; }
 .scene-block h3 { margin: 0 0 6px; font-size: 15px; color: var(--text); }
 .summary { color: var(--muted); margin: 0 0 8px; font-size: 13px; }
+/* 场景概念图的真实提示词：折叠展示，让人能自己核对"背景图里到底有没有角色" */
+.promptfold { margin: 2px 0 6px; }
+.promptfold summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.bgprompt {
+  font-size: 12px; line-height: 1.6; color: var(--muted);
+  border-left: 2px solid var(--line); padding-left: 8px; margin: 6px 0 0;
+  white-space: pre-wrap; word-break: break-word;
+}
 .shot-table td { vertical-align: top; }
 .shot-table .action { font-size: 13px; }
 .line { font-size: 13px; margin: 3px 0; }

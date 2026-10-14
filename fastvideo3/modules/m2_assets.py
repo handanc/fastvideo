@@ -48,39 +48,119 @@ _SCENE_NEGATIVE = (
 
 #: summary 里出现这些字就整句丢掉：场景描述是 LLM 写的，十有八九带着角色名与动作，
 #: 直接拼进提示词等于请模型画人。按子句过滤比整段丢弃保留更多可用的氛围信息。
+#: 黑名单只能挡住"点名某人"，挡不住**动作与心理状态**：2026-10-14 实测有剧情残片
+#: 漏进场景图的"氛围与陈设"槽（"拒绝前行"、"瞬间也被迷住，忘记了自己的身份和誓言"、
+#: "打破僵局"）—— 那是人的状态，不是空间的状态，模型据此就会往画面里补人。
 _PERSON_HINTS = (
     "人", "僧", "侠", "王", "后", "娘", "娃", "孩", "众", "群", "他", "她",
     "角色", "身影", "面孔", "手", "脸", "走", "说", "喊", "笑", "看",
+    # 动作/位移/表情
+    "行", "赴", "立", "站", "坐", "躺", "跪", "抱", "拉", "推", "拽", "打", "踢",
+    "跳", "转身", "回", "望", "盯", "瞥", "皱眉", "怒", "喜", "哭", "泪", "呆",
+    "愣", "点头", "摇头", "挥手", "指", "吸引", "迷", "恋", "吻", "握", "拖",
+    # 心理/状态/言语
+    "忘记", "想", "念", "觉", "意识", "害羞", "心动", "僵局", "劝", "诫", "誓",
+    "身份", "拒绝", "不肯", "不愿", "舍不得", "试图", "决定", "惊呼", "质问",
+)
+
+#: 白名单：能进"氛围与陈设"槽的小句必须**说的是空间本身**。summary 按定义是剧情
+#: （谁做了什么），靠黑名单一条条追是追不完的 —— 反过来只放行含空间/陈设/光线词的
+#: 小句，漏进来的概率从"每条都要想到"变成"必须命中这几十个名词之一"。
+_SPACE_WORDS = (
+    "街", "道", "路", "巷", "殿", "宫", "堂", "楼", "阁", "亭", "台", "墙", "院",
+    "门", "窗", "廊", "阶", "梯", "桥", "塔", "庙", "寺", "村", "城", "市", "集",
+    "摊", "帐", "帘", "幕", "桌", "椅", "床", "案", "镜", "画", "灯", "烛", "香",
+    "钟", "鼓", "旗", "伞", "车", "船", "马", "树", "林", "草", "花", "山", "石",
+    "岩", "洞", "水", "河", "湖", "海", "泉", "井", "田", "园", "沙", "泥", "雪",
+    "冰", "雨", "雾", "云", "天", "空", "阳", "光", "影", "色", "烟", "尘", "风",
+    "瀑", "池", "阶前", "庭院", "屋", "檐", "柱", "栏", "铺", "坛", "墓", "寨",
 )
 
 
+def _space_clauses(text: str, names: list[str]) -> list[str]:
+    """从自由文本里挑出**只描述空间**的小句：先滤掉任何人相关词，再要求命中空间名词。"""
+    out: list[str] = []
+    for raw in re.split(r"[，。；,;、]", str(text or "")):
+        c = raw.strip()
+        if not c:
+            continue
+        if any(n and n in c for n in names):
+            continue
+        if any(w in c for w in _PERSON_HINTS):
+            continue
+        if not any(w in c for w in _SPACE_WORDS):
+            continue
+        out.append(c)
+    return out
+
+
+#: 风格锚里属于"人像/皮肤"的词：对定妆照是对的，对**空景背景**就是在正向提示里
+#: 提人 —— 与"画面中没有任何人物"自相矛盾，而模型听正向的那句。
+#: 「真人写实」也是正向词：它是"不要卡通"的写法，但 t2i 读到「真人」就可能在空景里
+#: 摆一个人 —— 与"没有任何人物"对着干。换成不提人的等价说法。
+_PORTRAIT_STYLE_REWRITES = (
+    ("真人写实电影剧照", "实拍质感电影剧照"),
+    ("真人写实", "实拍质感"),
+    ("自然皮肤纹理", ""),
+    ("皮肤纹理", ""),
+    ("realistic human skin", ""),
+    ("human skin", ""),
+    ("肤质", ""),
+)
+
+
+def _scene_style(style_suffix: str) -> str:
+    """把人像专属的风格词换成不提人的等价说法，并清理剥完留下的空逗号。"""
+    s = str(style_suffix or "")
+    for w, repl in _PORTRAIT_STYLE_REWRITES:
+        s = s.replace(w, repl)
+    s = re.sub(r"，\s*[，,]+", "，", s)          # 中文里连出现的逗号
+    s = re.sub(r",\s*(?:,\s*)+", ", ", s)        # 英文侧 ", ," 这类悬空分隔
+    s = re.sub(r"\s{2,}", " ", s)
+    return s.strip(" ，,")
+
+
 def scene_background_prompt(cfg: Any, script: Any, scene: Any) -> str:
-    """纯背景的场景概念图提示词：**空景在前、禁人在后**，summary 先过人物过滤。
+    """纯背景的场景概念图提示词：**空景在前、禁人在后**，正文里绝不出现人或演员。
 
     为什么过滤是必须的而不是"加一句无人物"就够：t2i 模型对"画面里有什么"的服从度
     远高于对"没有什么"的服从度 —— 提示词正文里写着"猪八戒拉着唐僧"，尾缀一句
     "无人物"压不住它。把带人物的子句从正文里删掉，才是把人物从**正向描述**里移除。
+
+    同一原理适用于两处容易忽略的泄漏：
+    - 剧情残片（"拒绝前行"、"被迷住"）说的是人的状态，也要挡在正文外 → 小句必须
+      命中空间名词才放行（`_space_clauses`）；
+    - 风格锚里的"自然皮肤纹理 / realistic human skin"是给人像用的，背景图带着它
+      等于正向着陆强调皮肤 → 剥掉（`_scene_style`）。
+    - 收尾构图句也不能写"演员""人物"：改成说地面与景深。
     """
     names = [str(c.name or "") for c in script.characters] + [
         str(c.character_id) for c in script.characters
     ]
-    clauses = re.split(r"[，。；,;]", str(scene.summary or ""))
-    bg = [
-        c.strip()
-        for c in clauses
-        if c.strip()
-        and not any(n and n in c for n in names)
-        and not any(w in c for w in _PERSON_HINTS)
-    ]
-    mood = "，".join(bg[:3])
+    # 场景自己的标题也是剧情（"八戒滞留女儿国街头"），同样不进正文。
+    # 但**单字不做子串匹配**（与 `schema._ALIAS_MIN` 同一条规矩）：标题写成"街"时，
+    # 子串匹配会把"街道繁华"这种正经空间描述一起误杀 —— 误杀比漏杀更糟，因为它安静地
+    # 把提示词变成空壳，没人会去查。单字的线索本来已由 _PERSON_HINTS 覆盖。
+    guards = [n for n in names + [str(scene.title or "")] if len(str(n).strip()) >= 2]
+    bg = _space_clauses(scene.summary, guards)
     parts = [
         "空景场景概念图，画面中没有任何人物、人影或肢体，只画空间本身。",
         f"地点：{scene.location}。时间：{scene.time_of_day}。",
     ]
-    if mood:
-        parts.append(f"氛围与陈设：{mood}。")
-    parts.append(f"风格：{script.base_info.style}。{cfg.style_suffix}".strip())
-    parts.append("构图留给演员站位：中景到远景之间的机位，留出人物将要站立的区域。")
+    if bg:
+        parts.append(f"氛围与陈设：{'，'.join(bg[:3])}。")
+    else:
+        # 滤完什么都没有 —— 这是常态（summary 按定义是剧情）。此时用地点本身做空间描述，
+        # 宁可平实也不要塞进"忘记誓言"这种心理残句，那只会把画面带向有人。
+        parts.append(
+            f"{scene.location}的全景与近景细节完整：地面、墙面、陈设与"
+            f"{scene.time_of_day}间的光线方向都要成立。"
+        )
+    parts.append(f"风格：{script.base_info.style}。{_scene_style(cfg.style_suffix)}".strip())
+    parts.append(
+        "构图：中景到远景机位，地面与空间留白充足、景深层次清晰，"
+        "陈设与透视关系完整，画面以空间本身为主体。"
+    )
     return " ".join(p for p in parts if p).strip()
 
 

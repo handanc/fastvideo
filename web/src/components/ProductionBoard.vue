@@ -612,7 +612,7 @@ watch(() => props.board?.script_version, (v, old) => {
                 · {{ s.time_of_day }} · {{ s.shots.length }} 镜</span>
               <p
                 v-if="!editKey('scene', s.id, 'summary')"
-                class="summary editable" title="点击修改场景氛围描述（概念图提示词的原料）"
+                class="summary editable" title="点击修改剧情梗概（背景图会过滤掉其中的人物描述）"
                 @click="startInline('scene', s.id, 'summary', s.summary)"
               >{{ s.summary || '（点击写场景氛围描述）' }}</p>
               <textarea
@@ -622,6 +622,12 @@ watch(() => props.board?.script_version, (v, old) => {
                 @keydown.esc.prevent="cancelInline"
                 @keydown.ctrl.enter="commitInline"
               ></textarea>
+              <!-- 概念图是**空景背景**：这里直接摆实际发出去的提示词，
+                   而不是让人对着剧情梗概猜"背景图里是不是要画角色"。 -->
+              <details v-if="s.bg_prompt" class="promptfold">
+                <summary>文生图提示词 · 空景背景（图中无人）</summary>
+                <p class="bgprompt">{{ s.bg_prompt }}</p>
+              </details>
               <span v-if="s.uploaded" class="badge ok small">已上传</span>
               <label class="upl">
                 <input type="file" accept="image/png,image/jpeg,image/webp" hidden
