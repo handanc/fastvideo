@@ -17,7 +17,7 @@ function openRun(id) {
 
 <template>
   <header class="topbar">
-    <div class="brand" @click="view = 'new'">🎬 AI短剧生成系统<span>文本 · 图像 · 视频 · 语音</span></div>
+    <div class="brand" @click="view = 'new'">🎬 FastVideo3-AI短剧生成系统</div>
     <nav>
       <button :class="{ active: view === 'new' }" @click="view = 'new'">新建任务</button>
       <button :class="{ active: view === 'runs' || view === 'detail' }" @click="view = 'runs'">

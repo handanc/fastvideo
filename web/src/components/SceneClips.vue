@@ -255,7 +255,9 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
       </ol>
 
       <!-- 参考形态：只允许在**已有**的图里选，不允许在这里改图 -->
-      <div v-if="g.mode === 'reference'" class="modelBar">
+      <!-- 编辑区跟着**用户的选择**走，不跟着"生效形态"走：选了首尾帧却只显示参考素材，
+           等于把「生成首尾帧」按钮藏起来，用户无路可走（2026-10-14 实测的死角）。 -->
+      <div v-if="g.mode === 'reference' && g.override_mode !== 'first_last'" class="modelBar">
         <div v-for="cid in g.characters" :key="cid" class="refRow">
           <label class="chk">
             <input type="checkbox" :checked="(g.char_refs || []).includes(cid)"
@@ -284,7 +286,12 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
       </div>
 
       <!-- 首尾帧形态：先出帧，再按帧出片 -->
-      <div v-else-if="g.mode === 'first_last'" class="modelBar">
+      <div v-if="g.mode === 'first_last' || g.override_mode === 'first_last'" class="modelBar">
+        <div v-if="!g.first_frame" class="alert warn">
+          这一组还没有首帧：<b>先点下面的「生成首尾帧」</b>（只花 t2i 的钱）。
+          在出帧之前点「生成」会按<b>参考形态</b>走 —— 官方规定首尾帧形态必须先有帧，
+          没有帧就发不出 <code>first_frame</code>。
+        </div>
         <label class="field"><span>首帧提示词（可改）</span>
           <textarea v-model="g.prompt_first" rows="3"></textarea>
         </label>

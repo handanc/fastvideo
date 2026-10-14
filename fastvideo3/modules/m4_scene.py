@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -326,6 +327,96 @@ def scene_image_path(assets: dict, storage: RunStorage, sid: str) -> Path | None
     return asset_image(assets, storage, f"scene_{sid}")
 
 
+@dataclass
+class InputPlan:
+    """一次场景级生成的**素材清单与形态决定**（生成与预览共用同一份，见下）。"""
+
+    mode: str
+    why: str
+    speakers: tuple[str, ...]
+    img_cids: list[str]
+    scene_sids: list[str]
+    audio_cids: list[str]
+    ref_files: list[Path]
+    plan: RefPlan
+    got_voice: dict
+    first_frame: Path | None
+    last_frame_path: Path | None
+
+
+def plan_inputs(
+    cfg: AppConfig,
+    storage: RunStorage,
+    assets: dict,
+    script: Script,
+    group: SceneGroup,
+    ov: dict | None = None,
+    *,
+    lines: list[Any] | None = None,
+    frames: dict[str, str] | None = None,
+) -> InputPlan:
+    """决定这一组发什么素材、走哪种形态、以及提示词里的 图N/音频N 编号。
+
+    **必须是唯一一份实现**：面板上的提示词预览与真正提交给 wan3.0 的那份，只要各自算一遍，
+    编号就必然分叉 —— 2026-10-14 实测过：预览写着"唐僧的音色参考音频1、猪八戒的音色参考音频2"，
+    而盘上根本没有配音母带，实际请求里音频为空（提示词指向了不存在的素材编号，模型只会把
+    锁声意图错配到别的素材上）。所以预览与生成都调这里，谁也不许另算一遍。
+
+    顺序是刻意的：**先解析盘上真的有什么，再编号**。反过来（先写提示词再裁素材）就会
+    出现"提示词说图3、media 里只有两张"，模型不报错，只把第三张的锁脸意图套到别的图上。
+    """
+    from fastvideo3.modules.m4_shots import _last_frame_path
+
+    ov = ov or {}
+    frames = frames or {}
+    look_cids, scene_sids = _ordered_refs(group, assets, ov, storage)
+    gshots = {sh.shot_id: sh for sh in script.all_shots() if sh.shot_id in set(group.shot_ids)}
+    speakers = tuple(dict.fromkeys(
+        d.character_id for sid in group.shot_ids for d in (gshots[sid].dialogues if sid in gshots else [])
+    ))
+    # 音色候选顺序：本组有台词的角色优先（他们才需要锁声），其余按出场顺序补
+    voice_cids = [c for c in speakers if c in group.characters]
+    voice_cids += [c for c in group.characters if c not in voice_cids]
+    got_voice, voice_skipped = voiceref.build_voice_refs(
+        storage, list(lines or []), group, voice_cids
+    )
+
+    capped = list(look_cids[:MAX_REF_IMAGES])
+    scene_capped = scene_sids[: max(0, MAX_REF_IMAGES - len(capped))]
+    char_files = [(c, _ref_path(assets, storage, ov, c)) for c in capped]
+    scene_files = [(s, scene_image_path(assets, storage, s)) for s in scene_capped]
+    img_cids = [c for c, pa in char_files if pa is not None]
+    img_paths = [pa for _, pa in char_files if pa is not None]
+    scene_sids = [s for s, pa in scene_files if pa is not None]
+    scene_paths = [pa for _, pa in scene_files if pa is not None]
+    audio_cids = [c for c in voice_cids if c in got_voice]
+    plan = RefPlan(
+        images=tuple((f"图{i + 1}", c) for i, c in enumerate(img_cids)),
+        scene_images=tuple((f"图{len(img_cids) + i + 1}", s) for i, s in enumerate(scene_sids)),
+        audios=tuple((f"音频{i + 1}", c) for i, c in enumerate(audio_cids)),
+        dropped_images=tuple([c for c, pa in char_files if pa is None] + look_cids[MAX_REF_IMAGES:]
+                             + [s for s, pa in scene_files if pa is None]),
+        dropped_audios=tuple(voice_skipped),
+    )
+
+    first_shot, last_shot = group.shot_ids[0], group.shot_ids[-1]
+    first_frame = Path(frames[first_shot]) if frames.get(first_shot) else None
+    last_frame_path = _last_frame_path(storage, last_shot) if cfg.use_last_frames else None
+    mode, why = choose_input_mode(
+        group,
+        has_dialogue=bool(speakers),
+        has_first_frames=first_frame is not None,
+        has_references=bool(img_paths or scene_paths),
+        forced=str(ov.get("mode") or cfg.scene_clip_mode or "auto"),
+    )
+    return InputPlan(
+        mode=mode, why=why, speakers=speakers,
+        img_cids=img_cids, scene_sids=scene_sids, audio_cids=audio_cids,
+        ref_files=img_paths + scene_paths, plan=plan, got_voice=got_voice,
+        first_frame=first_frame, last_frame_path=last_frame_path,
+    )
+
+
 async def generate_scene_clips(
     cfg: AppConfig,
     provider: Any,
@@ -354,7 +445,6 @@ async def generate_scene_clips(
     素材编号、模式与理由。m7 的字幕、m9 的逐镜头 QC/身份度量、以及"只重拍一个镜头"
     的降级路径全靠它 —— 没有这份映射，场景片段就是一块不可拆的黑箱。
     """
-    from fastvideo3.modules.m4_shots import _last_frame_path
     from fastvideo3.providers.dashscope import actual_resolution_tier, billable_seconds
 
     frames = frames or {}
@@ -381,54 +471,19 @@ async def generate_scene_clips(
             continue
 
         ov = (overrides or {}).get(gid) or {}
-        look_cids, scene_sids = _ordered_refs(group, assets, ov, storage)
-        gshots = {sh.shot_id: sh for sh in script.all_shots() if sh.shot_id in set(group.shot_ids)}
-        speakers = tuple(dict.fromkeys(
-            d.character_id for sid in group.shot_ids for d in (gshots[sid].dialogues if sid in gshots else [])
-        ))
-        # 音色候选顺序：本组有台词的角色优先（他们才需要锁声），其余按出场顺序补
-        voice_cids = [c for c in speakers if c in group.characters]
-        voice_cids += [c for c in group.characters if c not in voice_cids]
-        got_voice, voice_skipped = voiceref.build_voice_refs(storage, lines, group, voice_cids)
-
-        # **先定实际能发什么，再写提示词**：编号（图N/音频N）必须与 media 数组顺序逐位
-        # 对应。反过来先写提示词再裁素材，就会出现"提示词说图3、media 里只有两张"，
-        # 模型不报错，只会把锁脸意图套到错误的图上。所以先把路径解析出来、按解析成功的
-        # 那批裁剪名单，再编号。
-        capped = [c for c in look_cids[:MAX_REF_IMAGES]]
-        scene_capped = scene_sids[: max(0, MAX_REF_IMAGES - len(capped))]
-        char_files = [
-            (c, _ref_path(assets, storage, ov, c)) for c in capped
-        ]
-        scene_files = [(s, scene_image_path(assets, storage, s)) for s in scene_capped]
-        img_cids = [c for c, p in char_files if p is not None]
-        img_paths = [p for _, p in char_files if p is not None]
-        scene_sids = [s for s, p in scene_files if p is not None]
-        scene_paths = [p for _, p in scene_files if p is not None]
-        ref_files = img_paths + scene_paths
-        dropped_images = [c for c, p in char_files if p is None] + look_cids[MAX_REF_IMAGES:]
-        dropped_scenes = [s for s, p in scene_files if p is None]
-        audio_cids = [c for c in voice_cids if c in got_voice]
-        plan = RefPlan(
-            images=tuple((f"图{i + 1}", c) for i, c in enumerate(img_cids)),
-            scene_images=tuple(
-                (f"图{len(img_cids) + i + 1}", s) for i, s in enumerate(scene_sids)
-            ),
-            audios=tuple((f"音频{i + 1}", c) for i, c in enumerate(audio_cids)),
-            dropped_images=tuple(dropped_images + dropped_scenes),
-            dropped_audios=tuple(voice_skipped),
+        planned = plan_inputs(
+            cfg, storage, assets, script, group, ov, lines=lines, frames=frames
         )
-
-        first_shot, last_shot = group.shot_ids[0], group.shot_ids[-1]
-        first_frame = Path(frames[first_shot]) if frames.get(first_shot) else None
-        last_frame_path = _last_frame_path(storage, last_shot) if cfg.use_last_frames else None
-        mode, why = choose_input_mode(
-            group,
-            has_dialogue=bool(speakers),
-            has_first_frames=first_frame is not None,
-            has_references=bool(ref_files),
-            forced=str(ov.get("mode") or cfg.scene_clip_mode or "auto"),
-        )
+        img_cids = planned.img_cids
+        scene_sids = planned.scene_sids
+        audio_cids = planned.audio_cids
+        plan = planned.plan
+        speakers = planned.speakers
+        first_frame = planned.first_frame
+        last_frame_path = planned.last_frame_path
+        mode, why = planned.mode, planned.why
+        ref_files = planned.ref_files
+        got_voice = planned.got_voice
         if mode == MODE_NONE:
             storage.log_event("m4_scene", "scene_no_input", group=gid, error=why[:200])
             storage.log_degradation(

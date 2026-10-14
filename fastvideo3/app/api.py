@@ -41,6 +41,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from fastvideo3.core import config as config_mod
+from fastvideo3.core.assets import load_assets
 from fastvideo3.core.config import (
     DURATION_MAX,
     DURATION_MIN,
@@ -813,16 +814,59 @@ def reconcile_run_cost(run_id: str) -> dict:
     return data
 
 
-def _scene_prompt_preview(cfg: Any, group: Any, script: Any, ov: dict) -> str:
-    """参考形态下"将要发送"的提示词预览（编号与实发素材同序）。"""
-    from fastvideo3.core.scenegroup import plan_references
-    from fastvideo3.modules.m4_scene import scene_prompt
+def _run_id_of(root: Path) -> str:
+    """run 目录名就是 run_id（`RunStorage` 自己会再拼一层，所以传的是父目录）。"""
+    return root.name
 
-    speakers = tuple(dict.fromkeys(
-        d.character_id for sh in script.all_shots()
-        if sh.shot_id in set(group.shot_ids) for d in sh.dialogues
-    ))
-    plan = plan_references(group, speakers=speakers, scene_ids=tuple(group.scene_ids))
+
+def _audio_lines(root: Path) -> list:
+    """配音母带清单（m5 的 audio_map.json）：提示词里的 音频N 编号靠它兑现。"""
+    from fastvideo3.core.schema import AudioLine
+
+    data = _read_json(root / "audio_map.json") or []
+    out = []
+    for ln in data:
+        try:
+            out.append(AudioLine(**ln))
+        except Exception:  # noqa: BLE001 老/坏 audio_map 不该让看板 500
+            continue
+    return out
+
+
+def _first_frames(root: Path) -> dict[str, str]:
+    """盘上已有的分镜首帧（shot_id → 绝对路径）：决定这一组能不能走首尾帧形态。"""
+    sb = root / "storyboard"
+    if not sb.is_dir():
+        return {}
+    return {
+        p.stem.replace("shot_", ""): str(p)
+        for p in sorted(sb.glob("shot_*.png"))
+        if "_last" not in p.name
+    }
+
+
+def _scene_prompt_preview(
+    cfg: Any, group: Any, script: Any, ov: dict, *, root: Path | None = None, lines: list | None = None,
+    frames: dict | None = None, assets: dict | None = None,
+) -> str:
+    """"将要发送"的提示词预览 —— 与真正提交的那份**同源同编号**。
+
+    以前这里自己用 `plan_references` 重算一遍编号：那是"按剧本推断该发什么"，而生成时是
+    "盘上实际有什么"。两者一旦不同，预览就会承诺不存在的素材（2026-10-14 实测：预览写
+    "唐僧的音色参考音频1、猪八戒的音色参考音频2"，而 run 里根本没有配音母带，实发音频为空）。
+    预览的意义在于它就是将要发出去的东西，所以一律走 `m4_scene.plan_inputs`。
+    """
+    from fastvideo3.modules.m4_scene import MODE_REFERENCE, plan_inputs, scene_prompt
+
+    if root is None or assets is None:
+        # 没有盘上实况可查（老调用方）：只能按剧本推断，但**不许再承诺音色编号**
+        plan = None
+    else:
+        planned = plan_inputs(
+            cfg, RunStorage(_run_id_of(root), root=root.parent),
+            assets, script, group, ov, lines=lines or [], frames=frames or {},
+        )
+        plan = planned.plan if planned.mode == MODE_REFERENCE else None
     return scene_prompt(cfg, group, script, script.character_map(), plan)
 
 
@@ -954,7 +998,10 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
                 "prompt_first": str(ov.get("prompt_first") or prompts[0]),
                 "prompt_last": str(ov.get("prompt_last") or prompts[1]),
                 # 参考形态的整段提示词也给人看、给人改：机器拼的模板是默认值不是上限
-                "prompt": str(ov.get("prompt") or _scene_prompt_preview(cfg, g, script, ov)),
+                "prompt": str(ov.get("prompt") or _scene_prompt_preview(
+                    cfg, g, script, ov, root=root, lines=_audio_lines(root),
+                    frames=_first_frames(root), assets=load_assets(storage),
+                )),
                 "char_options": {
                     cid: {
                         "portrait": (char_imgs.get(cid) or [None])[0],

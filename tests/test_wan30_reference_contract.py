@@ -88,9 +88,13 @@ def run(tmp_path):
         {"run_id": rid, "base_info": BaseInfo(topic="契约", target_duration_sec=9).model_dump(),
          "quality": "cinema", "talk_mode": "scripted_talk", "budget_limit_cny": 100.0},
     )
-    # 配音母带：音色参考样本是从**台词母带**里切的（m5 的产物），不是凭空造的文件
+    # 配音母带：音色参考样本是从**台词母带**里切的（m5 的产物），不是凭空造的文件。
+    # 连 audio_map.json 一起落 —— 那才是 m5 的完整产物形态，而面板预览正是读它。
     _fake_wav(storage.root / "audio" / "line_s1_01_0.wav", seconds=4.0)
     _fake_wav(storage.root / "audio" / "line_s1_02_0.wav", seconds=4.0)
+    storage.save_json("audio_map.json", [
+        ln.model_dump() for ln in _lines(storage)
+    ])
     return storage, script
 
 
@@ -376,3 +380,35 @@ async def test_first_last_body_when_no_reference_images(run, monkeypatch):
     assert [m["type"] for m in media] == ["first_frame", "last_frame"], media
     assert cap.bodies[0]["input"]["prompt"].strip(), "首尾帧模式提示词必填（官方）"
     assert cap.bodies[0]["parameters"].get("ratio") == "adaptive", "首尾帧建议自适应比例"
+
+async def test_panel_preview_is_byte_identical_to_what_gets_sent(run, monkeypatch):
+    """面板上那段"本段视频的提示词"必须**就是**将要发出去的那段，逐字节相同。
+
+    预览曾经自己用 `plan_references` 按剧本推断编号，而生成时按盘上实况编号：两者一旦
+    不同，预览就会承诺不存在的素材。2026-10-14 实测到预览写着"唐僧的音色参考音频1、
+    猪八戒的音色参考音频2"，而那条 run 根本没有配音母带，实发音频为空 —— 编号指向不存在
+    的素材时模型不会报错，只会把锁声意图错配到别的素材上。
+    现在两边都走 `m4_scene.plan_inputs`，这条测试把它钉住。
+    """
+    import fastvideo3.app.api as api_mod
+
+    storage, _script = run
+    # 两边必须用**同一份配置向量**：面板按 run_meta 恢复（`_cfg_for_run`），生成侧在
+    # `_cfg_from_meta` 里同样按 run_meta 恢复 —— 线上本来就同源。测试里若一边用
+    # `load_config()` 的默认档、另一边用 meta 的档位，风格锚会不同，比的就不是编号了。
+    cfg = api_mod._cfg_for_run(storage.root)
+    storage2, cfg2, provider, cap, got, ledger = await _reference_request(
+        run, monkeypatch, cfg=cfg
+    )
+
+    payload = api_mod._scene_groups_payload(storage.run_id, storage.root)
+    by_gid = {g["group_id"]: g for g in payload["groups"]}
+    assert by_gid, "面板至少要能列出这一组"
+    gid = next(iter(by_gid))
+    sent = cap.bodies[0]["input"]["prompt"]
+    assert by_gid[gid]["prompt"] == sent, "预览与实发不一致：编号会指向不存在的素材"
+    # 有配音母带时，两边都必须兑现同样的 音频N（编号只能指向真实发出去的素材）
+    assert "音频1" in sent and "音频1" in by_gid[gid]["prompt"], sent[-260:]
+    media = cap.bodies[0]["input"]["media"]
+    n_audio = sum(1 for m in media if m["type"] == "reference_audio")
+    assert n_audio >= 1, media
