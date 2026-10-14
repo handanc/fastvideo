@@ -119,15 +119,13 @@ const qualityVerdict = computed(() => board.value?.quality_verdict || null)
 // 模型溯源（写在 run_meta 里）：这条 run 点名用过哪些模型 + 有没有同时写回 .env
 const modelProvenance = computed(() => {
   const m = detail.value?.meta || {}
-  const chosen = Object.entries(m.model_overrides || {}).filter(([, v]) => v)
+  // talk 不再单列：口型就是 i2v 那同一次 wan3.0 调用，摆出来只会让人以为还有个口型开关
+  const chosen = Object.entries(m.model_overrides || {}).filter(([k, v]) => v && k !== 'talk')
   if (!chosen.length) return ''
   const picks = chosen.map(([k, v]) => `${k} = ${v}`).join('、')
-  const written = (m.model_env_written || []).join('、')
-  return m.fake
-    ? `本任务点名模型：${picks}（Fake 模式，未调用真实模型，也未写回 .env）`
-    : written
-      ? `本任务点名模型：${picks}；已写回 .env（${written}）→ 之后新建的任务默认沿用这组模型`
-      : `本任务点名模型：${picks}（未写回 .env，只影响这一条任务）`
+  const tail = m.fake ? '（Fake，未调用真实模型）'
+    : (m.model_env_written || []).length ? '' : '（未写回 .env）'
+  return `模型 ${picks}${tail}`
 })
 const lipsyncGap = computed(() => {
   const c = board.value?.lipsync_coverage
@@ -232,7 +230,7 @@ onUnmounted(() => clearInterval(timer))
         <div class="cardHead">
           <h2>模型</h2>
           <button class="btn sm primary" :disabled="modelBusy" @click="saveModels">
-            {{ modelBusy ? '保存中…' : '保存并用于后续步骤' }}
+            {{ modelBusy ? '保存中…' : '保存' }}
           </button>
         </div>
         <div class="modelBar">
@@ -246,9 +244,6 @@ onUnmounted(() => clearInterval(timer))
           </label>
         </div>
         <p v-if="modelMsg" class="muted small">{{ modelMsg }}</p>
-        <p class="muted small">
-          留空＝跟随分辨率档位。保存后<b>只影响之后的步骤</b>；持锁（正在生成）时后端会拒绝修改。
-        </p>
       </div>
 
       <!-- 上一步为什么没出东西：失败原因顶格显示，别让用户猜 -->
@@ -271,9 +266,7 @@ onUnmounted(() => clearInterval(timer))
 
       <!-- 一致性闸门结论：不达标必须顶在最显眼的地方，不能让用户以为出片即合格 -->
       <div v-if="lipsyncGap && lipsyncGap.missing.length" class="alert err">
-        <b>{{ lipsyncGap.missing.length }} 个对白镜头没有口型</b>
-        （{{ lipsyncGap.missing.slice(0, 6).join('、') }}{{ lipsyncGap.missing.length > 6 ? '…' : '' }}）
-        —— 点「开始生成」会补（场景片段自带台词口型）。
+        ⚠ {{ lipsyncGap.missing.length }} 个对白镜头还没有口型 —— 点「开始生成」
       </div>
       <div v-if="costRisk" class="alert err">
         ⚠ 成本上限 <b>¥{{ Math.round(board.meta?.budget_limit_cny || 0) }}</b>

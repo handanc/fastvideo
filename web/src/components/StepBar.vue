@@ -39,7 +39,7 @@ async function runStep() {
   try {
     const r = await api.stepRun(props.runId)
     notice.value = r.started
-      ? `▶ 已开始「${r.label}」（缺口 ${r.missing?.length || 0} / 待重做 ${r.stale?.length || 0}），自动刷新`
+      ? '✔ 已开始'   // 只留一个字面确认：点了完全没回执，看起来就像按钮坏了
       : '✔ 全部完成'
     emit('changed')
   } catch (e) {
@@ -79,10 +79,6 @@ async function runStep() {
         上限 ¥{{ Number(props.steps?.budget_cny || 0).toFixed(0) }}
       </span>
     </div>
-    <p v-if="next" class="muted small">
-      下一步{{ next.label }}：缺口 {{ next.missing?.length || 0 }}、待重做
-      {{ next.stale?.length || 0 }}；只补这些，已完成的不重复花钱。
-    </p>
     <p v-for="s in list.filter((x) => x.state === 'failed')" :key="s.id" class="alert err">
       「{{ s.label }}」失败：{{ s.error }} —— 修复后再点「开始生成」会从这一步继续。
     </p>

@@ -533,7 +533,7 @@ async def _run_step(ctx, storage, cfg, meta, st) -> list[str]:
 
         from fastvideo3.core.progress import apply_lipsync_verdict, lipsync_coverage
 
-        cov = lipsync_coverage(storage, script, cfg.talk_mode)
+        cov = lipsync_coverage(storage, script, cfg.talk_mode, cfg)
         before = verdict
         verdict = apply_lipsync_verdict(verdict, cov, cfg.quality)
         if verdict is not before and verdict.get("lipsync_missing"):

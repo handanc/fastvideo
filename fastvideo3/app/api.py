@@ -936,6 +936,12 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
                     has_references=has_refs,
                 )[0],
                 "mode": mode,
+                # **下拉框要显示"用户选的那个"，不是"系统算出来的那个"**：
+                # 之前 select 绑的是 `mode`（受物理前提影响算出的生效形态）。用户手工选了
+                # "首尾帧"、但本组还没有首帧 → 后端算成 reference 并在盘上按 first_last 计划
+                # 需求（frame_needs 假设帧可以画），界面却显示"角色+场景生成" —— 于是出现
+                # "我明明选了角色+场景，为什么还要先画首帧"的死循环式困惑（2026-10-14 实测）。
+                "override_mode": str(ov.get("mode") or "auto"),
                 "mode_reason": why,
                 "clip": _url(run_id, "clips", f"scene_{g.group_id}.mp4")
                 if (root / "clips" / f"scene_{g.group_id}.mp4").is_file() else None,
@@ -1198,8 +1204,11 @@ def production_board(run_id: str) -> dict:
     from fastvideo3.core.progress import last_frame_coverage, lipsync_coverage
 
     _st = RunStorage(run_id, root=root.parent)  # RunStorage 会再拼一层 run_id
-    _mode = str(meta.get("talk_mode") or _cfg_for_run(root).talk_mode)
-    board["lipsync_coverage"] = lipsync_coverage(_st, script, _mode)
+    _cfg_run = _cfg_for_run(root)
+    _mode = str(meta.get("talk_mode") or _cfg_run.talk_mode)
+    # cfg 必须传：口型现在多半在**场景片段**里（wan3.0 自带），只认 talk 产物会把
+    # 一部口型正常的成片报成"缺 N 个口型"
+    board["lipsync_coverage"] = lipsync_coverage(_st, script, _mode, _cfg_run)
     # 尾帧覆盖率：缺尾帧时 m4 会退回单首帧，而产物照样出得来 —— 完成度判据看不见它，
     # 所以必须在看板上单独说（否则用户的观感就是"首尾帧改造没生效"）。
     board["last_frame_coverage"] = last_frame_coverage(_st, script, _mode, _cfg_for_run(root))

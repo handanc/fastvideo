@@ -93,3 +93,56 @@ def test_silence_gives_none_not_fake_score(tmp_path):
 # （同素材三区幅度 嘴0.8/脸4.4/背景4.2 的实测证伪），所以 `_lipsync_check` 现在要求
 # 先由视觉模型定位取样框才允许判"不同步"，未定位一律无结论、不标 stale ——
 # 于是"标 stale"这件事必须先有 vlm 桩，测试形状随之变化（新文件里带三种情形）。
+
+def test_scene_clip_counts_as_lipsync_coverage(tmp_path):
+    """口型覆盖必须认两种来源：talk 产物 **和** 场景片段（wan3.0 一次调用自带口型）。
+
+    只认 `talk/shot_*.mp4` 的旧判据会把现在的默认路径全报成缺口：场景级生成下盘上
+    **永远没有** talk 文件，于是一部口型正常的成片被看板标"3 个对白镜头没有口型"，
+    high/cinema 档更会被 `apply_lipsync_verdict` 直接判成不合格（2026-10-14 实测）。
+    同时安全网不能失效：既无片段又无 talk 产物时，必须照样报缺。
+    """
+    import json
+
+    from fastvideo3.core.config import AppConfig
+    from fastvideo3.core.progress import lipsync_coverage
+    from fastvideo3.core.schema import BaseInfo, DialogueLine, Scene, Script, Shot, ShotType
+    from fastvideo3.core.storage import RunStorage
+
+    storage = RunStorage("run_cov", root=tmp_path)
+    script = Script(
+        base_info=BaseInfo(topic="覆盖"),
+        characters=[{"character_id": "c1", "name": "甲", "appearance": "白衣"}],
+        scenes=[Scene(
+            scene_id="s1", title="t", location="街", time_of_day="日",
+            shots=[Shot(
+                shot_id="s1_01", scene_id="s1", type=ShotType.DIALOGUE, duration_sec=4.0,
+                characters=["c1"], action="说话",
+                dialogues=[DialogueLine(character_id="c1", text="你好")],
+            )],
+        )],
+    )
+    cfg = AppConfig(fake=True)
+    clip = storage.path("clips", "scene_s1.mp4")
+    side = storage.path("clips", "scene_s1.json")
+
+    # ① 什么都没有 → 缺口必须报出来（旧安全网不能被新判据顺手关掉）
+    cov0 = lipsync_coverage(storage, script, "scripted_talk", cfg)
+    assert cov0["missing"] == ["s1_01"], cov0
+
+    # ② 场景片段在盘且不作废 → 口型在片段里，不再是缺口，并说清来源
+    clip.write_bytes(b"x")
+    side.write_text(json.dumps({"group_id": "s1", "shot_ids": ["s1_01"],
+                                "windows": {"s1_01": [0.0, 4.0]}}), encoding="utf-8")
+    cov1 = lipsync_coverage(storage, script, "scripted_talk", cfg)
+    assert cov1["missing"] == [], cov1
+    assert cov1["from_scene_clip"] == ["s1_01"], cov1
+    assert cov1["with_lipsync"] == 1, cov1
+
+    # ③ 片段被上游改动标 stale → 覆盖失效，缺口重新出现（否则旧口型被当成新的）
+    storage.mark_stale(["clips/scene_s1.mp4"], "上游变了")
+    cov2 = lipsync_coverage(storage, script, "scripted_talk", cfg)
+    assert cov2["missing"] == ["s1_01"], cov2
+
+    # ④ 不传 cfg（历史调用方）时行为不变：只认 talk 产物
+    assert lipsync_coverage(storage, script, "scripted_talk")["missing"] == ["s1_01"]

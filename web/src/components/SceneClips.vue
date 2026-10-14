@@ -186,13 +186,6 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
     <div v-if="error" class="alert err">{{ error }}</div>
     <div v-if="notice" class="notice">{{ notice }}</div>
     <div v-if="msg" class="muted small">{{ msg }}</div>
-    <p class="muted small">
-      <b>一个场景 = 一段场景视频 = 一次 wan3.0 调用</b>：组内多个分镜由模型自己切，
-      空间/服装/光线在组内连续，台词口型也是 wan3.0 自带的（不再有"首帧图 → 单镜头短片"那条路）。
-      卡片按 场景1 → 场景2 → 场景3 顺序排列，点「开始生成」就按这个顺序依次出片。
-      两种输入形态由规则自动判定、也可手动改：<b>角色+场景生成</b>发立绘/空景图/音色样本（锁脸锁声），
-      <b>首尾帧生成</b>锁起止构图 —— 官方规定两者互斥，不能同发。
-    </p>
 
     <div v-for="(g, i) in groups" :key="g.group_id" class="sceneGroup">
       <div class="toolbar">
@@ -207,7 +200,9 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
           自动判定={{ g.auto_mode === 'reference' ? '角色+场景' : (g.auto_mode === 'first_last' ? '首尾帧' : g.auto_mode) }}
         </span>
         <div class="spacer"></div>
-        <select class="sm" :value="g.mode" @change="setMode(g, $event.target.value)">
+        <!-- override_mode = 用户选的；mode = 实际生效的（下一行显示）。两者不一致时说明
+             物理前提不满足，原因就写在下面那行里。 -->
+        <select class="sm" :value="g.override_mode || 'auto'" @change="setMode(g, $event.target.value)">
           <option value="auto">自动（按规则）</option>
           <option value="reference">角色+场景生成</option>
           <option value="first_last">首尾帧生成</option>

@@ -484,13 +484,22 @@ def last_frame_coverage(
     }
 
 
-def lipsync_coverage(storage: RunStorage, script: Script, talk_mode: str) -> dict:
+def lipsync_coverage(storage: RunStorage, script: Script, talk_mode: str, cfg: Any = None) -> dict:
     """"成片到底有没有口型"的权威口径：进度、判定、看板共用这一个函数。
 
     为什么必须集中：此前这个判断散在 m6 的降级事件里，而**完成度判据**用的是
     "clips 在盘即视为有视频"，于是口型通道一失败，整片带着零口型镜头被标 done、
     被合成、被当成合格交付 —— 用户人工看片才发现"全片没有对口型"。
-    audio_overlay 是唯一显式不要口型的模式，其余模式缺 talk 产物即缺覆盖。
+    audio_overlay 是唯一显式不要口型的模式，其余模式缺口型即缺覆盖。
+
+    **口型的来源有两种，判据必须都认**（2026-10-14 实测：看板上"3 个对白镜头没有口型"
+    就是这么来的假警报）：
+    - 逐镜头路径：`talk/shot_{id}.mp4` 在盘 = 有口型；
+    - 场景级路径（现在的默认）：口型在 `clips/scene_{gid}.mp4` 里面，wan3.0 一次调用
+      自带，盘上**永远不会**有 `talk/shot_*.mp4` —— 只认 talk 产物就会把一部口型正常的
+      成片判成不合格（high/cinema 档 `apply_lipsync_verdict` 直接 `passed=False`）。
+    所以这里以 `scene_covered_shots` 为覆盖来源 —— 与"哪些镜头不再需要逐镜头产物"
+    是同一份判据，不另起一套。`cfg` 不给时退化为只看 talk 产物（历史调用方行为不变）。
     """
     from fastvideo3.core.talkmode import channel, lipsync_required
 
@@ -501,16 +510,27 @@ def lipsync_coverage(storage: RunStorage, script: Script, talk_mode: str) -> dic
             "missing": [], "note": f"{channel(talk_mode).label}：显式选择无口型（音轨叠加）",
         }
     waived = storage.lipsync_waivers()
+    covered = set(scene_covered_shots(storage, script, cfg).keys()) if cfg is not None else set()
     missing = [
         sid for sid in dialogue
-        if not storage.exists(f"talk/shot_{sid}.mp4") and sid not in waived
+        if sid not in covered
+        and not storage.exists(f"talk/shot_{sid}.mp4")
+        and sid not in waived
     ]
-    waived_here = [sid for sid in dialogue if sid in waived]
+    waived_here = [sid for sid in dialogue if sid in waived and sid not in covered]
+    from_scene = [sid for sid in dialogue if sid in covered]
     return {
         "required": True,
         "dialogue_shots": len(dialogue),
         "with_lipsync": len(dialogue) - len(missing) - len(waived_here),
         "missing": missing,
+        # 口型来自哪一路要分开写：只有 talk 产物算"有口型"的时代结束了，
+        # 混在一起报会让排查方向错（去找根本不存在的 talk 文件）
+        "from_scene_clip": from_scene,
+        "from_talk": [
+            sid for sid in dialogue
+            if sid not in covered and storage.exists(f"talk/shot_{sid}.mp4") and sid not in waived
+        ],
         # 豁免是"决定"不是"缺口"：看板单独列，判定不因它不合格
         "waived": waived_here,
         "waived_reasons": {sid: waived[sid] for sid in waived_here},
