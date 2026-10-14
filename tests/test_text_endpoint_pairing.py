@@ -148,3 +148,38 @@ def test_panel_refuses_a_text_model_that_is_not_in_the_catalog(tmp_path, monkeyp
             },
         )
         assert ok.status_code == 201, ok.text
+
+
+def test_first_step_failure_is_visible_in_the_step_strip(tmp_path):
+    """**第一步就失败**必须在步骤条上显示成"失败 + 原因"，而不是"有缺口"。
+
+    形状：script.json 还不存在（模型名打错 / 没 KEY / 欠费 / 超时都会这样）。
+    `compute_progress` 在"没有剧本"处提前返回（没有后续可算），那条快路曾经不经过
+    失败标注代码 —— 于是最典型的首步失败反而永远不显示原因，头部写着"失败"、
+    步骤条却只有"缺 script.json"（2026-10-14 实测）。
+    """
+    from fastvideo3.core import progress as pg
+    from fastvideo3.core.config import AppConfig
+
+    storage = RunStorage("run_first_step_fail", root=tmp_path)
+    storage.save_json(
+        "run_meta.json",
+        {"run_id": "run_first_step_fail",
+         "base_info": BaseInfo(topic="首步失败可见性").model_dump(), "fake": True},
+    )
+    storage.log_event(
+        "step", "step_failed", step="script",
+        error="deepseek: 缺少 API KEY", kind="ProviderError",
+    )
+    rep = pg.compute_progress(storage, storage.load_json("run_meta.json"), AppConfig(fake=True))
+    script_step = next(s for s in rep.steps if s.id == "script")
+    assert script_step.state == "failed", f"首步失败必须显示为 failed，实际 {script_step.state}"
+    assert "缺少 API KEY" in (script_step.error or ""), script_step.error
+    # 下一步仍然是它自己：不能因为失败就被跳过（否则用户点一次会静默跑到别的步骤）
+    assert rep.next is not None and rep.next.id == "script"
+
+    # 之后成功了就必须翻回正常，不能被一条旧失败记录钉死
+    storage.log_event("step", "step_done", step="script", produced=1)
+    rep2 = pg.compute_progress(storage, storage.load_json("run_meta.json"), AppConfig(fake=True))
+    s2 = next(s for s in rep2.steps if s.id == "script")
+    assert s2.state != "failed" and not s2.error, (s2.state, s2.error)

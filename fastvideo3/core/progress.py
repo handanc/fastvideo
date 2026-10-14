@@ -209,7 +209,7 @@ def compute_progress(
     if script is None:
         for sid in STEP_ORDER[1:]:
             steps.append(StepState(sid, STEP_LABELS[sid], "pending"))
-        return _finish(steps, s1, running, root, meta, cfg)
+        return _finish(steps, s1, running, root, meta, cfg, errors)
 
     def have(rel: str) -> bool:
         return storage.exists(rel)
@@ -391,16 +391,22 @@ def compute_progress(
     for s in steps:
         if nxt is not None and steps.index(s) > steps.index(nxt):
             s.state = "pending"
-        if s.id in errors and s.state != "done":
-            s.state = "failed"
-            s.error = errors[s.id]
-    return _finish(steps, nxt, running, root, meta, cfg)
+    return _finish(steps, nxt, running, root, meta, cfg, errors)
 
 
 def _finish(
     steps: list[StepState], nxt: StepState | None, running: bool, root: Path, meta: dict,
-    cfg: AppConfig,
+    cfg: AppConfig, errors: dict[str, str] | None = None,
 ) -> ProgressReport:
+    # **失败态在这里统一标注，而不是在各步骤算完之后**：剧本都没生成出来时
+    # `compute_progress` 会提前 return（没有 script.json 就没有后续可算），那条快路上
+    # 原来不经过标注代码 —— 于是"第一步就失败"（模型名打错、没 KEY、欠费、超时）恰恰是
+    # 唯一在面板上永远不显示失败的情形：头部写着"失败"，步骤条却只显示"有缺口"，
+    # 用户看不到任何原因（2026-10-14 实测）。放在这里，两条返回路径都覆盖。
+    for s in steps:
+        if errors and s.id in errors and s.state != "done":
+            s.state = "failed"
+            s.error = errors[s.id]
     if nxt is not None and running and nxt.state == "gap":
         nxt.state = "active"
     return ProgressReport(
