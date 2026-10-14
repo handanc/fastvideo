@@ -845,27 +845,51 @@ def _first_frames(root: Path) -> dict[str, str]:
     }
 
 
+def _scene_plan(cfg: Any, root: Path, script: Any, group: Any, ov: dict):
+    """这一组的素材计划 —— 与生成侧**同一份实现**（`m4_scene.plan_inputs`）。
+
+    以前预览自己用 `plan_references` 按剧本推断编号，而生成时按盘上实况编号：两者一旦
+    分叉，预览就会承诺不存在的素材（2026-10-14 实测：预览写"唐僧的音色参考音频1、
+    猪八戒的音色参考音频2"，而那条 run 根本没有配音母带，实发音频为空 —— 编号指向不存在
+    的素材时模型不会报错，只会把锁声意图错配到别的素材上）。
+    """
+    from fastvideo3.modules.m4_scene import plan_inputs
+
+    storage = RunStorage(_run_id_of(root), root=root.parent)
+    return plan_inputs(
+        cfg, storage, load_assets(storage), script, group, ov,
+        lines=_audio_lines(root), frames=_first_frames(root),
+    )
+
+
+def _ref_legend(script: Any, plan: Any) -> list[str]:
+    """编号对照表：提示词里写"图2"，人得知道图2 是谁。与实发素材同源。"""
+    if plan is None:
+        return []
+    names = script.character_map()
+    scene_names = {sc.scene_id: (sc.title or sc.location or sc.scene_id) for sc in script.scenes}
+    out: list[str] = []
+    for label, cid in plan.images:
+        ch = names.get(cid)
+        out.append(f"{label} = {(getattr(ch, 'name', '') or cid)} · 立绘")
+    for label, sid in plan.scene_images:
+        out.append(f"{label} = {scene_names.get(sid, sid)} · 空景背景（图中无人）")
+    for label, cid in plan.audios:
+        ch = names.get(cid)
+        out.append(f"{label} = {(getattr(ch, 'name', '') or cid)} · 音色样本")
+    return out
+
+
 def _scene_prompt_preview(
     cfg: Any, group: Any, script: Any, ov: dict, *, root: Path | None = None, lines: list | None = None,
     frames: dict | None = None, assets: dict | None = None,
 ) -> str:
-    """"将要发送"的提示词预览 —— 与真正提交的那份**同源同编号**。
+    """"将要发送"的提示词预览。`root` 给了就按盘上实况算（与实发逐字节一致）。"""
+    from fastvideo3.modules.m4_scene import MODE_REFERENCE, scene_prompt
 
-    以前这里自己用 `plan_references` 重算一遍编号：那是"按剧本推断该发什么"，而生成时是
-    "盘上实际有什么"。两者一旦不同，预览就会承诺不存在的素材（2026-10-14 实测：预览写
-    "唐僧的音色参考音频1、猪八戒的音色参考音频2"，而 run 里根本没有配音母带，实发音频为空）。
-    预览的意义在于它就是将要发出去的东西，所以一律走 `m4_scene.plan_inputs`。
-    """
-    from fastvideo3.modules.m4_scene import MODE_REFERENCE, plan_inputs, scene_prompt
-
-    if root is None or assets is None:
-        # 没有盘上实况可查（老调用方）：只能按剧本推断，但**不许再承诺音色编号**
-        plan = None
-    else:
-        planned = plan_inputs(
-            cfg, RunStorage(_run_id_of(root), root=root.parent),
-            assets, script, group, ov, lines=lines or [], frames=frames or {},
-        )
+    plan = None
+    if root is not None:
+        planned = _scene_plan(cfg, root, script, group, ov)
         plan = planned.plan if planned.mode == MODE_REFERENCE else None
     return scene_prompt(cfg, group, script, script.character_map(), plan)
 
@@ -927,6 +951,8 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
         has_refs = bool(
             refs_on_disk(storage, characters=g.characters, scene_ids=g.scene_ids, overrides=ov)
         )
+        # 素材计划一次算好：提示词、编号对照表、实际会发的素材清单三者同源
+        planned = _scene_plan(cfg, root, script, g, ov)
         mode, why = choose_input_mode(
             g,
             has_dialogue=bool(speakers),
@@ -954,6 +980,10 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
                 "characters": list(g.characters),
                 "has_dialogue": bool(speakers),
                 "has_references": has_refs,
+                # 编号对照表：提示词里写"图2"，人得知道图2 是谁。来源与实发素材同一份
+                # （`plan_inputs` 解析出来的名单），所以不会出现"对照表说有、实际没发"。
+                "ref_legend": _ref_legend(script, planned.plan) if planned else [],
+                "prompt_edited": bool(str(ov.get("prompt") or "").strip()),
                 "scene_label": " ／ ".join(labels),
                 "scene_summary": " ".join(summaries),
                 "location": g.location,
@@ -999,9 +1029,9 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
                 "prompt_last": str(ov.get("prompt_last") or prompts[1]),
                 # 参考形态的整段提示词也给人看、给人改：机器拼的模板是默认值不是上限
                 "prompt": str(ov.get("prompt") or _scene_prompt_preview(
-                    cfg, g, script, ov, root=root, lines=_audio_lines(root),
-                    frames=_first_frames(root), assets=load_assets(storage),
+                    cfg, g, script, ov, root=root
                 )),
+                "prompt_default": _scene_prompt_preview(cfg, g, script, ov, root=root),
                 "char_options": {
                     cid: {
                         "portrait": (char_imgs.get(cid) or [None])[0],
@@ -1105,6 +1135,10 @@ def patch_scene_group(run_id: str, group_id: str, req: SceneGroupPatch) -> dict:
         ov["prompt_last"] = req.prompt_last.strip()
     if req.prompt.strip():
         ov["prompt"] = req.prompt.strip()
+    elif "prompt" in ov:
+        # 传空串 = **撤回人工改写**，回到机器按剧本拼的默认模板。没有这条，改坏了就回不去，
+        # 只能手动把默认模板抄回来（而默认模板会随剧本变化，抄回来的很快又是旧的）。
+        ov.pop("prompt", None)
     n_imgs = len(ov.get("char_refs") or group.characters) + len(
         ov.get("scene_refs") or group.scene_ids
     )

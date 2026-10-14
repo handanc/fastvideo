@@ -135,7 +135,7 @@ def test_negative_prompt_is_folded_into_the_text(cfg):
     cfg.negative_prompt = "卡通, 模糊, 多余的手指"
     script = _two_shot_script()
     p = scene_prompt(cfg, _group(script), script, _char_map())
-    assert "负向：卡通, 模糊, 多余的手指。" in p
+    assert "【负向】卡通, 模糊, 多余的手指。" in p
 
 
 def test_no_onscreen_text_declaration_is_always_present(cfg):

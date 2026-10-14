@@ -75,6 +75,11 @@ _TYPE_FRAMING = {
 }
 
 
+#: 提示词的板块分隔符：一个板块一行。这段提示词同时是**界面上给人读、给人改的东西**
+#: （900+ 字挤成一行时，"只想改第 2 个镜头"要横向拖很久），换行对模型没有影响
+#: （prompt 是自由文本，官方示例本身也是按板块分句写的）。
+NL = chr(10)
+
 def _ts(sec: float) -> str:
     """时间戳：整秒写整数，否则留一位小数（官方示例两种都出现过，混着写更易读错）。"""
     return str(int(sec)) if abs(sec - round(sec)) < 1e-6 else f"{sec:.1f}"
@@ -143,8 +148,10 @@ def reference_line(plan: RefPlan | None, char_map: dict, scene_names: dict | Non
     parts = [p for p in ("，".join(imgs), "，".join(auds)) if p]
     if not parts:
         return ""
+    # 板块标签已经是【参考素材】，正文里不再重复这四个字（否则读起来是
+    # "【参考素材】参考素材：…"）。措辞其余部分保持官方指南的写法。
     return (
-        "参考素材：" + "；".join(parts)
+        "；".join(parts)
         + "。严格保持参考人物的长相、服装与音色；场景的空间结构、陈设与光线以背景参考图为准，"
         + "画面中的人物以角色参考图为准，不要照搬背景图里的人数（背景图是空景）。"
     )
@@ -173,15 +180,17 @@ def scene_prompt(
     style = str(getattr(getattr(script, "base_info", None), "style", "") or "").strip()
     ratio = str(getattr(cfg, "aspect_ratio", "") or "9:16")
     screen = {"9:16": "竖屏 9:16", "16:9": "横屏 16:9", "1:1": "方形 1:1"}.get(ratio, ratio)
+    # 板块前缀（【总体】【参考素材】…）是给**人**看的锚点：改哪一段一眼能找到，
+    # 也让人核对"官方公式的每个板块都在"。板块内部的措辞仍按官方指南的原话写。
     head = [
-        f"{style}短剧片段，共 {total} 秒，{screen}。",
+        f"【总体】{style}短剧片段，共 {total} 秒，{screen}；"
         f"场景：{group.location or '室内'}，{group.time_of_day or '日'}。",
-        "由下列分镜首尾相接构成一段连贯叙事，镜头之间空间连续、人物走位与上一镜头衔接，"
+        "【连贯】由下列分镜首尾相接构成一段连贯叙事，镜头之间空间连续、人物走位与上一镜头衔接，"
         "不要跳戏、不要重新布景。",
     ]
     if ref_plan is None:
         # 首尾帧形态：发不了参考素材（官方互斥），提示词里也不能出现 图N/音频N
-        head.append("画面严格从首帧开始、到尾帧结束（首尾帧已锁定起止构图）。")
+        head.append("【起止】画面严格从首帧开始、到尾帧结束（首尾帧已锁定起止构图）。")
     else:
         scene_names_map = {
             sc.scene_id: (sc.title or sc.location or sc.scene_id)
@@ -189,7 +198,7 @@ def scene_prompt(
         }
         ref = reference_line(ref_plan, char_map, scene_names_map)
         if ref:
-            head.append(ref)
+            head.append(f"【参考素材】{ref}")
 
     # 人物外貌锚在**总体描述里写一次**，分镜里只点名 —— 官方综合示例就是这个形状。
     # 每个分镜都重抄一遍外貌会把提示词撑长一倍（5 镜 3 人 = 15 段重复），
@@ -204,7 +213,7 @@ def scene_prompt(
             continue
         people_desc.append(f"{nm}（{look}）" if look else nm)
     if people_desc:
-        head.append(f"人物：{'；'.join(people_desc)}。")
+        head.append(f"【人物】{'；'.join(people_desc)}。")
 
     body: list[str] = []
     for i, sh in enumerate(ordered):
@@ -238,27 +247,31 @@ def scene_prompt(
     any_lines = any(_scripted_lines_block(sh, char_map) for sh in ordered)
     tail = [
         (
-            "开口说话的人物口型与台词严格同步，表情自然、头部有轻微动作；"
+            "【口型】开口说话的人物口型与台词严格同步，表情自然、头部有轻微动作；"
             "没有台词的人物保持闭口，不要给不出台词的人对口型。"
             if any_lines
-            else "全片无人说话，画面无口型动作。"
+            else "【口型】全片无人说话，画面无口型动作。"
         ),
-        f"{timbre}，同一角色在整段视频中音色不变。" if timbre else "",
-        "全片保持同一角色的长相、发型、服装配色一致，不换脸、不换衣服、不改画幅。",
+        f"【音色】{timbre}，同一角色在整段视频中音色不变。" if timbre else "",
+        "【一致性】全片保持同一角色的长相、发型、服装配色一致，不换脸、不换衣服、不改画幅。",
         # **显式关掉模型自带 BGM**。官方提示词指南把 BGM 分成三档，"什么都不写 = 由模型自选"
         # —— 而我们的成片是在 m7 统一混 BGM 的（bgm_volume + sidechain ducking，让对白压得住）。
         # 不写这句的后果很具体：三个场景各自配一套音乐，拼起来是双层音乐、且每切一次场景
         # 换一次配乐风格，正是"AI 短剧像拼接"的听感来源。指南给的原话是
         # 「无 bgm，只生成环境音和动作音」/「No background music.」，照抄。
-        "无背景音乐（BGM 由后期统一混入）：只保留台词、环境音与动作音。No background music.",
-        (cfg.style_suffix or "").strip(),
-        NO_ONSCREEN_TEXT,
+        "【音乐】无背景音乐（BGM 由后期统一混入）：只保留台词、环境音与动作音。"
+        "No background music.",
+        f"【风格】{(cfg.style_suffix or '').strip()}" if (cfg.style_suffix or "").strip() else "",
+        f"【禁止】{NO_ONSCREEN_TEXT}",
     ]
     neg = (cfg.negative_prompt or "").strip()
     if neg:
         # wan3.0 的 parameters 里**没有** negative_prompt，按参数发会被静默丢弃 → 折进提示词
-        tail.append(f"负向：{neg}。")
-    return " ".join(p for p in (head + body + tail) if p).strip()
+        tail.append(f"【负向】{neg}。")
+    # **按板块换行**，不是一整坨挤在一行：这段提示词是界面上给人读、给人改的（900+ 字），
+    # 挤成一行时"改第 2 个镜头"要横向拖动才能找到位置。换行对模型无影响（prompt 是自由文本），
+    # 官方示例也是按板块分句写的。
+    return NL.join(p for p in (head + body + tail) if p).strip()
 
 
 def _ref_path(

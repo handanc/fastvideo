@@ -20,14 +20,47 @@ function flash(text, ms = 2000) {
   noticeTimer = setTimeout(() => { notice.value = '' }, ms)
 }
 
+const originals = ref({})   // gid -> 上次保存/加载时的提示词，用来判断"改了没保存"
+
 async function load() {
   try {
     const d = await api.sceneGroups(props.runId)
     groups.value = d.groups || []
+    for (const g of groups.value) originals.value[g.group_id] = g.prompt || ''
     error.value = ''
   } catch (e) {
     error.value = e.message
   }
+}
+
+// 提示词是这一页唯一"直接决定成片"的东西，所以它的编辑体验要单独做好：
+// 改了没保存就去点生成 = 白等一次付费生成，必须在点生成前自动落盘。
+function dirty(g) { return (g.prompt || '') !== (originals.value[g.group_id] || '') }
+function legendCounts(g) {
+  const l = g.ref_legend || []
+  return {
+    imgs: l.filter((x) => x.includes('立绘') || x.includes('空景')).length,
+    auds: l.filter((x) => x.includes('音色')).length,
+  }
+}
+async function autoSave(g) {
+  if (!dirty(g)) return          // 没改：不涨版本、不作废、不打扰后端
+  await savePrompts(g)
+}
+
+async function copyPrompt(g) {
+  try { await navigator.clipboard.writeText(g.prompt || ''); flash('提示词已复制') }
+  catch (e) { window.prompt('复制不了，请手动选中：', g.prompt || '') }
+}
+async function resetPrompt(g) {
+  if (!window.confirm(`把 ${g.group_id} 的提示词恢复成机器按剧本拼的默认版？
+你的人工改写会被丢弃。`)) return
+  try {
+    const d = await api.patchSceneGroup(props.runId, g.group_id, { prompt: '' })
+    groups.value = d.groups || groups.value
+    for (const x of groups.value) originals.value[x.group_id] = x.prompt || ''
+    flash(`${g.group_id}：已恢复默认提示词`)
+  } catch (e) { error.value = e.message }
 }
 
 // 生成是子进程异步的：点完轮询到产物出现（或超时），别让用户盯着不动的页面猜
@@ -90,7 +123,8 @@ async function savePrompts(g) {
       prompt_first: g.prompt_first, prompt_last: g.prompt_last, prompt: g.prompt,
     })
     groups.value = d.groups || groups.value
-    msg.value = `${g.group_id}：提示词已保存，点「生成」按新提示词出片`
+    for (const x of groups.value) originals.value[x.group_id] = x.prompt || ''
+    flash(`${g.group_id}：提示词已保存`)
   } catch (e) { error.value = e.message }
 }
 
@@ -111,6 +145,11 @@ async function genClip(g) {
   if (g.clip && !g.clip_stale) {
     flash(`场景 ${g.group_id} 已有视频片段，无需重复生成；要重出请先点「🗑 删除片段」`)
     return
+  }
+  if (dirty(g)) {
+    // 改了提示词没保存就点生成：先落盘再提交，否则这次花的钱买的还是旧提示词的片子
+    await savePrompts(g)
+    if (dirty(g)) return   // 保存失败就别白花一次生成的钱
   }
   busy.value = { ...busy.value, [g.group_id]: 'clip' }
   try {
@@ -137,8 +176,7 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
 <template>
   <div class="card">
     <div class="cardHead">
-      <h2>场景视频（wan3.0 场景级生成）</h2>
-      <button class="btn sm" @click="load">⟳</button>
+      <button class="btn sm" @click="load">⟳ 刷新</button>
     </div>
     <div v-if="error" class="alert err">{{ error }}</div>
     <div v-if="notice" class="notice">{{ notice }}</div>
@@ -242,13 +280,38 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
         </div>
       </div>
 
-      <!-- 视频提示词：两种形态都给人看、给人改（机器拼的模板是默认值，不是上限） -->
-      <label class="field wide"><span>提交给 wan3.0 的提示词 · <b>这才是实发内容</b>
-        （可改；改完点「保存提示词」，再点「生成」即按它出片）</span>
-        <textarea v-model="g.prompt" rows="6" spellcheck="false"></textarea>
-      </label>
-      <div class="toolbar">
-        <button class="btn sm" :disabled="!!busy[g.group_id]" @click="savePrompts(g)">保存提示词</button>
+      <!-- 提示词：这一页唯一"直接决定成片"的输入，所以给它最好的编辑体验 -->
+      <div class="promptBox">
+        <div class="promptHead">
+          <b>提交给 wan3.0 的提示词</b>
+          <span class="muted small">
+            {{ (g.prompt || '').length }} 字 · {{ g.shots.length }} 镜 · {{ g.duration }}s ·
+            参考图 {{ legendCounts(g).imgs }} · 音色 {{ legendCounts(g).auds }}
+          </span>
+          <span v-if="dirty(g)" class="badge warn small">已改 · 未保存</span>
+          <span v-else-if="g.prompt_edited" class="badge small">人工改写版</span>
+          <span v-else class="badge ok small">机器默认</span>
+          <div class="spacer"></div>
+          <button class="btn sm" @click="copyPrompt(g)">复制</button>
+          <button class="btn sm" :disabled="!g.prompt_edited && !dirty(g)" @click="resetPrompt(g)">
+            恢复默认
+          </button>
+        </div>
+        <div v-if="(g.ref_legend || []).length" class="legend">
+          <span v-for="l in g.ref_legend" :key="l" class="lg">{{ l }}</span>
+        </div>
+        <div v-else class="muted small legend">
+          本组没有可用参考素材（角色图/场景图缺失，或形态是首尾帧）——提示词里不会出现 图N/音频N。
+        </div>
+        <!-- 单击即改、点到别处自动保存：这段提示词是唯一直接决定成片的东西，
+             多一个"保存"按钮就多一次"改了没保存 → 白花一次生成钱"的机会 -->
+        <textarea class="promptEdit" v-model="g.prompt" rows="16" spellcheck="false"
+                  @blur="autoSave(g)" @keydown.ctrl.enter="autoSave(g)"></textarea>
+        <div class="muted small promptFoot">
+          一个板块一行（【总体】【参考素材】【人物】… 第N个镜头 各占一行），改哪段直接改哪行；
+          <b>点到别处即自动保存</b>。点「生成」也会先保存再提交，不会拿旧提示词白花一次钱。
+          改坏了点「恢复默认」。
+        </div>
       </div>
     </div>
     <p v-if="!groups.length && !error" class="muted">还没有剧本（先在「剧本」页生成剧本）。</p>
@@ -258,6 +321,18 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
 <style scoped>
 .sceneGroup { border: 1px solid var(--line, #333); border-radius: 8px; padding: 8px; margin: 8px 0; }
 .scenelabel { font-weight: 600; }
+.promptBox { margin-top: 10px; border-top: 1px dashed var(--line, #333); padding-top: 8px; }
+.promptHead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.lg {
+  font-size: 11.5px; padding: 2px 7px; border-radius: 10px;
+  background: var(--panel, #f3f4f6); border: 1px solid var(--line, #ddd); color: var(--muted, #666);
+}
+.promptEdit {
+  width: 100%; font-family: var(--mono, ui-monospace, Consolas, monospace);
+  font-size: 12.5px; line-height: 1.75; padding: 8px 10px; resize: vertical;
+}
+.promptFoot { margin-top: 6px; }
 .notice {
   position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
   background: var(--panel, #1c1f24); color: var(--fg, #eee);

@@ -135,3 +135,51 @@ def test_delete_scene_clip_invalidates_downstream(client, outdir):
     rep = client.get("/api/runs/run_sg/steps").json()
     videos = next(s for s in rep["steps"] if s["id"] == "scene_videos")
     assert videos["state"] == "gap", "删了场景片段后「场景视频」步必须报缺口"
+
+
+def test_prompt_edit_roundtrip_and_revert_to_default(client, outdir):
+    """提示词编辑：改写要生效、要标成"人工改写版"，传空串要能**撤回**回机器默认。
+
+    界面上是"单击即改、失焦自动保存"，所以这条链路会被高频调用；撤回必须有，
+    否则改坏了只能手抄默认模板 —— 而默认模板会随剧本变化，抄回来的很快就又是旧的。
+    """
+    root = _mk_run(client, outdir)
+    from fastvideo3.core.storage import RunStorage
+
+    st = RunStorage("run_sg", root=root.parent)
+    gid = "s1"
+    before = client.get("/api/runs/run_sg/scene-groups").json()["groups"]
+    g0 = next(g for g in before if g["group_id"] == gid)
+    assert g0["prompt_edited"] is False, "初始必须是机器默认"
+    assert g0["prompt"].strip(), "默认提示词不能为空"
+
+    r = client.patch(
+        f"/api/runs/run_sg/scene-groups/{gid}", json={"prompt": "【总体】只发这一句。"}
+    )
+    assert r.status_code == 200, r.text
+    g1 = next(g for g in r.json()["groups"] if g["group_id"] == gid)
+    assert g1["prompt"] == "【总体】只发这一句。", "人工改写必须逐字生效"
+    assert g1["prompt_edited"] is True
+
+    r2 = client.patch(f"/api/runs/run_sg/scene-groups/{gid}", json={"prompt": ""})
+    assert r2.status_code == 200, r2.text
+    g2 = next(g for g in r2.json()["groups"] if g["group_id"] == gid)
+    assert g2["prompt_edited"] is False, "空串＝撤回改写"
+    assert g2["prompt"] == g0["prompt"], "撤回后必须回到机器默认（逐字相同）"
+    meta = st.load_json("run_meta.json")
+    assert "prompt" not in ((meta.get("scene_overrides") or {}).get(gid) or {}), meta
+
+
+def test_scene_group_payload_carries_reference_legend(client, outdir):
+    """编号对照表必须与实发素材同源：提示词里写"图2"，人得能查到图2 是谁。"""
+    _mk_run(client, outdir)
+    groups = client.get("/api/runs/run_sg/scene-groups").json()["groups"]
+    g = next(x for x in groups if x["group_id"] == "s1")
+    legend = g.get("ref_legend")
+    assert isinstance(legend, list)
+    if legend:  # 有素材时，编号必须从 图1 连续起，且每条都说清是谁、干什么用
+        assert legend[0].startswith("图1 = "), legend
+        assert all("=" in x for x in legend), legend
+        imgs = [x for x in legend if "立绘" in x or "空景" in x]
+        nums = [int(x.split(" ")[0][1:]) for x in imgs]
+        assert nums == list(range(1, len(nums) + 1)), f"编号必须连续：{nums}"

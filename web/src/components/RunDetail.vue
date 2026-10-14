@@ -127,10 +127,7 @@ const modelProvenance = computed(() => {
     : (m.model_env_written || []).length ? '' : '（未写回 .env）'
   return `模型 ${picks}${tail}`
 })
-const lipsyncGap = computed(() => {
-  const c = board.value?.lipsync_coverage
-  return c && c.required && (c.missing || []).length ? c : null
-})
+
 const lipsyncWaived = computed(() => board.value?.lipsync_coverage?.waived || [])
 // 尾帧覆盖率：缺尾帧的镜头会退回**单首帧**生视频（末尾姿态/构图容易漂），而产物照样
 // 出得来 —— 步骤条不会显示缺口。所以必须在看板上说出来，否则用户的观感就是
@@ -265,9 +262,10 @@ onUnmounted(() => clearInterval(timer))
       </div>
 
       <!-- 一致性闸门结论：不达标必须顶在最显眼的地方，不能让用户以为出片即合格 -->
-      <div v-if="lipsyncGap && lipsyncGap.missing.length" class="alert err">
-        ⚠ {{ lipsyncGap.missing.length }} 个对白镜头还没有口型 —— 点「开始生成」
-      </div>
+      <!-- 口型红条已删除：口型在场景片段里（wan3.0 一次调用自带），片段没生成时
+           "缺口"本来就已经写在步骤条上，再挂一条"没有口型"只是同一件事说两遍，
+           而且说法是错的（听起来像口型链路坏了）。真正的安全网在后端：
+           lipsync_coverage 仍参与成片判定，缺口型照样 passed=False。 -->
       <div v-if="costRisk" class="alert err">
         ⚠ 成本上限 <b>¥{{ Math.round(board.meta?.budget_limit_cny || 0) }}</b>
         低于预估 <b>¥{{ Math.round(costRisk.lo) }}</b>：钱用完时场景片段会停出。
