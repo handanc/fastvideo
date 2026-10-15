@@ -117,6 +117,193 @@ def _rewrite_text_prompt(script_text: str, feedback: str, retry_reasons: list[st
     return "\n".join(parts)
 
 
+#: 标准剧本稿的语法（给"只改排版"的模型看的唯一一份规范）。**与 render_script_text 同格式**，
+#: 改一处必须改两处 —— 规范漂了，模型就会输出一个解析器认不出的排版。
+_FORMAT_SPEC = """标准剧本稿的格式（严格遵守，一行都不许多）：
+
+《片名》 · 风格 · 90s · 9:16
+（这一行必须有；时长写成「90s」；画幅只能是 9:16 / 16:9 / 1:1）
+
+# 角色
+char_1 名字 · male · adult
+  外貌: 一段外貌描述（单独一行，缩进两个空格）
+  音色: voice_id（可省）
+（每个角色两行：第一行「id 名字 · 性别 · 年龄段」，id 用 ASCII，不要中文当 id）
+
+## scene_1 · 地点 · 日
+标题: 这一场的标题
+概要: 这一场发生了什么
+（场景 id 必须是 ASCII：scene_1 / s1；`· 日` 可写 日/夜/黄昏/清晨）
+
+### shot_1_1 对白 4s · 切
+在场: char_1, char_2
+画面: 这一镜看到什么（一段散文）
+运镜: 镜头语言（可省）
+  char_1（excited）: 台词原文
+（镜头行四段缺一不可：**镜号 类型 时长s · 转场**；
+ 类型只能是 对白 / 动作 / 空镜；
+ 转场只能是 切 / 叠化 / 淡入淡出 / 空镜转场 —— 「特效转场」写叠化、「定格」写切、「黑场/淡出」写淡入淡出；
+ 台词行必须缩进**两个空格**，格式是「角色id（情绪）: 台词」，情绪没有就写 neutral；
+ 「在场」与台词里的说话人只能是「# 角色」段登记过的 id）"""
+
+
+def _reformat_prompt(raw: str, problems: list[str]) -> str:
+    """让模型**只改排版**的提示词。
+
+    与「按意见改写」是两件事，所以是两条 prompt：那条允许改内容、这条一个字都不许动。
+    实测模型在这类任务上最爱犯的错就是顺手润色台词、把两句并成一句 —— 而台词是字幕的
+    唯一来源（m7 逐字烧录），改词等于改片子。所以判据写在提示词里，落盘前还会本地逐字校验。
+    """
+    parts = [
+        "你是剧本稿**排版规范化器**。任务只有一个：把下面这份稿子改写成标准格式的剧本稿。",
+        "",
+        "**内容一个字都不许动。** 台词、画面描述、运镜、外貌、标题、概要必须逐字照搬：",
+        "不许改词、不许缩写、不许润色、不许合并两句台词、不许增删句子、不许调整镜头顺序、"
+        "不许改剧情、不许补写没写的东西。你只被允许做排版：",
+        "1) 字段名换成标准字段名（在场/画面/运镜/标题/概要/外貌/音色）；",
+        "2) 镜头类型写成 对白/动作/空镜，转场写成 切/叠化/淡入淡出/空镜转场；",
+        "3) 时长写成「4s」这种秒数（原文没写就按 3s）；",
+        "4) 「在场」与台词的说话人一律写成「# 角色」段里的 character_id；原文只有中文名的，",
+        "   按出场顺序给一个 ASCII id（char_1、char_2…）并在「# 角色」段登记，**中文名保留**；",
+        "5) 镜头没有 id 的（写「镜头 1」「Scene 3 的第二镜」），按 shot_{场号}_{镜号} 补；",
+        "6) 标准格式里没有的字段（音效/BGM/道具/备注…）并进那条镜头的「画面:」，不要新增字段、"
+        "   也不要丢掉；**但「字幕/花字/屏幕文字」例外**：画面里的字全部由后期用剧本台词逐字"
+        "烧录，模型再画一遍就是两层字幕，这类行删掉即可（系统会另行人工处理）；",
+        "7) 大段散文按位置归位：镜头标记之后的散文写进「画面:」，场景标题之后、第一个镜头"
+        "   之前的散文写进「概要:」。",
+        "",
+        _FORMAT_SPEC,
+        "",
+        "另外两条硬要求：",
+        "- 单句台词尽量 ≤30 个汉字（超过 60 字会被拒绝保存）。原文已有超长的句子**照抄即可**，"
+        "不要替我缩写，我会另外提示人。",
+        "- 只输出整理后的完整剧本稿：不要 JSON、不要代码块围栏、不要任何解释或前后缀，"
+        "第一行必须是《片名》那一行。",
+    ]
+    if problems:
+        parts += ["", "【这份稿子现在过不去的检查（照着修，别把这些字写进稿子）】",
+                  *[f"- {p}" for p in problems[:14]]]
+    parts += ["", "【原稿】", raw]
+    return "\n".join(parts)
+
+
+async def standardize_script_text(
+    cfg: AppConfig,
+    text: TextProvider,
+    raw: str,
+    problems: list[str],
+    storage: RunStorage | None = None,
+    ledger: CostLedger | None = None,
+) -> str:
+    """调模型**只改排版**，返回整理稿（失败返回 ""，由调用方决定怎么报）。"""
+    try:
+        raw_out = await text.chat(
+            [{"role": "user", "content": _reformat_prompt(raw, problems)}]
+        )
+    except Exception as e:  # noqa: BLE001  # 供应商挂了不该把用户的保存变成 500
+        if storage is not None:
+            storage.log_event("m1_scripting", "draft_format_failed", error=str(e)[:200])
+        return ""
+    out = strip_code_fence(raw_out).strip() + "\n"
+    if ledger is not None:
+        ledger.record(
+            "text", text.name, text.model, quantity=1,
+            note="script_reformat", meta=llm_meta(text),
+        )
+    if storage is not None:
+        storage.log_event(
+            "m1_scripting", "draft_format", chars=len(out), shrank=len(out) < len(raw) * 0.5
+        )
+    return out
+
+
+async def script_from_draft(
+    cfg: AppConfig,
+    raw: str,
+    old: Script,
+    *,
+    text: TextProvider | None = None,
+    storage: RunStorage | None = None,
+    ledger: CostLedger | None = None,
+) -> tuple[Script, list[str], list[str]]:
+    """任意格式的剧本文本 → `(Script, 整理说明, 剩余问题)`。剩余问题非空 = **不能落盘**。
+
+    两层，顺序固定（先免费后花钱）：
+
+    ① `core.draft_norm.normalize_draft`：确定性整理排版（别称值名、字段改名、说话人换 id、
+       markdown 噪声、无编号镜头…），不调模型。绝大多数人粘进来的稿子在这一层就过了。
+    ② 还剩问题时才叫模型**只改排版**（`standardize_script_text`），然后**逐字校验**内容没被
+       改：原稿里每一句说出口的话都必须还在整理稿里，整理稿里也不许出现原稿没有的台词
+       （实测模型会顺手润色、把两句并成一句 —— 而台词是成片字幕的唯一来源）。
+       校验不过就带着"具体哪句没了"重试一次，再不过**宁可拒绝保存**：静默丢一句台词比
+       报错贵得多（用户会花钱出一条不含那句台词的成片）。
+
+    `text=None` 时只用第①层（离线/假模式，或没有文本供应商）。
+    """
+    from fastvideo3.core import scriptio
+    from fastvideo3.core.draft_norm import flat, parse_draft, spoken_lines
+
+    def attempt(source: str) -> tuple[Script | None, list[str], list[str], list[str]]:
+        """→ (script|None, 该次整理说明, 格式问题, 语义问题)"""
+        try:
+            script, fixes, problems = parse_draft(source, old)
+        except Exception as e:  # noqa: BLE001  # 解析器没预料到的错误也当成稿子问题
+            return None, [], [f"剧本稿无法解析：{str(e)[:200]}"], []
+        if problems:
+            return None, fixes, problems, []
+        semantic = scriptio.cross_check(script)
+        return (None if semantic else script), fixes, [], semantic
+
+    script, fixes, problems, semantic = attempt(raw)
+    if script is not None:
+        return script, fixes, []
+
+    if cfg.fake or text is None or not getattr(cfg, "draft_llm_format", True):
+        return script or old, fixes, problems + semantic
+
+    want = spoken_lines(raw)
+    reasons = problems + semantic
+    best: tuple[Script, list[str]] | None = None
+    best_text = ""
+    for round_no in range(2):
+        new_text = await standardize_script_text(
+            cfg, text, raw if round_no == 0 else (best_text or raw), reasons, storage, ledger
+        )
+        if not new_text:
+            break
+        cand, c_fixes, c_problems, c_semantic = attempt(new_text)
+        if cand is None:
+            reasons = c_problems + c_semantic
+            best_text = new_text
+            continue
+        # 逐字校验：原稿里每一句话都还必须还在整理稿里（标点/空格差异不算改内容）
+        got = spoken_lines(new_text)
+        flat_new = {flat(g) for g in got}
+        lost = [w for w in want if flat(w) not in flat_new]
+        if lost:
+            reasons = [f"整理时丢了 {len(lost)} 句台词（模型改写了内容），例如："
+                       + "、".join(f"「{x[:20]}」" for x in lost[:3])]
+            best_text = new_text
+            if storage is not None:
+                storage.log_event("m1_scripting", "draft_format_lost_lines",
+                                  lost=len(lost), detail=reasons[0][:200])
+            continue
+        # 说明以**模型那一版**的整理为准：原稿的行号在重排后已经没有意义（整份稿子都换了
+        # 排版），拿旧行号去对照用户的编辑器只会误导。
+        best = (
+            cand,
+            ["已用模型把稿子重排为标准剧本稿（逐字校验：一句台词都没改、也没加）"] + c_fixes,
+        )
+        if storage is not None:
+            storage.log_event("m1_scripting", "draft_formatted", round=round_no,
+                              notes=len(c_fixes))
+        break
+
+    if best is not None:
+        return best[0], best[1], []
+    return old, fixes, (problems + semantic)
+
+
 async def rewrite_script_text(
     cfg: AppConfig,
     text: TextProvider,
@@ -132,7 +319,8 @@ async def rewrite_script_text(
     仍不通过则把原因交给调用方 —— 宁可响亮失败，也不要"✔ 已重写"配一个没改的剧本，
     那样用户会接着点「开始生成」，花钱出一条不含那句台词的成片。
     """
-    from fastvideo3.core.script_text import parse_script_text, revise_landed
+    from fastvideo3.core.draft_norm import parse_draft
+    from fastvideo3.core.script_text import revise_landed
 
     reasons: list[str] = []
     new_text = script_text
@@ -151,7 +339,10 @@ async def rewrite_script_text(
         )
         # 文本改了不等于意见落地了：解析成 Script 后用指纹 + 引号原文验
         try:
-            candidate, problems = parse_script_text(new_text, old)
+            # 与网页保存同一个入口（先确定性整理再严格解析）：模型偶尔也会写「特效转场」
+            # 这种别称，以前直接 parse 会把一次内容完全正确的改写判成"格式有问题"再重试一遍，
+            # 白花一次 TEXT 调用。
+            candidate, _fixes, problems = parse_draft(new_text, old)
         except Exception as e:  # noqa: BLE001  # 解析不出来就是这次改写失败，重试
             reasons = [f"改写后的稿子解析失败：{type(e).__name__}: {e}"]
             storage.log_event("m1_scripting", "revise_unparsable", round=attempt, error=reasons[0][:200])

@@ -110,7 +110,8 @@ async def revise_script(ctx: StageContext, old: Script, feedback: str) -> dict:
 
     返回 `{"script": dict, "text": str}`；落盘仍由 `scriptio.commit_script` 负责。
     """
-    from fastvideo3.core.script_text import parse_script_text, render_script_text
+    from fastvideo3.core.draft_norm import parse_draft
+    from fastvideo3.core.script_text import render_script_text
     from fastvideo3.core.scriptio import ReviseNotApplied, ScriptRejected
     from fastvideo3.modules.m1_scripting import rewrite_script_text
 
@@ -132,7 +133,7 @@ async def revise_script(ctx: StageContext, old: Script, feedback: str) -> dict:
             "或改用「✎ 编辑剧本稿」直接改那一行",
         )
         raise ReviseNotApplied(reasons)
-    script, problems = parse_script_text(new_text, old)
+    script, _fixes, problems = parse_draft(new_text, old)
     if problems:
         raise ScriptRejected("；".join(problems[:8]))
     # 新角色的结构化外貌卡在这里抽（旧角色的卡由解析器从旧剧本继承）。

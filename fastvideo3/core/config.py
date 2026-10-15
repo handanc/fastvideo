@@ -164,6 +164,10 @@ class AppConfig(BaseModel):
     # 场景概念图参与下游生成的方式：off=不用；scenery_only=只给空镜（默认，零身份风险）；
     # all=含角色镜头也带（必须等 m9 证明人脸达标率不降，且带自动回退）
     scene_ref_mode: Literal["off", "scenery_only", "all"] = "scenery_only"
+    # 剧本稿自动整理：确定性层（draft_norm，不花钱）之后仍有格式问题时，允许调一次
+    # TEXT 只改排版（逐字校验内容没被改，失败就拒绝保存而不是静默改词）。
+    # 关掉它就等于"只接受标准排版"，报错按行号回给人。
+    draft_llm_format: bool = True
     # 成片前一致性闸门：off=不拦；reshoot=不达标镜头自动带参考图重做（≤2 轮）后仍不达标
     # 则 quality_verdict 标不合格。high/cinema 强制 reshoot，economy 不做要求。
     consistency_gate: Literal["off", "reshoot"] = "off"
@@ -375,6 +379,7 @@ def load_config(
         look_extraction=bool(gen.get("look_extraction", False)),
         consistency_metric=gen.get("consistency_metric", "off"),
         scene_ref_mode=gen.get("scene_ref_mode", "scenery_only"),
+        draft_llm_format=bool(gen.get("draft_llm_format", True)),
         consistency_gate=gen.get("consistency_gate", "off"),
         two_person_talk=gen.get("two_person_talk", "overlay"),
         lipsync_min_corr=float(gen.get("lipsync_min_corr", 0.25)),

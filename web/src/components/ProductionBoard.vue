@@ -436,7 +436,10 @@ watch(() => props.board?.script_version, (v, old) => {
             <button class="btn sm" @click="draftEditing = false">取消</button>
             <button v-if="draftStale" class="btn sm" @click="startDraft">↻ 载入最新剧本</button>
             <span v-if="draftStale" class="muted">后台已重写剧本（v{{ draftVersion }}），这里是旧内容</span>
-            <span v-else class="muted">台词：「  角色id（情绪）: 内容」；镜头另起「###」行</span>
+            <span v-else class="muted">
+              随便写：粘 markdown、散文、别人给的稿子都能存 —— 保存时自动整理成标准格式，
+              改了哪里会列出来（台词一字不改）
+            </span>
           </template>
         </div>
 

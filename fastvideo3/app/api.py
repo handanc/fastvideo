@@ -1718,32 +1718,76 @@ def get_script_text(run_id: str) -> dict:
 
 @app.put("/api/runs/{run_id}/script/text")
 async def put_script_text(run_id: str, req: ScriptTextRequest) -> dict:
-    """保存剧本稿：本地确定性解析 → 三层校验 → 与 JSON 编辑同一条落盘路径。
+    """保存剧本稿：**任意排版都能存**，人不必学格式。
 
-    三层：① 解析器报格式问题（带行号）② `_script_cross_check` 报语义问题（角色引用
-    不存在、空场景）③ pydantic 报 schema 硬上限（台词 ≤60 字）。软规则（≤30 字、时长
-    偏差 15%）不阻断，作为 `warnings` 返回。
+    两层，先免费后花钱：
+    ① `core.draft_norm` 确定性整理 —— 别称值名（特效转场→叠化）、字段改名（人物:→在场:）、
+       说话人中文名→角色 id、markdown 噪声（`**镜头 1｜3 秒｜中景跟拍**`、`---`、粗体说话人）、
+       无编号镜头补 shot_{场}_{镜}、无字段名的散文按位置归到画面/概要、格式里没有的「字幕:」
+       行删掉并说明原因。**不改一个字的用词**，也不花钱：粘进来的稿子（含整份 markdown
+       分镜本）绝大多数在这一层就过了，保存是即时的。
+    ② 只有①仍解析不出来（表格体、纯小说段落、Fountain…）才调一次 TEXT **只改排版**，
+       整理完逐字校验"原稿每一句话都还在、也没多出没写过的话"，校验不过宁可拒绝保存
+       —— 模型静默改词等于改掉成片字幕（台词是字幕的唯一来源）。
+
+    整理做了什么作为 `notes` 回显（是说明，不是问题，不挡保存）。落盘仍是与 JSON 编辑同一条
+    事务：引用完整性 + 工程兜底 + 沿血缘精确作废下游 + pydantic 硬上限（台词 ≤60 字）。
     """
-    from fastvideo3.core.script_text import parse_script_text
+    from fastvideo3.core.cost import CostLedger
+    from fastvideo3.core.draft_norm import parse_draft
+    from fastvideo3.modules import m1_scripting
+    from fastvideo3.providers.base import Capability
+    from fastvideo3.providers.factory import make_provider
 
     root = _safe_run_root(run_id)
     _require_idle("改剧本")
     old = _load_old_script_or_404(root)
+    cfg = _cfg_for_run(root)
+    storage = RunStorage(run_id, root=_out())
+
+    # 快路径：先试**不花钱**的确定性整理。粘进来的稿子（含整份 markdown 分镜本）绝大多数
+    # 在这一步就过了 —— 不建 provider、不调模型、保存是即时的，也不产生任何费用。
+    fast, fixes, problems = parse_draft(req.text, old)
+    semantic = [] if problems else _script_cross_check(fast)
+    if not problems and not semantic:
+        return await _commit_text_draft(storage, run_id, fast, old, fixes)
+
+    text_provider: Any = None
+    if not cfg.fake and getattr(cfg, "draft_llm_format", True):
+        try:
+            text_provider = make_provider(Capability.TEXT, cfg)
+        except Exception as e:  # noqa: BLE001  # 没配文本供应商：只用确定性那一层，别把保存打死
+            storage.log_event("web_api", "draft_formatter_unavailable", error=str(e)[:200])
+    meta = _load_meta(root) or {}
+    ledger = CostLedger(storage, budget_limit_cny=float(meta.get("budget_limit_cny") or 0) or 150.0)
     try:
-        script, problems = parse_script_text(req.text, old)
-    except Exception as e:  # noqa: BLE001  # 解析器没预料到的 schema 错误也当成稿子问题回 422
-        raise HTTPException(status_code=422, detail=f"剧本稿无法解析：{str(e)[:300]}") from e
-    if problems:
-        raise HTTPException(status_code=422, detail=problems)
-    semantic = _script_cross_check(script)
-    if semantic:
-        raise HTTPException(status_code=422, detail=semantic)
-    try:
-        result = await _commit_script(
-            RunStorage(run_id, root=_out()), run_id, script, old, source="text_edited"
+        script, fixes2, problems2 = await m1_scripting.script_from_draft(
+            cfg, req.text, old, text=text_provider, storage=storage, ledger=ledger
         )
+    except Exception as e:  # noqa: BLE001  # 解析器/校验没预料到的错误也当成稿子问题回 422
+        raise HTTPException(status_code=422, detail=f"剧本稿无法解析：{str(e)[:300]}") from e
+    if problems2:
+        raise HTTPException(status_code=422, detail=problems2)
+    return await _commit_text_draft(storage, run_id, script, old, fixes2)
+
+
+async def _commit_text_draft(
+    storage: RunStorage, run_id: str, script: Script, old: Script, fixes: list[str]
+) -> dict:
+    """剧本稿保存的收尾：落盘，并把"整理做了什么"作为 notes 回显（说明不是问题，不挡保存）。"""
+    try:
+        result = await _commit_script(storage, run_id, script, old, source="text_edited")
     except Exception as e:  # noqa: BLE001  # pydantic 硬约束（台词 >60 字等）
         raise HTTPException(status_code=422, detail=f"剧本不合法：{e}") from e
+    if fixes:
+        # 条数可能上百（markdown 稿子整份都要重排），只摊开前 8 条再给个数 ——
+        # 一屏看不完的"成功说明"和报错一样没用。
+        head = [f"已自动整理为标准剧本稿（{len(fixes)} 处）：" + fixes[0]]
+        head += [f"　{f}" for f in fixes[1:8]]
+        if len(fixes) > 8:
+            head.append(f"　…另有 {len(fixes) - 8} 处同类整理（都是排版，内容没动）")
+        result["notes"] = head + list(result.get("notes") or [])
+        result["fixes"] = fixes
     return result
 
 
@@ -1872,6 +1916,10 @@ def _cfg_for_run(root: Path) -> Any:
     cfg = apply_run_overrides(
         load_config(quality=meta.get("quality"), ablation=meta.get("ablation") or None), meta
     )
+    # `fake` 也必须按 meta 恢复（CLI 的 `_cfg_from_meta` 一直恢复，API 这边此前漏了）：
+    # 一条用假模式建的 run，网页里任何一次真调用（保存剧本稿的整理、首尾帧生成）都会
+    # 拿 .env 里的真 key 去打**真实付费接口** —— 用户以为在跑假模式。
+    cfg.fake = bool(meta.get("fake", cfg.fake))
     if meta.get("talk_mode"):
         cfg.talk_mode = str(meta["talk_mode"])
     if meta.get("voice_source"):

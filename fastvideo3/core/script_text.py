@@ -40,6 +40,27 @@ from fastvideo3.core.schema import (
 SHOT_TYPE_CN = {"dialogue": "对白", "action": "动作", "scenery": "空镜"}
 TRANSITION_CN = {"cut": "切", "dissolve": "叠化", "fade": "淡入淡出", "scenery": "空镜转场"}
 
+# 常见别称 → 枚举值。转场引擎只有上面那四种能力（实现见 m7_edit），但人和模型写稿子时
+# 会写「硬切」「黑场」「特效转场」「定格」——这些词**不是错字，是同一个意思的另一种说法**，
+# 拒绝它们的结果是一份剧情完全合法的稿子被 12 条报错挡在门外（run_20261015_220939 实测：
+# 3 个不认识的值名连累出 9 条"字段不在可识别位置"）。就近映射到最接近的一种，并告知用户。
+TRANSITION_ALIASES: dict[str, str] = {
+    "硬切": "cut", "直切": "cut", "跳切": "cut", "切镜": "cut", "无转场": "cut",
+    "匹配剪辑": "cut", "甩镜": "cut", "定格": "cut", "freeze": "cut",
+    "溶解": "dissolve", "交叉溶解": "dissolve", "缓入缓出": "dissolve", "特效转场": "dissolve",
+    "特效": "dissolve", "闪白": "dissolve", "划像": "dissolve", "wipe": "dissolve",
+    "淡出": "fade", "淡入": "fade", "渐隐": "fade", "渐显": "fade", "黑场": "fade",
+    "黑屏": "fade", "白场": "fade",
+    "空镜": "scenery", "风景转场": "scenery", "过场": "scenery", "空镜头": "scenery",
+}
+SHOT_TYPE_ALIASES: dict[str, str] = {
+    "对话": "dialogue", "台词": "dialogue", "口播": "dialogue", "说话": "dialogue",
+    "对白镜头": "dialogue", "talk": "dialogue",
+    "行动": "action", "表演": "action", "情节": "action", "动作镜头": "action",
+    "空镜头": "scenery", "风景": "scenery", "大远景": "scenery", "环境": "scenery",
+    "转场": "scenery",
+}
+
 SEP = " · "
 ASPECTS = ("9:16", "16:9", "1:1")
 DURATION_TOL = 0.15  # PRD F6 验收①：成片时长与目标偏差 ≤15%
@@ -81,13 +102,38 @@ def _segments(rest: str) -> list[str]:
     return [p.strip() for p in rest.split(SEP) if p.strip()]
 
 
-def _as_enum(raw: str, mapping: dict[str, str]) -> str:
-    token = raw.strip()
-    if token in mapping:  # 英文枚举值
-        return token
+def _enum_of(token: str, mapping: dict[str, str], aliases: dict[str, str]) -> str | None:
+    """值名 → 枚举值（英文枚举 / 中文名 / 别称 三层）；认不出返回 None。"""
+    t = (token or "").strip()
+    if not t:
+        return None
+    if t in mapping:
+        return t
     inverted = {v: k for k, v in mapping.items()}
-    if token in inverted:
-        return inverted[token]
+    if t in inverted:
+        return inverted[t]
+    return aliases.get(t)
+
+
+def _as_enum(
+    raw: str,
+    mapping: dict[str, str],
+    aliases: dict[str, str] | None = None,
+    *,
+    fallback: str | None = None,
+) -> str:
+    """值名 → 枚举值：英文枚举、中文名、别称三层都认。
+
+    `fallback` 给"这行整体还有救"的场景（镜头行的类型/转场写错，但镜号与时长是好的）：
+    认不出时取一个安全默认值而不是抛错 —— 抛错会让整条 `###` 行作废，紧跟其后的
+    在场/画面/运镜 三行于是全部变成孤儿行，一个错字报出四条错。
+    """
+    token = raw.strip()
+    hit = _enum_of(token, mapping, aliases or {})
+    if hit:
+        return hit
+    if fallback is not None:
+        return fallback
     raise ValueError(f"无法识别「{token}」，可写 {'/'.join(mapping.values())} 或 {'/'.join(mapping)}")
 
 
@@ -169,6 +215,16 @@ def parse_script_text(text: str, old: Script) -> tuple[Script, list[str]]:
         nonlocal shot
         if shot is None:
             return
+        if not shot.characters:
+            # 「在场」空着但台词里有人说话 → 说话人就是在场的人。
+            # 粘来的稿子普遍不写在场（人觉得画面里谁说话自然就谁在），而参考生视频的
+            # 模式选择与角色图挑选看的正是 `characters`：不补就等于这一镜一张角色图都不带，
+            # 整片的脸会一镜一个样（m9 度量到的正是这个）。
+            cast: list[str] = []
+            for d in shot.dialogues:
+                if d.character_id and d.character_id not in cast:
+                    cast.append(d.character_id)
+            shot.characters = cast
         if scene is not None:
             if any(s.shot_id == shot.shot_id for s in scene.shots):
                 problems.append(f"镜头 {shot.shot_id} 在场 {scene.scene_id} 内重复")
@@ -210,15 +266,35 @@ def parse_script_text(text: str, old: Script) -> tuple[Script, list[str]]:
                 problems.append(f"第 {no} 行镜头不在任何场景内（缺「## 场景」行）")
                 continue
             try:
-                shot_type = _as_enum(m["type"], SHOT_TYPE_CN)
-                trans = _as_enum(m["trans"], TRANSITION_CN)
+                # 值名认不出来时**取默认值继续**，而不是放弃整条镜头行：放弃的话，紧跟在
+                # 后面的 在场/画面/运镜 会全部变成孤儿行 —— 实测一个「特效转场」报出四条错，
+                # 人在满屏报错里再也找不到真正那一个词（run_20261015_220939）。
+                shot_type = _as_enum(
+                    m["type"], SHOT_TYPE_CN, SHOT_TYPE_ALIASES, fallback="action"
+                )
+                trans = _as_enum(
+                    m["trans"], TRANSITION_CN, TRANSITION_ALIASES, fallback="cut"
+                )
                 dur = float(m["dur"])
             except ValueError as e:
                 problems.append(f"第 {no} 行：{e}")
                 continue
+            # 别称（`特效转场`→叠化、`定格`→切）**算认识**，不报错：把它们翻译成人话是
+            # `draft_norm.normalize_draft` 的活（写进 notes 给人看）。这里只在连别称都对
+            # 不上时才点名 —— 而且镜头行照样开起来，后面的字段不会再变成孤儿行。
+            for label, token, table, enums, aliases in (
+                ("镜头类型", m["type"], SHOT_TYPE_CN, shot_type, SHOT_TYPE_ALIASES),
+                ("转场", m["trans"], TRANSITION_CN, trans, TRANSITION_ALIASES),
+            ):
+                t = str(token).strip()
+                if _enum_of(t, table, aliases) is None:
+                    problems.append(
+                        f"第 {no} 行{label}「{t}」不认识，已按「{table[enums]}」记，"
+                        f"可写 {'/'.join(table.values())}"
+                    )
             if dur <= 0:
                 problems.append(f"第 {no} 行镜头时长必须 > 0：{m['dur']}")
-                continue
+                dur = 5.0
             prev_shot = old_shots.get(m["id"])
             shot = Shot(
                 shot_id=m["id"],
