@@ -1185,6 +1185,56 @@ def provision(
                       "fastvideo3 serve --host 0.0.0.0 --port 8710")
 
 
+@app.command("asset-gen")
+def asset_gen(
+    run_id: str = typer.Argument(...),
+    kind: str = typer.Option("character", "--kind", help="character | scene"),
+    only_id: str = typer.Option("", "--id", help="只出这一个角色/场景（留空 = 补齐全部缺口）"),
+) -> None:
+    """只出一张角色图 / 场景图（界面单卡「生成」按钮用）。
+
+    与「开始生成 · 生成角色图」走同一份装配（`stages.stage_assets`：风格锚、抽卡选优、
+    风格闸门、血缘登记都在里面），只是把范围收窄到一个资产 —— 整步重跑会顺手补掉别的缺口，
+    那是另一笔钱，而人此刻只想画这一张。`skip_existing` 让盘上已有的不被覆盖：
+    按钮的语义就是"缺了才画"。
+    """
+    import asyncio
+
+    from fastvideo3.core import stages, tasklock
+    from fastvideo3.core.config import OUTPUT_DIR
+    from fastvideo3.core.schema import Script
+    from fastvideo3.core.stages import build_context
+    from fastvideo3.core.storage import RunStorage
+
+    storage = RunStorage(run_id)
+    meta = storage.load_json("run_meta.json") or {}
+    cfg = _cfg_from_meta(meta)
+    ok, st_lock = tasklock.acquire(OUTPUT_DIR, run_id, "asset-gen", adopt_same_run=True)
+    if not ok:
+        console.print(f"[red]✘ 已有任务在跑（{st_lock.get('run_id')} / {st_lock.get('kind')}）。[/]")
+        raise typer.Exit(code=4)
+    try:
+        script = Script.model_validate(storage.load_json("script.json"))
+        kinds = {"character"} if kind == "character" else {"scene"}
+        ctx = build_context(cfg, storage)
+        out = asyncio.run(
+            stages.stage_assets(ctx, script, kinds=kinds, only={only_id} if only_id else None)
+        )
+        produced = list(out or [])
+        storage.log_event(
+            "cli", "asset_gen_done", kind=kind, only=only_id, produced=len(produced)
+        )
+        console.print(f"[green]✔ {kind} 图完成[/]（{len(produced)} 项）")
+    except Exception as e:  # noqa: BLE001
+        storage.log_event(
+            "cli", "asset_gen_failed", kind=kind, only=only_id, error=str(e)[:300]
+        )
+        console.print(f"[red]✘ 生成失败：{type(e).__name__}: {str(e)[:200]}[/]")
+        raise typer.Exit(code=5) from e
+    finally:
+        tasklock.release(OUTPUT_DIR, run_id)
+
+
 @app.command("scene-gen")
 def scene_gen(
     run_id: str = typer.Argument(...),

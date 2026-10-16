@@ -50,7 +50,14 @@ from fastvideo3.core.config import (
     resolution_for_quality,
 )
 from fastvideo3.core.schema import BaseInfo, ProjectConfig, Script
-from fastvideo3.core.storage import STAGES, RunStorage, list_runs, safe_promote
+from fastvideo3.core.storage import (
+    STAGES,
+    RunStorage,
+    list_runs,
+    original_of,
+    preserve_original,
+    safe_promote,
+)
 
 app = FastAPI(title="FastVideo3 API", description="多智能体短剧视频生成 Web 服务", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -1369,6 +1376,14 @@ def production_board(run_id: str) -> dict:
     from fastvideo3.core import voice_budget
 
     board["capacity"] = voice_budget.capacity(script, cfg_run)
+    # 转场的可选值由后端给（唯一来源：schema.TransitionType + script_text 的中文标签）。
+    # 前端自己抄一份枚举迟早会漂，漂了的表现就是「下拉里有 空镜转场，存进去却报不认识」。
+    from fastvideo3.core.schema import TransitionType as _TT
+    from fastvideo3.core.script_text import TRANSITION_CN as _TRANS_CN
+
+    board["transition_options"] = [
+        {"value": e.value, "label": _TRANS_CN.get(e.value, e.value)} for e in _TT
+    ]
     # meta 里落 0 的老 run（历史 bug：`run` 直接写 `--budget` 默认值）要回落到实际生效值，
     # 否则看板显示"熔断 ¥0"、红条永不触发，而真正会跳闸的是 .env 里的 ¥120
     budget_cny = float(meta.get("budget_limit_cny") or 0) or float(cfg_run.budget_limit_cny)
@@ -1456,7 +1471,14 @@ def production_board(run_id: str) -> dict:
                 # **场景概念图实际会发出的提示词**。面板原本只摆 `summary`（那是剧情梗概，
                 # 必然带人名），于是用户据此以为"背景图要画角色"——把真正发出去的提示词
                 # 摆出来，空景过滤是对的还是漏了，一眼可核，不需要信任何人的口头保证。
-                "bg_prompt": scene_background_prompt(cfg_run, script, scene),
+                "bg_prompt": scene_background_prompt(
+                    cfg_run, script, scene,
+                    override=str((meta.get("scene_image_prompts") or {}).get(scene.scene_id) or ""),
+                ),
+                "bg_prompt_edited": bool(
+                    (meta.get("scene_image_prompts") or {}).get(scene.scene_id)
+                ),
+                "bg_prompt_default": scene_background_prompt(cfg_run, script, scene),
                 "shots": shots,
             }
         )
@@ -1582,6 +1604,7 @@ async def put_artifact(run_id: str, stage: str, name: str, request: Request) -> 
         raise HTTPException(status_code=400, detail="非法路径")
     if dest.is_file():
         # 备份用复制而非 rename：Windows 上该文件可能正被 /api/files 请求或杀软握住
+        preserve_original(dest)
         if not safe_promote(dest, base / (dest.stem + ".bak.png")):
             raise HTTPException(
                 status_code=409,
@@ -2066,6 +2089,116 @@ def _script_cross_check(script: Script) -> list[str]:
     from fastvideo3.core import scriptio
 
     return scriptio.cross_check(script)
+
+
+@app.post("/api/runs/{run_id}/artifacts/{stage}/{name}/restore")
+def restore_artifact(run_id: str, stage: str, name: str) -> dict:
+    """恢复成**最原始**的那张图 / 那段片段（`.orig` 快照，见 `storage.preserve_original`）。
+
+    为什么不是回到"上一版"：`.bak.png` 会一路往后漂，人想撤销的恰恰是"我把它改坏了"——
+    只有原点是稳定参照。没有原点就响亮拒绝（409），前端据此显示「无原始版本」，
+    绝不悄悄给一张别的图。
+
+    恢复改了素材本体 → 下游按血缘作废；但**不撤 uploads.json 的台账**：这个格子仍归人管，
+    重跑不该把刚恢复的图冲掉（那正是用户刚刚做的决定）。
+    """
+    from fastvideo3.core import progress as prog
+
+    root = _safe_run_root(run_id)
+    if stage not in ("assets", "clips"):
+        raise HTTPException(status_code=400, detail="只有角色图/场景图/场景片段有原始版本可恢复")
+    if not _DELETE_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="文件名不合法")
+    base = (root / stage).resolve()
+    target = (base / name).resolve()
+    if not target.is_file() or not target.is_relative_to(base):
+        raise HTTPException(status_code=404, detail="当前产物不存在，没有可恢复的位置")
+    orig = original_of(target)
+    if not orig.is_file():
+        raise HTTPException(status_code=409, detail=f"{name} 还没被改动过：没有更早的原始版本可恢复")
+    if not safe_promote(orig, target):
+        raise HTTPException(status_code=409, detail="文件正被占用（预览/杀软），关掉预览再试")
+    storage = RunStorage(run_id, root=root.parent)
+    rel = f"{stage}/{name}"
+    invalidated = prog.invalidate_artifact(
+        storage, rel, reason="artifact_restored", script=_script_or_none(root)
+    )
+    _events_append(root, "web_api", "artifact_restored", artifact=rel, invalidated=len(invalidated))
+    return {
+        "ok": True,
+        "restored": rel,
+        "invalidated": len(invalidated),
+        "items": invalidated[:50],
+        "hint": "点「开始生成」会按恢复后的素材重做受影响的下游产物",
+    }
+
+
+def _spawn_asset_gen(run_id: str, kind: str, owner_id: str) -> dict:
+    """起一个只画这张资产的后端子进程（与「开始生成」同一把锁，防重复付费）。"""
+    from fastvideo3.core import tasklock
+
+    root = _safe_run_root(run_id)
+    _require_idle("生成" + ("角色图" if kind == "character" else "场景图"))
+    tasklock.acquire(_out(), run_id, "step")
+    cmd = [
+        sys.executable, "-m", "fastvideo3.app.cli", "asset-gen", run_id,
+        "--kind", kind, "--id", owner_id,
+    ]
+    _spawn(cmd, root / "server_spawn.log")
+    _events_append(root, "web_api", "asset_gen", kind=kind, owner=owner_id)
+    return {"ok": True, "kind": kind, "id": owner_id, "started": True}
+
+
+@app.put("/api/runs/{run_id}/scenes/{scene_id}/prompt")
+async def put_scene_prompt(run_id: str, scene_id: str, request: Request) -> dict:
+    """保存这一场文生图提示词（空串 = 撤回，回到机器按剧情生成的那一版）。
+
+    与场景片段的提示词同一套语义：**所见即所发**，人写的全文优先。唯一的兜底是禁人声明 ——
+    背景图里长出人来会污染整段场景片段的参考素材（模型把参考图里的路人当场景的一部分
+    画进每个镜头），这个后果比"不够尊重人的提示词"大，所以缺了就补一句尾缀。
+    """
+    body = await request.json()
+    text = str((body or {}).get("prompt") or "").strip()
+    root = _safe_run_root(run_id)
+    script = _load_script_dict(root)
+    if scene_id not in {s.get("scene_id") for s in script.get("scenes", [])}:
+        raise HTTPException(status_code=404, detail=f"剧本里没有场景 {scene_id}")
+    storage = RunStorage(run_id, root=root.parent)
+    meta = _load_meta(root) or {}
+    prompts = dict(meta.get("scene_image_prompts") or {})
+    if text:
+        prompts[scene_id] = text
+    else:
+        prompts.pop(scene_id, None)
+    meta["scene_image_prompts"] = prompts
+    storage.save_json("run_meta.json", meta)
+    _events_append(root, "web_api", "scene_prompt_edited", scene=scene_id, chars=len(text))
+    return {"ok": True, "edited": bool(text)}
+
+
+@app.post("/api/runs/{run_id}/characters/{char_id}/generate", status_code=202)
+def generate_character_portrait(run_id: str, char_id: str) -> dict:
+    """只画这一个角色的定妆图。盘上已有就 409 —— 按钮的语义是「缺了才画」，
+    已有时界面弹「已有角色图」（2 秒消失），不该让人误以为会重画烧钱。"""
+    root = _safe_run_root(run_id)
+    if (root / "assets" / f"char_{char_id}.png").is_file():
+        raise HTTPException(status_code=409, detail="已有角色图")
+    script = _load_script_dict(root)
+    if char_id not in {c.get("character_id") for c in script.get("characters", [])}:
+        raise HTTPException(status_code=404, detail=f"剧本里没有角色 {char_id}")
+    return _spawn_asset_gen(run_id, "character", char_id)
+
+
+@app.post("/api/runs/{run_id}/scenes/{scene_id}/generate", status_code=202)
+def generate_scene_image(run_id: str, scene_id: str) -> dict:
+    """只画这一场的场景图（空景背景）。已有 → 409，理由同角色图。"""
+    root = _safe_run_root(run_id)
+    if (root / "assets" / f"scene_{scene_id}.png").is_file():
+        raise HTTPException(status_code=409, detail="已有场景图")
+    script = _load_script_dict(root)
+    if scene_id not in {s.get("scene_id") for s in script.get("scenes", [])}:
+        raise HTTPException(status_code=404, detail=f"剧本里没有场景 {scene_id}")
+    return _spawn_asset_gen(run_id, "scene", scene_id)
 
 
 @app.delete("/api/runs/{run_id}/artifacts/{stage}/{name}")

@@ -281,6 +281,34 @@ def list_runs(root: Path | None = None) -> list[str]:
     return sorted(runs, reverse=True)
 
 
+def original_of(path: Path) -> Path:
+    """`char_c1.png` → `char_c1.orig.png`（同目录、同后缀，中间插 `.orig`）。"""
+    return path.with_name(path.stem + ".orig" + path.suffix)
+
+
+def preserve_original(path: Path) -> bool:
+    """**第一次**要覆盖某个已有产物前，把它快照成 `.orig`；已有就什么都不做。
+
+    为什么不是复用 `.bak.png`：`.bak` 是"上一版"，一路改下去它会变成"上一次生成的那张脸"，
+    人想要的『恢复』是回到**最原始**那一版（第一次跑出来、他还没动过的）。只写一次正是
+    这个语义：之后再覆盖多少次，`.orig` 始终是原点。
+    与 safe_promote 同样绝不抛异常 —— 留底失败最多是"没有恢复按钮"，不能打死生成。
+    """
+    import shutil
+
+    try:
+        src = Path(path)
+        if not src.is_file():
+            return False
+        orig = original_of(src)
+        if orig.is_file():
+            return False
+        shutil.copy2(src, orig)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def safe_promote(src: Path, dest: Path, attempts: int = 4, delay: float = 0.4) -> bool:
     """把 src 提升为 dest：带重试的复制，**任何情况下都不抛异常**。
 

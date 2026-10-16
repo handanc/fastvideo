@@ -47,7 +47,7 @@ from fastvideo3.core.scenegroup import (
     group_scenes,
 )
 from fastvideo3.core.schema import AudioLine, JobStatus, RunJob, Script, TransitionType
-from fastvideo3.core.storage import RunStorage
+from fastvideo3.core.storage import RunStorage, preserve_original
 from fastvideo3.modules.m6_talk import _scripted_lines_block, _timbre_anchor
 from fastvideo3.providers.base import (
     AccountGateError,
@@ -567,6 +567,7 @@ async def generate_scene_clips(
                 impact="已完成的片段一个不动；确认继续后点「开始生成」从这里接着跑，不重复花钱",
             )
             break
+        preserve_original(dest)  # 重出会覆盖那段已付费的画面：先留一份「最原始」给「恢复」
         if existing is None:
             # **先把任务行插进台账**：`jobs.update()` 只会 UPDATE 已存在的行，之前只调 update
             # 的写法让台账一直是空的 —— 于是 `jobs.get()` 永远返回 None，"跳过已提交任务"与

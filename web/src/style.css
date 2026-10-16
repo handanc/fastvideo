@@ -293,6 +293,10 @@ video.final { width: 100%; max-width: 420px; border-radius: var(--radius); backg
   border: 1px dashed var(--line); border-radius: 6px; color: var(--muted); cursor: pointer;
 }
 .upl:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.upl[disabled] { opacity: .5; cursor: default; }
+/* 「生成」放在右侧文字下方（不在图旁边）：左列已经有 上传/删除/恢复 三颗，
+   再加一颗就是四颗挤在一起；而右边正好是"读完这段描述 → 按它画一张"。 */
+.genRow { margin-top: 8px; }
 .upl.tiny { display: block; text-align: center; margin: 0; border-radius: 0; border-left: 0; border-right: 0; border-bottom: 0; }
 .badge.small { font-size: 11px; padding: 1px 6px; margin-left: 6px; }
 

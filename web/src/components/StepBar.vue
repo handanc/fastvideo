@@ -86,8 +86,5 @@ async function runStep() {
         上限 ¥{{ Number(props.steps?.budget_cny || 0).toFixed(0) }}
       </span>
     </div>
-    <p v-for="s in list.filter((x) => x.state === 'failed')" :key="s.id" class="alert err">
-      「{{ s.label }}」失败：{{ s.error }} —— 修复后再点「开始生成」会从这一步继续。
-    </p>
   </div>
 </template>

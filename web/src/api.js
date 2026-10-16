@@ -37,6 +37,16 @@ export const api = {
     fetch(`/api/runs/${encodeURIComponent(id)}/scene-groups/${encodeURIComponent(gid)}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     }).then(unwrap),
+  // 单资产生成：只画这一张角色图 / 场景图（缺了才画；已有 → 后端 409，界面弹提示）
+  genChar: (id, cid) => post(`/api/runs/${encodeURIComponent(id)}/characters/${encodeURIComponent(cid)}/generate`),
+  genScene: (id, sid) => post(`/api/runs/${encodeURIComponent(id)}/scenes/${encodeURIComponent(sid)}/generate`),
+  // 回到"最原始"那一版（不是上一版）：没有原点时后端 409，界面显示「无原始版本」
+  restoreArtifact: (id, stage, name) =>
+    post(`/api/runs/${encodeURIComponent(id)}/artifacts/${stage}/${encodeURIComponent(name)}/restore`),
+  putScenePrompt: (id, sid, prompt) =>
+    fetch(`/api/runs/${encodeURIComponent(id)}/scenes/${encodeURIComponent(sid)}/prompt`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }),
+    }).then(unwrap),
   genSceneFrames: (id, gid) =>
     post(`/api/runs/${encodeURIComponent(id)}/scene-groups/${encodeURIComponent(gid)}/frames`),
   genSceneClip: (id, gid) =>

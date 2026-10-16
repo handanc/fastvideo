@@ -49,10 +49,6 @@ async function autoSave(g) {
   await savePrompts(g)
 }
 
-async function copyPrompt(g) {
-  try { await navigator.clipboard.writeText(g.prompt || ''); flash('提示词已复制') }
-  catch (e) { window.prompt('复制不了，请手动选中：', g.prompt || '') }
-}
 async function resetPrompt(g) {
   if (!window.confirm(`把 ${g.group_id} 的提示词恢复成机器按剧本拼的默认版？
 你的人工改写会被丢弃。`)) return
@@ -98,21 +94,11 @@ async function setMode(g, mode) {
   } catch (e) { error.value = e.message }
 }
 
-async function pickCharImage(g, cid, rel) {
-  try {
-    const d = await api.patchSceneGroup(props.runId, g.group_id, {
-      char_images: { ...g.char_images, [cid]: rel },
-    })
-    groups.value = d.groups || groups.value
-  } catch (e) { error.value = e.message }
-}
-
 // ── 参考角色的增删 ────────────────────────────────────────────
 // 自动名单（`g.characters`）现在包含"只入画不说话"的人（与 m3 首帧同一份 implied cast 判据），
 // 这里再让人手动加减。**候选池 = 剧本角色 ∩ 已有角色图**：没有图的人加了也发不出去
 // （编号由存活名单现算，会静默少一张），不如根本不让选。
 const MAX_IMG = 10  // 官方 reference_image 上限（与 core.scenegroup.MAX_REF_IMAGES 同值）
-const addPick = ref({})
 
 function castMap(g) {
   const m = {}
@@ -141,31 +127,39 @@ function charOpt(g, cid) {
   }
 }
 
-function charLabel(g, cid) {
+function charName(g, cid) {
   const o = castMap(g)[cid]
-  const nm = o ? o.name : cid
-  // 说话人要音色样本，只入画的只要脸 —— 这个区别决定官方 5 段/15 秒的音色预算花给谁
-  return o && o.speaking ? nm : `${nm}（只入画，不配音）`
+  return o ? o.name : cid
+}
+
+// 添加角色：弹窗里只列"这一组还没选 + 已有角色图"的人（没图的选了也发不出去）
+const addFor = ref(null)
+const addPicked = ref([])
+
+function openAdd(g) {
+  addPicked.value = []
+  addFor.value = g
+}
+
+async function confirmAdd() {
+  const g = addFor.value
+  addFor.value = null
+  if (!g || !addPicked.value.length) return
+  const next = [...(g.char_refs || []), ...addPicked.value]
+  if (next.length > MAX_IMG - 1) {
+    error.value = `参考图共 ${next.length + 1} 张（含场景背景），超过官方上限 ${MAX_IMG} 张：先去掉几个人`
+    return
+  }
+  try {
+    const d = await api.patchSceneGroup(props.runId, g.group_id, { char_refs: next })
+    groups.value = d.groups || groups.value
+    flash(`${sceneLabel(g.group_id)}：已添加 ${addPicked.value.length} 个角色`)
+  } catch (e) { error.value = e.message }
 }
 
 function addable(g) {
   const shown = shownChars(g)
   return (g.cast_options || []).filter((o) => o.portrait && !shown.includes(o.id))
-}
-
-async function resetCharRefs(g) {
-  // 空清单 = 撤回手动增删（后端按"回到自动"处理）
-  try {
-    const d = await api.patchSceneGroup(props.runId, g.group_id, { char_refs: [] })
-    groups.value = d.groups || groups.value
-    flash(`${sceneLabel(g.group_id)}：已回到按出场顺序自动选择`)
-  } catch (e) { error.value = e.message }
-}
-
-async function addChar(g, cid) {
-  if (!cid) return
-  await toggleRef(g, 'char', cid)
-  addPick.value[g.group_id] = ''
 }
 
 async function toggleRef(g, kind, id) {
@@ -220,6 +214,22 @@ async function genClip(g) {
   } catch (e) { error.value = e.message; busy.value = { ...busy.value, [g.group_id]: '' } }
 }
 
+async function restoreClip(g) {
+  // 「恢复」= 回到**最原始**那段（`.orig` 快照）。没被改过就没有原点 → 弹一句提示，
+  // 而不是报错：这是正常回答，红字会让人以为坏了什么。
+  busy.value = { ...busy.value, [g.group_id]: 'restore' }
+  try {
+    await api.restoreArtifact(props.runId, 'clips', `scene_${g.group_id}.mp4`)
+    await load()
+    emit('changed')
+    flash(`${sceneLabel(g.group_id)}：已恢复成最原始的片段（受影响的下游已作废）`)
+  } catch (e) {
+    if (/没有更早|还没被改动过/.test(e.message)) flash('无原始视频片段')
+    else error.value = e.message
+  }
+  busy.value = { ...busy.value, [g.group_id]: '' }
+}
+
 async function delClip(g) {
   if (!window.confirm(`确定删除 ${sceneLabel(g.group_id)} 的视频片段？\n删除后该组回到「待生成」，重出要再花一次钱。`)) return
   busy.value = { ...busy.value, [g.group_id]: 'delete' }
@@ -264,12 +274,6 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
           <option value="reference">角色+场景生成</option>
           <option value="first_last">首尾帧生成</option>
         </select>
-        <button v-if="g.clip" class="btn sm" :disabled="!!busy[g.group_id]" @click="delClip(g)">
-          🗑 删除片段
-        </button>
-        <button class="btn sm primary" :disabled="!!busy[g.group_id]" @click="genClip(g)">
-          {{ busy[g.group_id] === 'clip' ? '生成中…' : '生成' }}
-        </button>
       </div>
 
       <div class="muted small">当前形态：{{ g.mode === 'reference' ? '角色+场景生成' : (g.mode === 'first_last' ? '首尾帧生成' : '无法生成') }} — {{ g.mode_reason }}</div>
@@ -281,50 +285,36 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
       <div v-else-if="g.mode === 'reference' && !g.has_references" class="alert err">
         判定为角色+场景生成，但盘上找不到本组的角色图/场景图文件（见「角色图」「场景图」页）。
       </div>
-      <video v-if="g.clip" :src="g.clip" controls style="max-width: 260px"></video>
       <div v-if="g.clip_stale" class="alert warn">片段已作废（上游改过），点「生成」重出</div>
 
 
       <!-- 参考形态：只允许在**已有**的图里选，不允许在这里改图 -->
       <!-- 编辑区跟着**用户的选择**走，不跟着"生效形态"走：选了首尾帧却只显示参考素材，
            等于把「生成首尾帧」按钮藏起来，用户无路可走（2026-10-14 实测的死角）。 -->
-      <div v-if="g.mode === 'reference' && g.override_mode !== 'first_last'" class="modelBar">
-        <div v-for="cid in shownChars(g)" :key="cid" class="refRow">
-          <label class="chk" :title="(g.char_refs || []).includes(cid) ? '点掉勾 = 这段不用这张脸' : '勾上 = 加回这张脸'">
-            <input type="checkbox" :checked="(g.char_refs || []).includes(cid)"
-                   @change="toggleRef(g, 'char', cid)" />
-            {{ charLabel(g, cid) }}
-          </label>
-          <template v-if="charOpt(g, cid).portrait">
-            <img :src="charOpt(g, cid).portrait"
-                 :class="{ picked: (g.char_images[cid] || charOpt(g, cid).portrait_rel) === charOpt(g, cid).portrait_rel }"
-                 title="定妆照" @click="pickCharImage(g, cid, charOpt(g, cid).portrait_rel)" />
-            <img v-for="(u, k) in charOpt(g, cid).candidates" :key="u" :src="u"
-                 :class="{ picked: g.char_images[cid] === charOpt(g, cid).candidates_rel[k] }"
-                 title="候选立绘" @click="pickCharImage(g, cid, charOpt(g, cid).candidates_rel[k])" />
-          </template>
-          <span v-else class="muted small">缺定妆照 → 去「角色图」页补</span>
-        </div>
-        <div class="refRow addRow">
-          <select v-model="addPick[g.group_id]" @change="addChar(g, addPick[g.group_id])">
-            <option value="">＋ 添加角色（只列已有角色图的）</option>
-            <option v-for="o in addable(g)" :key="o.id" :value="o.id">{{ o.name }}</option>
-          </select>
-          <button class="btn sm" title="撤回手动增删，回到按出场顺序自动选" @click="resetCharRefs(g)">
-            回到自动
-          </button>
-          <span class="muted small">参考图上限 {{ MAX_IMG }} 张（含场景背景）</span>
-        </div>
-        <div v-for="sid in g.scene_ids" :key="sid" class="refRow">
-          <label class="chk">
-            <input type="checkbox" :checked="(g.scene_refs || []).includes(sid)"
-                   @change="toggleRef(g, 'scene', sid)" />
-            {{ sid }}（空景背景，图中无人）
-          </label>
-          <img v-if="g.scene_options && g.scene_options[sid]" :src="g.scene_options[sid]" class="picked" />
-        </div>
-      </div>
+      <!-- 参考素材：这一段的输入。图块从左到右、从上到下排；场景图只能有一张，排在最后。
+           角色名放在图**下面**（放上面时人和图对不上行）。取消勾选框改成每块一颗 🗑：
+           勾选框+缩略图+候选图挤在一行时，人分不清"点图是换脸还是选它"。 -->
+      <div v-if="g.mode === 'reference' && g.override_mode !== 'first_last'" class="refStrip">
+        <figure v-for="cid in shownChars(g)" :key="cid" class="refTile">
+          <img v-if="charOpt(g, cid).portrait" :src="charOpt(g, cid).portrait"
+               :alt="charName(g, cid)" loading="lazy" />
+          <div v-else class="missing sm">缺 char_{{ cid }}.png</div>
+          <figcaption>{{ charName(g, cid) }}</figcaption>
+          <button class="upl del tiny" title="从这一段的参考素材里去掉这个人（不改剧本的在场）"
+                  @click="toggleRef(g, 'char', cid)">🗑 删除</button>
+        </figure>
 
+        <figure v-for="sid in g.scene_ids" :key="sid" class="refTile">
+          <img v-if="g.scene_options && g.scene_options[sid]" :src="g.scene_options[sid]"
+               :alt="sid" loading="lazy" />
+          <div v-else class="missing sm">缺 scene_{{ sid }}.png</div>
+          <figcaption>{{ sceneLabel(sid) }}（空景）</figcaption>
+          <button class="upl del tiny" title="去掉背景参考图（一般不建议：空间就没有依据了）"
+                  @click="toggleRef(g, 'scene', sid)">🗑 删除</button>
+        </figure>
+
+        <button class="addTile" title="添加角色（只列已有角色图的）" @click="openAdd(g)">＋</button>
+      </div>
       <!-- 首尾帧形态：先出帧，再按帧出片 -->
       <div v-if="g.mode === 'first_last' || g.override_mode === 'first_last'" class="modelBar">
         <div v-if="!g.first_frame" class="alert warn">
@@ -354,7 +344,7 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
       <!-- 提示词：这一页唯一"直接决定成片"的输入，所以给它最好的编辑体验 -->
       <div class="promptBox">
         <div class="promptHead">
-          <b>提交给 wan3.0 的提示词</b>
+          <b>图生视频提示词</b>
           <span class="muted small">
             {{ (g.prompt || '').length }} 字 · {{ g.shots.length }} 镜 · {{ g.duration }}s ·
             参考图 {{ legendCounts(g).imgs }} · 音色 {{ legendCounts(g).auds }}
@@ -363,7 +353,6 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
           <span v-else-if="g.prompt_edited" class="badge small">人工改写版</span>
           <span v-else class="badge ok small">机器默认</span>
           <div class="spacer"></div>
-          <button class="btn sm" @click="copyPrompt(g)">复制</button>
           <button class="btn sm" :disabled="!g.prompt_edited && !dirty(g)" @click="resetPrompt(g)">
             恢复默认
           </button>
@@ -378,13 +367,47 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
              多一个"保存"按钮就多一次"改了没保存 → 白花一次生成钱"的机会 -->
         <textarea class="promptEdit" v-model="g.prompt" rows="16" spellcheck="false"
                   @blur="autoSave(g)" @keydown.ctrl.enter="autoSave(g)"></textarea>
-        <div class="muted small promptFoot">
-          一个板块一行（【总体】【参考素材】【人物】… 第N个镜头 各占一行），改哪段直接改哪行；
-          <b>点到别处即自动保存</b>。点「生成」也会先保存再提交，不会拿旧提示词白花一次钱。
-          改坏了点「恢复默认」。
+      </div>
+
+      <!-- 三个动作按钮：放在提示词下面、片段上面 —— 改完提示词紧接着就是"提交/撤回"，
+           再往下就是这次提交买回来的东西。 -->
+      <div class="toolbar">
+        <button class="btn sm primary" :disabled="!!busy[g.group_id]" @click="genClip(g)">
+          {{ busy[g.group_id] === 'clip' ? '生成中…' : '生成' }}
+        </button>
+        <button v-if="g.clip" class="btn sm" :disabled="!!busy[g.group_id]" @click="delClip(g)">
+          🗑 删除片段
+        </button>
+        <button class="btn sm" :disabled="!!busy[g.group_id]" title="回到最原始那一段（不是上一版）"
+                @click="restoreClip(g)">
+          {{ busy[g.group_id] === 'restore' ? '恢复中…' : '↩ 恢复' }}
+        </button>
+      </div>
+      <video v-if="g.clip" :src="g.clip" controls style="max-width: 320px"></video>
+    </div>
+    <Teleport to="body">
+      <div v-if="addFor" class="modal-mask" @click.self="addFor = null">
+        <div class="modal" role="dialog" aria-modal="true">
+          <h3>添加角色 · {{ sceneLabel(addFor.group_id) }}</h3>
+          <p class="muted small">
+            只影响这一段的参考素材，不改剧本的「在场」；只能选<b>已有角色图</b>的人
+            （没有图就发不出去，等于没选）。
+          </p>
+          <label v-for="o in addable(addFor)" :key="o.id" class="check">
+            <input v-model="addPicked" type="checkbox" :value="o.id" /> {{ o.name }}
+            <span v-if="!o.in_cast" class="muted small">（本场未点名）</span>
+          </label>
+          <p v-if="!addable(addFor).length" class="muted small">
+            没有可添加的角色：其余人要么已经在这一段里，要么还没有角色图。
+          </p>
+          <div v-if="error" class="alert err">{{ error }}</div>
+          <div class="modal-actions">
+            <button class="btn primary sm" :disabled="!addPicked.length" @click="confirmAdd">确定</button>
+            <button class="btn sm" @click="addFor = null">取消</button>
+          </div>
         </div>
       </div>
-    </div>
+    </Teleport>
     <p v-if="!groups.length && !error" class="muted">还没有剧本（先在「剧本」页生成剧本）。</p>
   </div>
 </template>
@@ -412,6 +435,29 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
   max-width: min(560px, calc(100vw - 32px));
 }
 .summary { margin: 2px 0; }
+/* 小图 176px（用户裁定：88px 太小看不清是谁）。仍按**原始比例**显示、不加边框不填底色：
+   描边会把竖版立绘和横版场景图"框成一样大"，看着像被裁过，也分不清谁是谁。 */
+.refStrip { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 6px 0; }
+/* 图块：图在上、名字在下、删除压在块底 —— 名字放图上面时"人"和"图"对不上行 */
+.refTile { margin: 0; text-align: center; min-width: 110px; }
+.refTile img {
+  height: 176px; width: auto; max-width: 320px; object-fit: contain; display: block; margin: 0 auto;
+}
+.refTile figcaption { font-size: 12px; margin: 3px 0; line-height: 1.3; }
+.refTile .upl.tiny { padding: 2px 8px; font-size: 12px; width: auto; }
+.refTile .missing.sm {
+  height: 176px; width: 110px; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; text-align: center; margin: 0 auto;
+  border: 1px dashed var(--border, #2a3038); border-radius: 6px;
+}
+/* 圆形 ➕：随图块放大到能一眼看见，排在这段素材最后（场景图之后） */
+.addTile {
+  width: 64px; height: 64px; border-radius: 50%; border: 1px dashed var(--border, #2a3038);
+  background: none; color: var(--muted); font-size: 30px; line-height: 1; cursor: pointer;
+  align-self: center;
+}
+.addTile:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
 .refRow { display: flex; align-items: flex-end; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
 /* 缩略图按**原图比例**显示：只锁高度、宽度交给浏览器按固有比例算。
    原来是 56×56 + object-fit:cover —— 9:16 的定妆照被裁成正方形，人只看到胸像，

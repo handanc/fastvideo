@@ -289,9 +289,10 @@ onUnmounted(() => clearInterval(timer))
           或者直接用「✎ 编辑剧本稿」手写那一行 —— 走本地解析，必然生效。
         </span>
       </div>
+      <!-- 失败只在这里说一次：步骤条下面原来还挂了一条同样的文案，两处重复
+           只会让人以为发生了两件不同的事（用户反馈）。 -->
       <div v-for="s in failedSteps" :key="s.id" class="alert err">
-        ⚠ 「{{ s.label }}」失败：{{ s.error }}<br />
-        <span class="muted">修好后再点「开始生成」会从这一步继续，已完成的产物不重复花钱。</span>
+        ⚠ 「{{ s.label }}」失败：{{ s.error }}
       </div>
 
       <!-- 一致性闸门结论：不达标必须顶在最显眼的地方，不能让用户以为出片即合格 -->
@@ -337,8 +338,7 @@ onUnmounted(() => clearInterval(timer))
 
       <div v-if="costRisk" class="alert err">
         ⚠ 成本上限 <b>¥{{ Math.round(board.meta?.budget_limit_cny || 0) }}</b>
-        低于预估 <b>¥{{ Math.round(costRisk.lo) }}</b>：钱用完时场景片段会停出。
-        请提高上限，或缩短时长/降低分辨率。
+        低于预估 <b>¥{{ Math.round(costRisk.lo) }}</b>：到成本上限时会暂停任务。
       </div>
       <!-- 单价不确定的金额：成本上限按总额判，所以这部分必须说出来，不能假装精确 -->
       <div v-if="uncertainCost > 0" class="alert warn">

@@ -22,7 +22,7 @@ from fastvideo3.core.config import AppConfig
 from fastvideo3.core.cost import CostLedger, llm_meta
 from fastvideo3.core.prompts import render
 from fastvideo3.core.schema import Asset, Script
-from fastvideo3.core.storage import RunStorage, safe_promote
+from fastvideo3.core.storage import RunStorage, preserve_original, safe_promote
 from fastvideo3.providers.base import (
     ModerationError,
     ProviderError,
@@ -121,7 +121,14 @@ def _scene_style(style_suffix: str) -> str:
     return s.strip(" ，,")
 
 
-def scene_background_prompt(cfg: Any, script: Any, scene: Any) -> str:
+#: 禁人尾句（人工改写全文时若缺了就补上）。背景图里长出人来会污染**每一段**场景片段的
+#: 参考素材（模型把参考图里的路人当成场景的一部分画进镜头），这个后果比"提示词不够尊重人"大。
+_NO_PERSON_TAIL = "画面中没有任何人物、演员、路人、剪影或人影，也不得出现文字与水印。"
+
+
+def scene_background_prompt(
+    cfg: Any, script: Any, scene: Any, *, override: str = ""
+) -> str:
     """纯背景的场景概念图提示词：**空景在前、禁人在后**，正文里绝不出现人或演员。
 
     为什么过滤是必须的而不是"加一句无人物"就够：t2i 模型对"画面里有什么"的服从度
@@ -143,6 +150,16 @@ def scene_background_prompt(cfg: Any, script: Any, scene: Any) -> str:
     # 子串匹配会把"街道繁华"这种正经空间描述一起误杀 —— 误杀比漏杀更糟，因为它安静地
     # 把提示词变成空壳，没人会去查。单字的线索本来已由 _PERSON_HINTS 覆盖。
     guards = [n for n in names + [str(scene.title or "")] if len(str(n).strip()) >= 2]
+    # 人工改写 = **整条提示词全文**（与场景片段的提示词同一套语义：机器模板是默认值，
+    # 不是上限；所见即所发）。这里只做一件保命的事：全文里没有禁人声明时补上尾句。
+    # 为什么不套用 `_space_clauses` 过滤：那是给"机器从剧情概要里抽空间描述"用的，
+    # 拿来筛人写的整条提示词会把风格锚、构图要求一起切碎 —— 人写的东西优先。
+    # 残余风险写在 UI 上（改成人物出现在背景图里会污染整段的参考素材），并靠禁人尾句压一层。
+    human = (override or "").strip()
+    if human:
+        if "没有任何人物" in human or "没有人物" in human:
+            return human
+        return human + _NO_PERSON_TAIL
     bg = _space_clauses(scene.summary, guards)
     parts = [
         "空景场景概念图，画面中没有任何人物、人影或肢体，只画空间本身。",
@@ -328,7 +345,10 @@ async def build_assets(
             continue
         if pause.stop_for_budget(storage, ledger, node="m2_assets", unit=scene.scene_id):
             break
-        prompt = scene_background_prompt(cfg, script, scene)
+        prompt = scene_background_prompt(
+            cfg, script, scene,
+            override=_scene_prompt_override(storage, scene.scene_id),
+        )
         dest = storage.path("assets", f"scene_{scene.scene_id}.png")
         await _gen_with_retry(
             t2i,
@@ -408,6 +428,21 @@ async def _style_gate(
     return {"style_verified": False, "medium": verdict.medium, "gate_score": verdict.score}
 
 
+def _scene_prompt_override(storage: RunStorage | None, scene_id: str) -> str:
+    """界面上改写过的项目背景提示词正文（`run_meta.scene_image_prompts`）。
+
+    读在 m2、写在 API，两边共用 run_meta 这一个来源 —— 另存一份就会出现
+    「界面显示的是改过的、实际画的是机器模板」。
+    """
+    if storage is None:
+        return ""
+    try:
+        meta = storage.load_json("run_meta.json") or {}
+    except Exception:  # noqa: BLE001  # 读不到就当没改过，退回机器模板
+        return ""
+    return str((meta.get("scene_image_prompts") or {}).get(scene_id) or "")
+
+
 async def _gen_with_retry(
     t2i: T2IProvider,
     prompt: str,
@@ -424,6 +459,8 @@ async def _gen_with_retry(
 
     fallback 分支按能力位过滤 seed/ref（此前一律丢弃且无痕迹）。
     """
+    # 重画会直接盖掉盘上那张脸 —— 先留一份「最原始」，界面才有「恢复」可点
+    preserve_original(Path(dest))
     kwargs: dict = {"size": size, "negative_prompt": negative_prompt, "seed": seed}
     last_err: Exception | None = None
     for attempt in range(_MAX_RETRY + 1):
@@ -541,6 +578,7 @@ async def _gen_best_char(
     # 复制而非 rename：Windows 上候选图常被文件请求/杀软短暂握住，rename 抛
     # WinError 32 曾把整条 run 打死（run_20261002_132909 实测）。
     effective = dest
+    preserve_original(Path(dest))  # 抽卡选优同样会覆盖已有图
     if not safe_promote(best, dest):
         effective = best  # 提升失败也要继续跑：直接把候选路径当锚点
         storage.log_degradation(

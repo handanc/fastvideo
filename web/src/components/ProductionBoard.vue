@@ -319,6 +319,10 @@ async function saveDescription(e, text) {
           + `写短了台词会被吞句尾`,
         )
       }
+    } else if (e.field === 'transition_out') {
+      notice.value = `✔ 「${e.id}」转场已保存（剧本 v${r.version}）`
+        + (r.invalidated ? `，作废 ${r.invalidated} 个产物` : '')
+        + '；转场决定片段之间的衔接，片段重出后才会看到效果'
     } else {
       const what = e.kind === 'script' ? '片名' : `「${e.id}」的描述`
       notice.value = e.kind === 'script'
@@ -329,6 +333,93 @@ async function saveDescription(e, text) {
     emit('changed')
   } catch (err) {
     error.value = err.message
+  } finally {
+    busy.value = ''
+  }
+}
+
+// 转场是**枚举**，所以用下拉而不是"点文字即改"：手打的中文（淡出/黑场/特效转场）
+// 得靠保存时的别称映射才认，直接给后端那份取值列表最省事也最不会错。
+const transitionOptions = computed(() => props.board?.transition_options || [])
+
+function setTransition(sh, value) {
+  saveDescription({ kind: 'shot', id: sh.shot_id, field: 'transition_out' }, value)
+}
+
+// ── 单张资产：生成（缺了才画）与恢复（回到最原始那一版）────────────
+// 「已有 X」和「无原始版本」都是**正常状态**，不是错误：2 秒提示后自己消失，
+// 留在页面上的红字会让人以为坏了什么。
+async function genAsset(kind, id, label, has) {
+  if (has) { flashWarn(`已有${label}`); return }
+  busy.value = `gen:${id}`
+  error.value = ''
+  try {
+    const fn = kind === 'char' ? api.genChar : api.genScene
+    await fn(props.runId, id)
+    notice.value = `✔ 已开始生成${label}（${id}）：完成后这里会自动出现，点 ⟳ 刷新`
+    emit('changed')
+  } catch (e) {
+    if (/已有/.test(e.message)) flashWarn(e.message)
+    else error.value = e.message
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function restoreArtifact(stage, name, label) {
+  busy.value = `restore:${name}`
+  error.value = ''
+  try {
+    const r = await api.restoreArtifact(props.runId, stage, name)
+    notice.value = `✔ ${label} 已恢复成最原始版本，作废 ${r.invalidated || 0} 个下游产物；`
+      + '点「开始生成」按它重做受影响的部分'
+    emit('changed')
+  } catch (e) {
+    // 没被改过 → 根本没有"更原始"的版本，这是正常回答不是故障
+    if (/没有更早的原始版本|还没被改动过/.test(e.message)) flashWarn(`无原始${label}`)
+    else error.value = e.message
+  } finally {
+    busy.value = ''
+  }
+}
+
+// ── 场景图的「文生图提示词」：默认展开、单击即改、点别处自动保存 ─────────
+// 与场景片段的提示词同一套语义：所见即所发，机器拼的只是默认值。
+const promptEdit = ref('')
+const promptText = ref('')
+
+function startPrompt(sc) {
+  promptEdit.value = sc.id
+  promptText.value = sc.bg_prompt || ''
+}
+
+async function savePrompt(sc) {
+  const text = (promptText.value || '').trim()
+  promptEdit.value = ''
+  if (!text || text === (sc.bg_prompt || '').trim()) return
+  busy.value = `prompt:${sc.id}`
+  error.value = ''
+  try {
+    await api.putScenePrompt(props.runId, sc.id, text)
+    notice.value = `✔ ${sc.id} 的文生图提示词已保存：点「生成」或删图重跑就按它画`
+    emit('changed')
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function resetPrompt(sc) {
+  promptEdit.value = ''
+  busy.value = `prompt:${sc.id}`
+  error.value = ''
+  try {
+    await api.putScenePrompt(props.runId, sc.id, '')
+    notice.value = `✔ ${sc.id} 已回到机器拼的提示词`
+    emit('changed')
+  } catch (e) {
+    error.value = e.message
   } finally {
     busy.value = ''
   }
@@ -389,14 +480,6 @@ watch(() => props.board?.script_version, (v, old) => {
         </button>
       </div>
 
-      <!-- 人工上传台账：这些图重做时永远不被覆盖，所以必须看得见 -->
-      <div v-if="Object.keys(b.uploads || {}).length" class="card">
-        <p class="muted small">
-          已上传 {{ Object.keys(b.uploads).length }} 项（重做时会跳过，不会被覆盖）：
-          <span v-for="(v, k) in b.uploads" :key="k" class="chip">{{ k }}</span>
-        </p>
-      </div>
-
       <!-- ── 剧本 ────────────────────────────────────────────── -->
       <div v-if="tab === 'script'" class="card">
         <h2
@@ -413,9 +496,8 @@ watch(() => props.board?.script_version, (v, old) => {
         <p class="muted">
           风格 {{ b.meta?.base_info?.style }} · 目标 {{ b.meta?.base_info?.target_duration_sec }}s ·
           画幅 {{ b.meta?.base_info?.aspect_ratio }} · 共 {{ counts.script }} 镜 /
-          {{ scenes.length }} 场 · 档位 {{ b.meta?.quality }}
+          {{ scenes.length }} 场
         </p>
-        <p class="muted small">剧本评审由<b>你</b>来做；分镜抽查、镜头选优、成片终审、一致性闸门自动跑。</p>
         <p v-if="capWarn" class="alert warn">{{ capWarn }}</p>
         <p v-if="warn" class="alert warn">{{ warn }}</p>
 
@@ -481,7 +563,21 @@ watch(() => props.board?.script_version, (v, old) => {
                     /><span class="muted">s</span>
                   </span>
                 </td>
-                <td class="muted">{{ transLabel[sh.transition_out] || sh.transition_out }}</td>
+                <td>
+                  <select
+                    class="sm" :value="sh.transition_out"
+                    :disabled="busy === `shot:${sh.shot_id}`"
+                    title="转场：这一段与下一段怎么接"
+                    @change="setTransition(sh, $event.target.value)"
+                  >
+                    <option v-for="t in transitionOptions" :key="t.value" :value="t.value">
+                      {{ t.label }}
+                    </option>
+                    <!-- 后端枚举里没有的旧值也要显示出来，否则界面会"静默改"用户的数据 -->
+                    <option v-if="sh.transition_out && !transitionOptions.some((t) => t.value === sh.transition_out)"
+                            :value="sh.transition_out">{{ sh.transition_out }}</option>
+                  </select>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -563,7 +659,7 @@ watch(() => props.board?.script_version, (v, old) => {
 
       <!-- ── 角色图 ──────────────────────────────────────────── -->
       <div v-if="tab === 'cast'" class="card">
-        <h2>角色定妆照 <span class="muted">（一致性锚点；点外貌描述即可改，改完点「开始生成」重画）</span></h2>
+        <h2>角色定妆照</h2>
         <div v-for="ch in chars" :key="ch.id" class="char-card">
           <div class="char-main">
             <img v-if="ch.portrait" :src="ch.portrait" :alt="ch.name" loading="lazy" />
@@ -576,7 +672,9 @@ watch(() => props.board?.script_version, (v, old) => {
             </label>
             <button v-if="ch.portrait" class="upl del"
                     @click="delArtifact('assets', `char_${ch.id}.png`, '角色定妆照')">🗑 删除</button>
-            <p class="muted small">删除后候选图仍在，可 ✔ 选用</p>
+            <button class="upl" title="回到最初生成的那张（不是上一版）"
+                    :disabled="busy === `restore:char_${ch.id}.png`"
+                    @click="restoreArtifact('assets', `char_${ch.id}.png`, '角色图')">↩ 恢复</button>
           </div>
           <div class="char-body">
             <h3>{{ ch.name }} <span class="tag mono">{{ ch.id }}</span>
@@ -607,6 +705,13 @@ watch(() => props.board?.script_version, (v, old) => {
               外貌卡：{{ Object.entries(ch.look).filter(([k, v]) => v && (Array.isArray(v) ? v.length : true)).map(([k, v]) => `${k}=${Array.isArray(v) ? v.join('/') : v}`).join(' · ') }}
             </p>
             <p class="muted small">音色 {{ ch.voice_id || '—' }}</p>
+            <div class="toolbar genRow">
+              <button class="btn sm primary" :disabled="busy === `gen:${ch.id}`"
+                      title="按外貌描述生成这一张；已有则提示，不重复花钱"
+                      @click="genAsset('char', ch.id, '角色图', !!ch.portrait)">
+                {{ busy === `gen:${ch.id}` ? '排队中…' : '▶ 生成' }}
+              </button>
+            </div>
             <div v-if="ch.candidates?.length" class="cands">
               <div v-for="u in ch.candidates" :key="u" class="cand">
                 <img :src="u" loading="lazy" :alt="u" />
@@ -622,55 +727,74 @@ watch(() => props.board?.script_version, (v, old) => {
 
       <!-- ── 场景图 ──────────────────────────────────────────── -->
       <div v-if="tab === 'scenes'" class="card">
-        <h2>场景概念图</h2>
-        <div class="scene-grid">
-          <figure v-for="s in scenes" :key="s.id">
-            <img v-if="s.concept" :src="s.concept" :alt="s.title" loading="lazy" />
-            <div v-else class="missing">缺 scene_{{ s.id }}.png</div>
-            <figcaption>
-              <b><span class="tag">{{ s.id }}</span> {{ s.title }}</b>
+        <h2>场景图</h2>
+        <!-- 布局与角色图一致：左边图 + 按钮，右边文字与提示词。两张页面两种排版的话，
+             同一个动作（生成/上传/删除/恢复）在两边长得不一样，人就得多想一遍。 -->
+        <div v-for="sc in scenes" :key="sc.id" class="char-card">
+          <div class="char-main">
+            <img v-if="sc.concept" :src="sc.concept" :alt="sc.title" loading="lazy" />
+            <div v-else class="missing">缺 scene_{{ sc.id }}.png</div>
+            <p v-if="sc.uploaded" class="badge ok small">用户上传</p>
+            <label class="upl">
+              <input type="file" accept="image/png,image/jpeg,image/webp" hidden
+                     @change="onUpload('assets', `scene_${sc.id}.png`, $event)" />
+              {{ uploading === `scene_${sc.id}.png` ? '上传中…' : '⬆ 上传' }}
+            </label>
+            <button v-if="sc.concept" class="upl del"
+                    @click="delArtifact('assets', `scene_${sc.id}.png`, '场景图')">🗑 删除</button>
+            <button class="upl" title="回到最初生成的那张（不是上一版）"
+                    :disabled="busy === `restore:scene_${sc.id}.png`"
+                    @click="restoreArtifact('assets', `scene_${sc.id}.png`, '场景图')">↩ 恢复</button>
+          </div>
+          <div class="char-body">
+            <h3>
+              <span class="tag">{{ sceneLabel(sc.id) }}</span>
+              <span class="editable" title="点击修改标题"
+                    v-if="!editKey('scene', sc.id, 'title')"
+                    @click="startInline('scene', sc.id, 'title', sc.title)">{{ sc.title }}</span>
+              <input v-else class="inline-edit one" autofocus v-model="inline.text"
+                     @blur="commitInline" @keydown.esc.prevent="cancelInline"
+                     @keydown.enter="commitInline" />
               <span class="muted">·
-                <span
-                  v-if="!editKey('scene', s.id, 'location')"
-                  class="editable" title="点击修改地点"
-                  @click="startInline('scene', s.id, 'location', s.location)"
-                >{{ s.location }}</span>
-                <input
-                  v-else class="inline-edit one" autofocus
-                  v-model="inline.text"
-                  @blur="commitInline"
-                  @keydown.esc.prevent="cancelInline"
-                  @keydown.enter="commitInline"
-                />
-                · {{ s.time_of_day }} · {{ s.shots.length }} 镜</span>
-              <p
-                v-if="!editKey('scene', s.id, 'summary')"
-                class="summary editable" title="点击修改剧情梗概（背景图会过滤掉其中的人物描述）"
-                @click="startInline('scene', s.id, 'summary', s.summary)"
-              >{{ s.summary || '（点击写场景氛围描述）' }}</p>
-              <textarea
-                v-else class="inline-edit" rows="2" autofocus spellcheck="false"
-                v-model="inline.text"
-                @blur="commitInline"
-                @keydown.esc.prevent="cancelInline"
-                @keydown.ctrl.enter="commitInline"
-              ></textarea>
-              <!-- 概念图是**空景背景**：这里直接摆实际发出去的提示词，
-                   而不是让人对着剧情梗概猜"背景图里是不是要画角色"。 -->
-              <details v-if="s.bg_prompt" class="promptfold">
-                <summary>文生图提示词 · 空景背景（图中无人）</summary>
-                <p class="bgprompt">{{ s.bg_prompt }}</p>
-              </details>
-              <span v-if="s.uploaded" class="badge ok small">已上传</span>
-              <label class="upl">
-                <input type="file" accept="image/png,image/jpeg,image/webp" hidden
-                       @change="onUpload('assets', `scene_${s.id}.png`, $event)" />
-                {{ uploading === `scene_${s.id}.png` ? '上传中…' : '⬆ 上传替换场景图' }}
-              </label>
-              <button v-if="s.concept" class="upl del"
-                      @click="delArtifact('assets', `scene_${s.id}.png`, '场景概念图')">🗑 删除</button>
-            </figcaption>
-          </figure>
+                <span v-if="!editKey('scene', sc.id, 'location')" class="editable"
+                      title="点击修改地点"
+                      @click="startInline('scene', sc.id, 'location', sc.location)">{{ sc.location }}</span>
+                <input v-else class="inline-edit one" autofocus v-model="inline.text"
+                       @blur="commitInline" @keydown.esc.prevent="cancelInline"
+                       @keydown.enter="commitInline" />
+                · {{ sc.time_of_day }} · {{ sc.shots.length }} 镜</span>
+            </h3>
+            <p v-if="!editKey('scene', sc.id, 'summary')" class="summary editable"
+               title="点击修改剧情梗概"
+               @click="startInline('scene', sc.id, 'summary', sc.summary)">{{ sc.summary || '（点击写场景氛围描述）' }}</p>
+            <textarea v-else class="inline-edit" rows="2" autofocus spellcheck="false"
+                      v-model="inline.text" @blur="commitInline"
+                      @keydown.esc.prevent="cancelInline"
+                      @keydown.ctrl.enter="commitInline"></textarea>
+
+            <p class="muted small">
+              文生图提示词
+              <span v-if="sc.bg_prompt_edited" class="badge ok small">已改写</span>
+            </p>
+            <div v-if="promptEdit !== sc.id" class="bgprompt editable" title="点击修改提示词"
+                 @click="startPrompt(sc)">{{ sc.bg_prompt || '（点击写提示词）' }}</div>
+            <div v-else>
+              <textarea v-model="promptText" class="inline-edit" rows="6" autofocus
+                        spellcheck="false" @keydown.esc.prevent="promptEdit = ''"></textarea>
+              <div class="toolbar">
+                <button class="btn sm primary" @click="savePrompt(sc)">保存</button>
+                <button class="btn sm" @click="promptEdit = ''">取消</button>
+                <button v-if="sc.bg_prompt_edited" class="btn sm" @click="resetPrompt(sc)">恢复默认</button>
+              </div>
+            </div>
+            <div class="toolbar genRow">
+              <button class="btn sm primary" :disabled="busy === `gen:${sc.id}`"
+                      title="按上面的提示词生成这一张；已有则提示，不重复花钱"
+                      @click="genAsset('scene', sc.id, '场景图', !!sc.concept)">
+                {{ busy === `gen:${sc.id}` ? '排队中…' : '▶ 生成' }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
