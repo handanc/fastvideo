@@ -43,11 +43,13 @@ from pydantic import BaseModel, Field
 from fastvideo3.core import config as config_mod
 from fastvideo3.core.assets import load_assets
 from fastvideo3.core.config import (
+    DEFAULT_RESOLUTION,
     DURATION_MAX,
     DURATION_MIN,
     PROJECT_ROOT,
+    RESOLUTIONS,
     load_config,
-    resolution_for_quality,
+    resolution_of_meta,
 )
 from fastvideo3.core.schema import BaseInfo, ProjectConfig, Script
 from fastvideo3.core.storage import (
@@ -86,10 +88,11 @@ class RunCreate(BaseModel):
     talk_mode: str | None = None
     talk_model: str | None = None
     voice_source: str | None = None
-    # 面板上的主选择是**分辨率**；给了它就由它映射出内部档位（config.RESOLUTION_TO_QUALITY）。
-    # quality 仍保留：CLI/测试/老前端可能只给档位，两者都给时以 resolution 为准。
-    resolution: Literal["480P", "720P", "1080P", ""] = ""
-    quality: Literal["economy", "high", "cinema"] = "economy"
+    # **分辨率是唯一的规格旋钮**：成片尺寸、一致性深度、抽卡数、单价量级都由它带出来
+    # （configs/profile_<tier>.yaml）。旧字段 quality（economy/high/cinema）已删 ——
+    # 它与分辨率一对一，留两个旋钮就能配出"cinema + 480P"这种自相矛盾的组合
+    # （talkmode 里曾专门为那个组合写特例）。老请求体里再带这个字段会被 pydantic 直接忽略。
+    resolution: Literal["480P", "720P", "1080P"] = "720P"
     aspect: Literal["9:16", "16:9", "1:1"] = "9:16"
     budget: float = Field(default=0.0, ge=0.0, le=100000.0)
     ablation: str = Field(default="", max_length=64)  # 消融配置名（configs/ablations/ 内）
@@ -273,7 +276,7 @@ def health() -> dict:
 
 
 @app.get("/api/cost-estimate")
-def cost_estimate(quality: str = "economy", duration: float = 30, talk_mode: str = "") -> dict:
+def cost_estimate(resolution: str = "720P", duration: float = 30, talk_mode: str = "") -> dict:
     """新建任务前的成本预估 —— **单价的唯一来源是 pricing.yaml + 供应商路由**。
 
     存在理由：口型通道从 videoretalk(¥0.08/秒) 换成 fal InfiniteTalk(¥2.15-4.34/秒)
@@ -283,8 +286,8 @@ def cost_estimate(quality: str = "economy", duration: float = 30, talk_mode: str
     from fastvideo3.core.cost import estimate_run_cost_cny
     from fastvideo3.core.talkmode import channel, provider_name, tier_conflict
 
-    # 未知档位名：不 overlay 任何 profile，等于按 default.yaml 估（不 500、不猜）
-    cfg = load_config(quality=quality if quality in ("economy", "high", "cinema") else None)
+    # 未知的分辨率写法：按默认档估（不 500、不猜规格）
+    cfg = load_config(resolution=resolution if resolution.upper() in RESOLUTIONS else None)
     cfg.talk_mode = talk_mode or cfg.talk_mode
     est = estimate_run_cost_cny(cfg, duration)
     ch = channel(cfg.talk_mode)
@@ -297,11 +300,9 @@ def cost_estimate(quality: str = "economy", duration: float = 30, talk_mode: str
         "talk_channel": ch.label,
         "talk_eats": ch.eats,
         "talk_note": ch.note,
-        "tier_warning": tier_conflict(
-            cfg.talk_mode, cfg.quality, cfg.i2v_resolution, cfg.voice_source
-        ),
+        "tier_warning": tier_conflict(cfg.talk_mode, cfg.i2v_resolution, cfg.voice_source),
         "talk_mode": cfg.talk_mode,
-        "quality": cfg.quality,
+        "resolution": cfg.i2v_resolution,
     }
 
 
@@ -377,7 +378,7 @@ def doctor_provision(force: int = 0, lock: int = 0) -> dict:
 
 
 @app.get("/api/model-choices")
-def model_choices(quality: str = "cinema", run_id: str = "") -> dict:
+def model_choices(resolution: str = "1080P", run_id: str = "") -> dict:
     """模型选择器的唯一来源：可选清单 + **当前实际生效的模型** + 是谁定的（run/.env/yaml）。
 
     "当前生效值"必须一起给：用户看不见"现在到底在用哪个模型"，选择器就变成猜谜 ——
@@ -390,10 +391,10 @@ def model_choices(quality: str = "cinema", run_id: str = "") -> dict:
     # 而且它的"模型名"不在下面这张 provider 键映射表里
     from fastvideo3.core.model_catalog import UI_CAPS, ui_catalog
 
-    q = quality if quality in ("economy", "high", "cinema") else "cinema"
-    base_cfg = load_config(quality=q)
+    tier = resolution.upper() if resolution.upper() in RESOLUTIONS else "1080P"
+    base_cfg = load_config(resolution=tier)
     meta = _load_meta(_safe_run_root(run_id)) if run_id else None
-    cfg = apply_run_overrides(load_config(quality=q), meta) if meta else base_cfg
+    cfg = apply_run_overrides(load_config(resolution=tier), meta) if meta else base_cfg
     run_chosen = (meta or {}).get("model_overrides") or {}
 
     # 能力 → (yaml models 键, 内置默认)：用于没配 KEY 时也能显示档位默认模型
@@ -422,7 +423,7 @@ def model_choices(quality: str = "cinema", run_id: str = "") -> dict:
     # 口型不再是可选能力：wan3.0 场景片段自带台词口型。这里只回一个说明块，
     # 让老前端拿到 200 而不是 404，并明确告诉它"没有口型下拉可渲染"。
     return {
-        "quality": q,
+        "resolution": tier,
         "run_id": run_id or "",
         "talk": {
             "removed": True,
@@ -437,33 +438,33 @@ def model_choices(quality: str = "cinema", run_id: str = "") -> dict:
 
 @app.get("/api/resolutions")
 def resolutions() -> dict:
-    """面板的分辨率选项（480P/720P/1080P）与它映射到的内部档位。
+    """面板的分辨率选项（480P/720P/1080P）与每一档实际会怎么跑。
 
-    映射只有一份（`config.RESOLUTION_TO_QUALITY`）：档位继续在后端驱动"一致性深度 /
-    单价量级 / 是否自动重拍"，用户不必逐条记。三类闸门（结构性、技术 QC、身份客观层）
-    **与分辨率无关，任何档都跑** —— 这是 2026-10-12 的裁定，写死在 configs/default.yaml。
+    **分辨率就是档位**（`configs/profile_<tier>.yaml`）：一致性深度、抽卡数、单价量级、
+    是否自动重拍都由它带出来，用户不必逐条记，也没有第二个旋钮能与之矛盾。
+    三类闸门（结构性、技术 QC、身份客观层）**与分辨率无关，任何档都跑** ——
+    这是 2026-10-12 的裁定，写死在 configs/default.yaml。
     """
-    from fastvideo3.core.config import RESOLUTION_TO_QUALITY, RESOLUTIONS, apply_resolution
     from fastvideo3.core.cost import estimate_run_cost_cny
 
     rows = []
     for res in RESOLUTIONS:
-        q = RESOLUTION_TO_QUALITY[res]
-        # 必须 apply_resolution：档位 yaml 里的 resolution 是它自己的默认（profile_high 写着
-        # 1080×1920），不覆盖就会在面板上显示"720P → 1080×1920"这种自相矛盾的规格
-        cfg = apply_resolution(load_config(quality=q), res)
+        # load_config 已按分辨率叠好 profile 并落定成片尺寸（内部调 apply_resolution），
+        # 这里不再二次覆盖 —— 否则又会出现"面板显示 720P、实际按 1080P 出片"
+        cfg = load_config(resolution=res)
         est = estimate_run_cost_cny(cfg, 30)
         rows.append(
             {
                 "resolution": res,
-                "quality": q,
                 "output_size": list(cfg.resolution),
                 "i2v_resolution": cfg.i2v_resolution,
                 "cost_30s": [est["lo"], est["hi"]],
                 "auto_reshoot": cfg.consistency_gate == "reshoot",
+                "candidates_per_shot": cfg.candidates_per_shot,
+                "consistency_metric": cfg.consistency_metric,
                 "note": (
                     "教学/试跑：量一致性但不自动重拍（重拍要花钱）"
-                    if q == "economy"
+                    if res == "480P"
                     else "交付：参考图锁脸 + 度量 + 不达标自动重拍 ≤2 轮"
                 ),
             }
@@ -490,11 +491,11 @@ async def patch_run_models(run_id: str, request: Request) -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=422, detail=f"请求体不是合法 JSON: {e}") from e
     meta = _load_meta(root) or {}
-    quality = str(meta.get("quality") or "economy")
+    tier = resolution_of_meta(meta)
     raw = body.get("model_overrides") if isinstance(body, dict) else None
     if raw is not None and not isinstance(raw, dict):
         raise HTTPException(status_code=422, detail="model_overrides 必须是对象（能力→模型名）")
-    chosen = _clean_model_overrides(raw or {}, quality)  # 非法名字/协议 → 400，不当场烧钱
+    chosen = _clean_model_overrides(raw or {}, tier)  # 非法名字/协议 → 400，不当场烧钱
     # 显式传空串 = **撤回**这一项点名，回到"跟随档位/.env"。
     # 必须在合并前单独算出来：`_clean_model_overrides` 会把空值直接丢掉（建任务时
     # 空值＝没选，不该落进 meta），撤回的意图只有这里能识别。
@@ -625,11 +626,9 @@ def runs_list() -> list[dict]:
                 "topic": base.get("topic", ""),
                 "style": base.get("style", ""),
                 "fake": bool(meta.get("fake")),
-                "quality": meta.get("quality", "economy"),
-                # 面板只认分辨率；老 run 没有 resolution_tier 字段 → 由档位反推，
-                # 免得列表里新旧 run 显示口径不一致
-                "resolution": meta.get("resolution_tier")
-                or resolution_for_quality(str(meta.get("quality", "economy"))),
+                # 只有分辨率一个口径；老 run 的 meta 里写着旧档位名，由 resolution_of_meta
+                # 换算（否则新旧 run 在列表里显示口径不一致）
+                "resolution": resolution_of_meta(meta),
                 "status": _run_status(root),
                 "cost_total_cny": _read_cost(root)["total_cny"],
                 "updated": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
@@ -641,7 +640,7 @@ def runs_list() -> list[dict]:
 
 
 def _clean_model_overrides(
-    raw: dict[str, str], quality: str, *, fake: bool = False
+    raw: dict[str, str], resolution: str, *, fake: bool = False
 ) -> dict[str, str]:
     """校验 run 级模型选择，非法就 400（列清可选值）—— 不等到提交 API 才 400 才发现打错名。
 
@@ -661,7 +660,7 @@ def _clean_model_overrides(
         validate,
     )
 
-    cfg_now = load_config(quality=quality)
+    cfg_now = load_config(resolution=resolution)
     # 目录之外、但**当前配置正在用**的模型名也要放行：面板的默认值就是从配置读的，
     # 若目录恰好没收录它，就会"界面显示着、一保存就 400"（自相矛盾比清单不全更糟）。
     extra = set(configured_models(cfg_now).values())
@@ -676,7 +675,7 @@ def _clean_model_overrides(
         err = (
             validate(cap, name, extra_allowed=extra)
             or protocol_error(cap, name, cfg_now, check_keys=not fake)
-            or ref_image_warning(cap, name, quality)
+            or ref_image_warning(cap, name, resolution)
         )
         if err:
             errors.append(err)
@@ -698,23 +697,18 @@ def create_run(req: RunCreate) -> dict:
     """
     # 面板选的是**分辨率**；给了它就由它决定内部档位（单一映射在 config.RESOLUTION_TO_QUALITY）。
     # 两者都给时以分辨率为准 —— 否则会出现"面板显示 720P、后端按 economy 跑"这种对不上。
-    from fastvideo3.core.config import (
-        apply_resolution,
-        quality_for_resolution,
-        resolution_for_quality,
-    )
+    from fastvideo3.core.config import apply_resolution
 
-    quality = quality_for_resolution(req.resolution, req.quality) if req.resolution else req.quality
-    resolution_tier = req.resolution or resolution_for_quality(quality)
+    resolution_tier = (req.resolution or DEFAULT_RESOLUTION).upper()
     try:
-        cfg = load_config(quality=quality, ablation=req.ablation or None)
+        cfg = load_config(resolution=resolution_tier, ablation=req.ablation or None)
     except ValueError as e:  # 消融路径越界/不存在 → 400 而非 500
         raise HTTPException(status_code=400, detail=str(e)) from e
     # 分辨率标签必须真的决定成片尺寸与 I2V 档位（档位 yaml 只管一致性深度/抽卡/单价量级）
     cfg.aspect_ratio = req.aspect
     apply_resolution(cfg, resolution_tier)
     # run 级模型选择：校验后**立刻**盖到 cfg（预估、以及之后每一步都从 run_meta 恢复同一份）
-    chosen = _clean_model_overrides(req.model_overrides, quality, fake=req.fake)
+    chosen = _clean_model_overrides(req.model_overrides, resolution_tier, fake=req.fake)
     # 口型不再是选项：wan3.0 场景片段自带台词口型。老请求体里的 talk_mode/talk_model/
     # voice_source 接受但忽略（字段上注明），忽略要留痕 —— 静默丢弃会让老调用方以为生效了。
     ignored_legacy = [
@@ -757,10 +751,9 @@ def create_run(req: RunCreate) -> dict:
         # 成本红幅永不触发（`exceeded()` 用 `>=`，0 预算还会让第一步就跳闸）
         budget_limit_cny=req.budget if req.budget > 0 else cfg.budget_limit_cny,
         fake=req.fake,
-        quality=quality,
         resolution_tier=resolution_tier,
         ablation=cfg.ablation,
-        # 只落**用户点名**的那些能力（空＝跟随画质档位）；续跑由 config.apply_run_overrides
+        # 只落**用户点名**的那些能力（空＝跟随分辨率档）；续跑由 config.apply_run_overrides
         # 原样恢复 —— 每步必须用同一个模型，否则资产是新模型出的、首帧是旧模型出的
         model_overrides=chosen,
         # 写回 .env 的留痕（改的是机器上的全局配置，必须可追溯）
@@ -1557,7 +1550,7 @@ async def put_artifact(run_id: str, stage: str, name: str, request: Request) -> 
         raise HTTPException(status_code=400, detail=f"不是可读图片: {e}") from e
 
     meta = _load_meta(root) or {}
-    cfg = load_config(quality=meta.get("quality") or None)
+    cfg = load_config(resolution=resolution_of_meta(meta))
     # 目标位校验：角色/场景 id 必须存在于剧本
     script = _load_script_dict(root)
     ids = {
@@ -1723,7 +1716,9 @@ def get_steps(run_id: str) -> dict:
 
     root = _safe_run_root(run_id)
     meta = _load_meta(root) or {}
-    cfg = load_config(quality=meta.get("quality"), ablation=meta.get("ablation") or None)
+    cfg = load_config(
+        resolution=resolution_of_meta(meta), ablation=meta.get("ablation") or None
+    )
     lock = tasklock.status(_out())
     running = bool(lock.get("busy")) and lock.get("run_id") == run_id
     return prog.compute_progress(RunStorage(run_id, root=_out()), meta, cfg, running=running).to_dict()
@@ -1762,7 +1757,9 @@ def run_step(run_id: str) -> dict:
             f"一次只允许一个生成任务，完成前不能开始新的一步。",
         )
     meta = _load_meta(root) or {}
-    cfg = load_config(quality=meta.get("quality"), ablation=meta.get("ablation") or None)
+    cfg = load_config(
+        resolution=resolution_of_meta(meta), ablation=meta.get("ablation") or None
+    )
     try:
         report = prog.compute_progress(RunStorage(run_id, root=_out()), meta, cfg)
         if report.next is None:
@@ -2054,14 +2051,17 @@ def regenerate_script(run_id: str, req: RegenerateRequest) -> dict:
 
 def _cfg_for_run(root: Path) -> Any:
     meta = _load_meta(root) or {}
-    from fastvideo3.core.config import apply_resolution, apply_run_overrides, resolution_for_quality
+    from fastvideo3.core.config import apply_resolution, apply_run_overrides
 
     # 与 CLI 的 `_cfg_from_meta` 共用同一套恢复口径：run 级模型选择、档位、消融配置、
     # 分辨率、**口型模式与音轨来源**都要按 meta 盖回来。少恢复一项就会出现"网页和命令行
     # 跑不同规格"——这一项此前就漏了：cinema 档 yaml 写着 v2v_overlay，于是一条
     # talk_mode=s2v_direct 的 run 在看板上按 videoretalk 的单价预估（¥0.08 vs ¥0.9，差 11 倍）。
     cfg = apply_run_overrides(
-        load_config(quality=meta.get("quality"), ablation=meta.get("ablation") or None), meta
+        load_config(
+            resolution=resolution_of_meta(meta), ablation=meta.get("ablation") or None
+        ),
+        meta,
     )
     # `fake` 也必须按 meta 恢复（CLI 的 `_cfg_from_meta` 一直恢复，API 这边此前漏了）：
     # 一条用假模式建的 run，网页里任何一次真调用（保存剧本稿的整理、首尾帧生成）都会
@@ -2071,7 +2071,7 @@ def _cfg_for_run(root: Path) -> Any:
         cfg.talk_mode = str(meta["talk_mode"])
     if meta.get("voice_source"):
         cfg.voice_source = str(meta["voice_source"])
-    return apply_resolution(cfg, meta.get("resolution_tier") or resolution_for_quality(cfg.quality))
+    return apply_resolution(cfg, resolution_of_meta(meta))
 
 
 # （已移到 core/scriptio.py）refresh_looks_for_changed_chars 与 cross_check：剧本事务要用，
@@ -2374,6 +2374,8 @@ def run_detail(run_id: str) -> dict:
         "run_id": run_id,
         "status": _run_status(root),
         "meta": meta,
+        # 分辨率标签由后端算（老 run 的 meta 里只有旧档位名）：前端不自己维护映射表
+        "resolution": resolution_of_meta(meta),
         "events": _read_events(root),
         "cost": _read_cost(root),
         "images": images,

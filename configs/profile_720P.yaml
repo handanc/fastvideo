@@ -16,7 +16,8 @@ providers:
   t2i: {default: dashscope_wan27_image, fallback: dashscope_t2i}
 
 generation:
-  resolution: [1080, 1920]        # 竖屏交付标准（对齐主流微短剧平台）
+  # 成片尺寸不写在这里：唯一来源是 core/config.py 的 RESOLUTION_SIZES（分辨率×画幅）。
+  # 两处都写就会出现「面板显示 720P、实际按 1080P 出片」（这条 bug 修过一次）。
   i2v_resolution: 1080P           # flash-480P 是"粗糙感"主因之一；plus-1080P 运动/细节质变
   use_reference_keyframes: true   # 硬锁脸：首帧带角色立绘参考图
   require_reference_keyframes: true  # 强制：t2i 不支持参考图就在花钱前报错（一致性是交付承诺）

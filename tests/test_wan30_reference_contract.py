@@ -86,7 +86,7 @@ def run(tmp_path):
     storage.save_json(
         "run_meta.json",
         {"run_id": rid, "base_info": BaseInfo(topic="契约", target_duration_sec=9).model_dump(),
-         "quality": "cinema", "talk_mode": "scripted_talk", "budget_limit_cny": 100.0},
+         "resolution_tier": "1080P", "talk_mode": "scripted_talk", "budget_limit_cny": 100.0},
     )
     # 配音母带：音色参考样本是从**台词母带**里切的（m5 的产物），不是凭空造的文件。
     # 连 audio_map.json 一起落 —— 那才是 m5 的完整产物形态，而面板预览正是读它。

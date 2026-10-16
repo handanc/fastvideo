@@ -35,7 +35,7 @@ def client(outdir, monkeypatch):
 
 
 def _cfg():
-    return load_config(dotenv_path="none.env", quality="economy")
+    return load_config(dotenv_path="none.env", resolution="480P")
 
 
 def _progress(outdir, run_id):
@@ -261,7 +261,7 @@ async def test_five_step_chain_fills_only_gaps(cfg, outdir, tmp_path):
         {
             "run_id": run_id,
             "base_info": BaseInfo(topic="逐步链路", target_duration_sec=15).model_dump(),
-            "fake": True, "quality": "economy", "talk_mode": "scripted_talk",
+            "fake": True, "resolution_tier": "480P", "talk_mode": "scripted_talk",
             "budget_limit_cny": 100.0,
         },
     )
@@ -382,12 +382,12 @@ def test_lipsync_coverage_and_verdict_merge(outdir):
     assert cov["required"] and cov["missing"] == [dlg[0]]
     assert cov["with_lipsync"] == len(dlg) - 1
 
-    v = apply_lipsync_verdict({"passed": True}, cov, "cinema")
+    v = apply_lipsync_verdict({"passed": True}, cov, "1080P")
     assert v["passed"] is False and v["lipsync_missing"] == [dlg[0]]
-    v = apply_lipsync_verdict({"passed": True}, cov, "economy")
+    v = apply_lipsync_verdict({"passed": True}, cov, "480P")
     assert v["passed"] is True, "教学档不判不合格，但覆盖率仍写进 run_summary/看板"
     v = apply_lipsync_verdict(None, {"required": False, "missing": [], "dialogue_shots": 3,
-                                     "with_lipsync": 0}, "cinema")
+                                     "with_lipsync": 0}, "1080P")
     assert v.get("passed") is None, "audio_overlay 豁免时不该伪造判定"
 
 
@@ -421,7 +421,7 @@ async def test_missing_last_frames_are_a_frames_step_gap(cfg, outdir):
         {
             "run_id": run_id,
             "base_info": BaseInfo(topic="尾帧缺口", target_duration_sec=15).model_dump(),
-            "fake": True, "quality": "economy", "talk_mode": "scripted_talk",
+            "fake": True, "resolution_tier": "480P", "talk_mode": "scripted_talk",
             "budget_limit_cny": 100.0,
         },
     )

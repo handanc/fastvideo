@@ -209,7 +209,7 @@ async def measure_consistency(
         methods.append("sface_embedding")
     report = {
         "run_id": storage.run_id,
-        "quality": cfg.quality,
+        "resolution": cfg.i2v_resolution,
         "ablation": cfg.ablation,
         "config_fingerprint": config_fingerprint(cfg),
         "method": "+".join(methods),
@@ -466,7 +466,7 @@ def report_table(report: dict) -> str:
     lines = [
         f"# 一致性报告 {report.get('run_id', '')}",
         "",
-        f"- quality={report.get('quality')} ablation={report.get('ablation') or '-'} "
+        f"- resolution={report.get('resolution')} ablation={report.get('ablation') or '-'} "
         f"fingerprint={report.get('config_fingerprint')} method={report.get('method')}",
         f"- judge_trusted={report.get('judge_trusted')} coverage={report.get('coverage')}",
         "",

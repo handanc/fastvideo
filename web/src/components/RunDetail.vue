@@ -62,16 +62,16 @@ const modelMsg = ref('')
 const modelBusy = ref(false)
 const CAP_TITLE = { text: '文本', t2i: '文生图', i2v: '图生视频' }
 const capTitle = (c) => CAP_TITLE[c] || c
-// 档位 → 分辨率标签（与后端 config.QUALITY_TO_RESOLUTION 同一份映射，仅为老 run 显示用）
-const RES_OF_QUALITY = { economy: '480P', high: '720P', cinema: '1080P' }
+// 分辨率标签由后端给（`resolution_of_meta` 会把老 run 的旧档位名换算过来）：
+// 前端不自己维护映射表，否则新旧 run 的显示口径会各说各话。
 const resOfQuality = computed(
-  () => RES_OF_QUALITY[detail.value?.meta?.quality] || detail.value?.meta?.quality || '—'
+  () => detail.value?.resolution || detail.value?.meta?.resolution_tier || '—'
 )
 
 async function loadModels() {
-  const q = detail.value?.meta?.quality || ''
+  const tier = detail.value?.resolution || detail.value?.meta?.resolution_tier || ''
   try {
-    const data = await api.modelChoices(q, props.runId)
+    const data = await api.modelChoices(tier, props.runId)
     modelCaps.value = data?.capabilities || []
     // 选择器初始值 = 这条 run 已点名的模型（run_meta.model_overrides）
     const chosen = data?.run_overrides || detail.value?.meta?.model_overrides || {}
@@ -212,7 +212,7 @@ const st = computed(() => statusOf(detail.value?.status))
 // 那样会在 board/steps/task 还没落地时就读到旧值，做完动作后反而不再刷新。
 onMounted(async () => {
   await load()
-  await loadModels()   // 需要 detail.meta.quality 才能问对档位的清单，所以排在 load 之后
+  await loadModels()   // 需要分辨率才能问对那一档的模型清单，所以排在 load 之后
 })
 onUnmounted(() => clearInterval(timer))
 </script>

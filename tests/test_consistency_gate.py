@@ -61,7 +61,7 @@ async def _chain(cfg, outdir, vlm, *, auto_reshoot: bool = False, gate: bool = T
         {
             "run_id": run_id,
             "base_info": BaseInfo(topic="闸门", target_duration_sec=15).model_dump(),
-            "fake": True, "quality": "cinema", "talk_mode": "scripted_talk",
+            "fake": True, "resolution_tier": "1080P", "talk_mode": "scripted_talk",
             "budget_limit_cny": 100.0,
         },
     )

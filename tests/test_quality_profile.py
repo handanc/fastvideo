@@ -1,7 +1,11 @@
-"""画质档位升级回归：profile overlay / cover 裁切 / 稳定种子 / 内置 BGM。
+"""分辨率档回归：profile overlay / cover 裁切 / 稳定种子 / 内置 BGM。
 
-背景：economy 档成片"粗糙简陋"根因 = 480P 源 + 黑边 + 画风不一 + 无包装；
-high 档与对应工程手段必须有测试守住。
+背景：480P 档成片"粗糙简陋"的根因 = 低分辨率源 + 黑边 + 画风不一 + 无包装；
+720P/1080P 档与对应工程手段必须有测试守住。
+
+档位名就是分辨率（480P = `default.yaml` 本体，720P/1080P 各叠一层 `profile_<档>.yaml`）：以前还有一层
+economy/high/cinema 的名字，与分辨率一对一 —— 两个旋钮表达同一件事，就必然出现
+"cinema + 480P"这种自相矛盾的组合（talkmode 里曾专门为它写特例），所以删掉了。
 """
 
 from __future__ import annotations
@@ -17,27 +21,28 @@ def test_deep_merge_partial_override():
     assert merged == {"a": {"b": 1, "c": 3}, "d": 5, "e": 9}
 
 
-def test_load_config_high_profile_overlay(tmp_path, monkeypatch):
-    monkeypatch.setenv("FV3_QUALITY", "high")
+def test_load_config_720p_profile_overlay(tmp_path, monkeypatch):
+    monkeypatch.setenv("FV3_RESOLUTION", "720P")
     cfg = load_config(dotenv_path=tmp_path / "none.env")
-    assert cfg.quality == "high"
-    assert cfg.resolution == (1080, 1920)
-    assert cfg.i2v_resolution == "1080P"
+    assert cfg.i2v_resolution == "720P"
+    # 尺寸由 RESOLUTION_SIZES 落定（唯一来源）：档位 yaml 不再自己写 resolution，
+    # 否则又会出现"选 720P、按 1080P 出片"
+    assert cfg.resolution == (720, 1280)
     assert cfg.models["dashscope_t2i"] == "wanx2.1-t2i-plus"
-    # 图生视频只剩 wan3.0：high 档与 economy 只差分辨率档（1080P vs 480P），不再是另一套模型
+    # 图生视频只剩 wan3.0：720P 与 480P 只差分辨率档，不再是另一套模型
     assert cfg.models["dashscope_i2v"] == "wan3.0-video"
     assert "动漫" in cfg.negative_prompt  # 防卡通化硬约束在档
     assert cfg.style_suffix  # 全局风格锚非空
     assert cfg.color_grade and cfg.loudnorm
 
 
-def test_load_config_economy_default_untouched(tmp_path):
+def test_load_config_480p_default_untouched(tmp_path):
     cfg = load_config(dotenv_path=tmp_path / "none.env")
-    assert cfg.quality == "economy"
+    assert cfg.i2v_resolution == "480P"
     assert cfg.resolution == (540, 960)
     assert cfg.i2v_resolution == "480P"
     assert not cfg.color_grade
-    # 新增质量开关的默认值（economy 零成本教学定位不变）
+    # 新增质量开关的默认值（480P 零成本教学定位不变）
     assert cfg.asset_candidates == 1
     # 剧本评审交给人工：一次生成，只有台词句长违规才允许重写一次
     assert cfg.max_script_revisions == 1
@@ -46,18 +51,17 @@ def test_load_config_economy_default_untouched(tmp_path):
     assert cfg.intermediate_crf == 18
 
 
-def test_load_config_cinema_profile_overlay(tmp_path, monkeypatch):
-    """cinema 档：商业级配置全量生效（抽卡/锁脸/评审/选优模型）。
+def test_load_config_1080p_profile_overlay(tmp_path, monkeypatch):
+    """1080P 档：商业级配置全量生效（抽卡/锁脸/评审/选优模型）。
 
     剧本 critic 已下线（评审剧本的是人），但**其他评审必须还在**：分镜 VLM 一致性全检、
     镜头 best-of-N 选优、结构化外貌卡 —— 这三条是锁脸链路的判定来源，掉了就是"看起来
     跑了、实际没通电"。
     """
-    monkeypatch.setenv("FV3_QUALITY", "cinema")
+    monkeypatch.setenv("FV3_RESOLUTION", "1080P")
     cfg = load_config(dotenv_path=tmp_path / "none.env")
-    assert cfg.quality == "cinema"
-    assert cfg.resolution == (1080, 1920)
     assert cfg.i2v_resolution == "1080P"
+    assert cfg.resolution == (1080, 1920)
     assert cfg.use_r2v_for_characters and cfg.use_reference_keyframes
     assert cfg.candidates_per_shot == 2
     assert cfg.asset_candidates == 2  # 角色立绘抽卡选优
@@ -68,20 +72,20 @@ def test_load_config_cinema_profile_overlay(tmp_path, monkeypatch):
 
 
 def test_load_config_high_profile_keeps_other_reviews(tmp_path, monkeypatch):
-    """high 档：剧本评审没了，但抽卡/外貌卡/分镜抽查都还在（成本只降在立绘上）。"""
-    monkeypatch.setenv("FV3_QUALITY", "high")
+    """720P 档：剧本评审没了，但抽卡/外貌卡/分镜抽查都还在（成本只降在立绘上）。"""
+    monkeypatch.setenv("FV3_RESOLUTION", "720P")
     cfg = load_config(dotenv_path=tmp_path / "none.env")
     assert cfg.look_extraction is True
     assert cfg.storyboard_sample_rate > 0
-    assert cfg.asset_candidates == 1  # high 档不抽卡（成本取舍）
+    assert cfg.asset_candidates == 1  # 720P 档不抽卡（成本取舍）
 
 
 def test_script_critic_knob_is_gone(tmp_path, monkeypatch):
     """`script_review` 这个配置位必须真的消失：留着不生效的开关就是下一个"假通电"故障。"""
-    monkeypatch.setenv("FV3_QUALITY", "cinema")
+    monkeypatch.setenv("FV3_RESOLUTION", "1080P")
     cfg = load_config(dotenv_path=tmp_path / "none.env")
     assert not hasattr(cfg, "script_review")
-    for name in ("configs/default.yaml", "configs/profile_high.yaml", "configs/profile_cinema.yaml"):
+    for name in ("configs/default.yaml", "configs/profile_720P.yaml", "configs/profile_1080P.yaml"):
         assert "script_review" not in (PROJECT_ROOT / name).read_text(encoding="utf-8"), name
 
 
@@ -164,7 +168,7 @@ async def test_m3_reference_keyframes_pass_ref_image(cfg, storage, ledger):
 
 
 async def test_m3_no_ref_when_flag_off(cfg, storage, ledger):
-    """默认关闭：economy/high 不传参考图（行为不变）。"""
+    """默认关闭：480P/720P 不传参考图（行为不变）。"""
     from fastvideo3.core.schema import Asset, BaseInfo
     from fastvideo3.modules.m3_storyboard import build_storyboard
     from fastvideo3.providers.fake import FakeT2IProvider, fake_script

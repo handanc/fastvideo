@@ -59,14 +59,11 @@ def new(
         0.0, help="成本熔断阈值(元); 0=跟随 .env 的 FV3_BUDGET_LIMIT_CNY(默认120)"
     ),
     aspect: str = typer.Option("9:16", help="画幅: 9:16 | 16:9 | 1:1"),
-    quality: str = typer.Option(
-        "economy", help="画质档位: economy(教学) | high(交付) | cinema(商业级, 约¥1/秒)"
-    ),
     resolution: str = typer.Option(
-        "",
+        "720P",
         help=(
-            "分辨率: 480P | 720P | 1080P（给了它就由它决定档位，覆盖 --quality；"
-            "映射见 core/config.py 的 RESOLUTION_TO_QUALITY）"
+            "分辨率: 480P(教学/试跑) | 720P(交付) | 1080P(商业级, 约¥1/秒)。"
+            "一致性深度、抽卡数、单价量级、是否自动重拍都由它带出来（configs/profile_<档>.yaml）"
         ),
     ),
     run_id: str = typer.Option("", "--run-id", help="指定 run_id（脚本用，默认按时间戳生成）"),
@@ -76,14 +73,13 @@ def new(
 ):
     """新建任务：只写 run_meta.json（**不花钱**），随后用 `step` 一步一步生成。"""
     # 分辨率与档位是同一件事的两种说法：给了 --resolution 就由它决定档位（单一映射在
-    # config.RESOLUTION_TO_QUALITY）；两者都给时以分辨率为准，否则会出现
-    # "命令行显示 720P、实际按 economy 跑"这种对不上。
+    # 分辨率是**唯一**的规格旋钮（configs/profile_<档>.yaml）：以前还有一个 --quality，
+    # 两者一对一却各写一份，就必然出现"命令行显示 720P、实际按另一档跑"这种对不上。
     from fastvideo3.core.config import (
+        DEFAULT_RESOLUTION,
         DURATION_MAX,
         DURATION_MIN,
         RESOLUTIONS,
-        quality_for_resolution,
-        resolution_for_quality,
     )
 
     # 时长边界与 API/前端同一来源（config.DURATION_MIN/MAX）：命令行能填、面板却 422
@@ -93,12 +89,10 @@ def new(
             f"目标时长必须在 {DURATION_MIN}~{DURATION_MAX} 秒之间，收到 {duration}"
         )
 
-    if resolution.strip():
-        if resolution.strip().upper() not in RESOLUTIONS:
-            raise typer.BadParameter(f"未知分辨率 {resolution!r}；可选：{', '.join(RESOLUTIONS)}")
-        quality = quality_for_resolution(resolution, quality)
-    resolution_tier = resolution.strip().upper() or resolution_for_quality(quality)
-    cfg = load_config(quality=quality, ablation=ablation or None)
+    resolution_tier = (resolution.strip().upper() or DEFAULT_RESOLUTION)
+    if resolution_tier not in RESOLUTIONS:
+        raise typer.BadParameter(f"未知分辨率 {resolution!r}；可选：{', '.join(RESOLUTIONS)}")
+    cfg = load_config(resolution=resolution_tier, ablation=ablation or None)
     from fastvideo3.core.config import apply_resolution
 
     cfg.fake = fake or cfg.fake
@@ -140,7 +134,7 @@ def new(
         err = (
             validate(cap, name, extra_allowed=extra)
             or protocol_error(cap, name, cfg, check_keys=not cfg.fake)
-            or ref_image_warning(cap, name, cfg.quality)
+            or ref_image_warning(cap, name, cfg.i2v_resolution)
         )
         if err:
             errs.append(err)
@@ -186,9 +180,9 @@ def new(
 
         est = estimate_run_cost_cny(cfg, duration)
         console.print(
-            f"[yellow]⚠ {cfg.quality} 档预估 ¥{est['lo']:.0f}-{est['hi']:.0f}"
+            f"[yellow]⚠ {cfg.i2v_resolution} 预估 ¥{est['lo']:.0f}-{est['hi']:.0f}"
             f"（含口型 ¥{est['talk_rate_per_sec']:.2f}/秒 × 对白约 {est['dialogue_sec']:.0f}s），"
-            f"本次熔断 ¥{cfg.budget_limit_cny}。教学/演示请用 economy 或 --fake。[/]"
+            f"本次熔断 ¥{cfg.budget_limit_cny}。教学/演示请用 480P 或 --fake。[/]"
         )
         if cfg.budget_limit_cny < est["lo"]:
             console.print(
@@ -222,10 +216,9 @@ def new(
         # 落**实际生效**的熔断值：落 0 会让 `exceeded()`（用 `>=`）一进来就跳闸
         budget_limit_cny=cfg.budget_limit_cny,
         fake=cfg.fake,
-        quality=cfg.quality,
-        resolution_tier=resolution_tier,  # 面板/列表显示分辨率；档位仍是内部驱动量
+        resolution_tier=resolution_tier,  # 分辨率就是档位：一致性深度/抽卡/单价量级都由它带出来
         ablation=cfg.ablation,  # 每一步都必须原样恢复配置向量，否则消融对照失效
-        # 只落用户点名的能力（空=跟随档位与 .env）；恢复走 config.apply_run_overrides
+        # 只落用户点名的能力（空=跟随分辨率档与 .env）；恢复走 config.apply_run_overrides
         model_overrides=chosen,
         # 写回 .env 的留痕：这改的是机器上的全局配置，必须可追溯
         model_env_written=env_written,
@@ -233,7 +226,9 @@ def new(
     )
     RunStorage(run_id).save_json("run_meta.json", project.model_dump(mode="json"))
 
-    console.print(f"[bold]✔ 任务已建[/]  run_id={run_id}  fake={cfg.fake}  档位={cfg.quality}")
+    console.print(
+        f"[bold]✔ 任务已建[/]  run_id={run_id}  fake={cfg.fake}  分辨率={cfg.i2v_resolution}"
+    )
     console.print(f"  下一步：fastvideo3 step {run_id}")
     console.print("  （点一次补一步：剧本 → 角色图 → 场景图 → 分镜图 → 镜头视频 → 成片）")
 
@@ -244,11 +239,12 @@ def _cfg_from_meta(meta: dict) -> AppConfig:
     budget 的 0.0 是历史坑：`exceeded()` 用 `>=`，预算 0 会让第一步就熔断、一镜不出。
     meta 落 0 时回落到 cfg（.env / yaml）的值。
     """
-    from fastvideo3.core.config import apply_resolution, apply_run_overrides, resolution_for_quality
+    from fastvideo3.core.config import apply_resolution, apply_run_overrides, resolution_of_meta
 
-    cfg = load_config(quality=meta.get("quality"), ablation=meta.get("ablation") or None)
-    # 分辨率也要按 meta 恢复：面板选的 720P 不能在续跑时变回档位 yaml 里的 1080P
-    apply_resolution(cfg, meta.get("resolution_tier") or resolution_for_quality(cfg.quality))
+    tier = resolution_of_meta(meta)
+    cfg = load_config(resolution=tier, ablation=meta.get("ablation") or None)
+    # 分辨率必须按 meta 恢复：面板选的 720P 不能在续跑时变回 yaml 里的默认档
+    apply_resolution(cfg, tier)
     # run 级模型选择优先于 .env：这一步与上一步必须是同一个模型，否则资产换了模型
     # 后续首帧就不同源了（`apply_run_overrides` 是唯一恢复入口，API 那边也走它）
     apply_run_overrides(cfg, meta)
@@ -537,7 +533,7 @@ async def _run_step(ctx, storage, cfg, meta, st) -> list[str]:
 
         cov = lipsync_coverage(storage, script, cfg.talk_mode, cfg)
         before = verdict
-        verdict = apply_lipsync_verdict(verdict, cov, cfg.quality)
+        verdict = apply_lipsync_verdict(verdict, cov, cfg.i2v_resolution)
         if verdict is not before and verdict.get("lipsync_missing"):
             storage.log_event("step", "lipsync_missing", missing=cov["missing"])
         storage.save_json(
@@ -572,7 +568,7 @@ async def _run_step(ctx, storage, cfg, meta, st) -> list[str]:
 def _quality_verdict(report: dict, rounds: int, bad_left: list) -> dict:
     """一致性闸门结论：三种"不通过"必须可区分（真不合格 / 没度量 / 裁判不可信）。"""
     if not report:
-        return {"passed": None, "note": "一致性度量未启用（economy 档不做要求）"}
+        return {"passed": None, "note": "一致性度量未启用（480P 教学档不做要求）"}
     verdict = {
         "passed": not bad_left,
         "rounds": rounds,
@@ -843,16 +839,16 @@ def stage(
     topic: str = typer.Option("演示主题", help="（script 阶段用）主题"),
     run_id: str = typer.Option("", help="复用已有 run 目录（默认新建）"),
     fake: bool = typer.Option(True, "--fake/--real", help="默认 Fake 模式"),
-    quality: str = typer.Option("economy", help="画质档位: economy | high | cinema"),
+    resolution: str = typer.Option("720P", help="分辨率: 480P | 720P | 1080P"),
     ablation: str = typer.Option("", "--ablation", help="消融配置名（configs/ablations/*.yaml）"),
 ):
     """单阶段运行（教学用）：独立跑某一环节并查看中间产物。
 
-    ⚠ 这条命令**直接调模块**，不经过 `core/stages.py` 那份装配，因此 cinema 的参考图
+    ⚠ 这条命令**直接调模块**，不经过 `core/stages.py` 那份装配，因此 1080P 档的参考图
     锁脸、抽卡选优、风格闸门、降级台账在这里都不生效 —— 只适合看单个环节的产物形状。
     要出可交付的片请用 `new` + `step`。
     """
-    cfg = load_config(quality=quality, ablation=ablation or None)
+    cfg = load_config(resolution=resolution, ablation=ablation or None)
     cfg.fake = fake
     rid = run_id or _new_run_id()
     asyncio.run(_run_stage(cfg, name, rid, topic))

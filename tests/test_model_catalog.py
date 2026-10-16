@@ -64,7 +64,7 @@ def test_env_talk_model_drives_talk_mode(tmp_path):
     env.write_text(
         "DASHSCOPE_API_KEY=sk-test\nFV3_TALK_MODEL=wan3.0-video\n", encoding="utf-8"
     )
-    cfg = load_config(quality="cinema", dotenv_path=env)
+    cfg = load_config(resolution="1080P", dotenv_path=env)
     assert cfg.talk_mode == "scripted_talk", "模式必须跟随 .env 点名的口型模型"
     assert channel(cfg.talk_mode).needs_audio is False
     p = make_provider(Capability.TALK, cfg)
@@ -116,13 +116,13 @@ def test_configured_models_reads_env_then_yaml(tmp_path):
         "FV3_TALK_MODEL=wan3.0-video-prime\n",
         encoding="utf-8",
     )
-    got = configured_models(load_config(quality="cinema", dotenv_path=env))
+    got = configured_models(load_config(resolution="1080P", dotenv_path=env))
     assert got["text"] == "qwen3.7-plus-2026-05-26"
     assert got["t2i"] == "wan2.7-image"
     assert got["i2v"] == "wan3.0-video-prime"
     assert got["talk"] == "wan3.0-video-prime"
     # 没配 .env 时回落到 yaml 的档位默认（480P = wanx2.1-t2i-turbo / wan2.2-i2v-flash）
-    bare = configured_models(load_config(quality="economy", dotenv_path=tmp_path / "none.env"))
+    bare = configured_models(load_config(resolution="480P", dotenv_path=tmp_path / "none.env"))
     assert bare["t2i"] == "wanx2.1-t2i-turbo" and bare["i2v"] == "wan3.0-video", (
         "yaml 档位默认必须落在**目录允许**的模型上：曾经 yaml 写着 wan2.2-i2v-flash，"
         "面板显示成\"配置指定\"、`validate` 却回 400，默认值自己选不回来"
@@ -230,16 +230,16 @@ def test_ref_image_gate_conflict_is_spelled_out():
 
     目录里目前没有这类选项，所以这条只作为函数级防线（将来往目录加便宜档时不会漏）。
     """
-    assert ref_image_warning("t2i", "wanx2.1-t2i-turbo", "cinema")
-    assert ref_image_warning("t2i", "wan2.7-image", "cinema") == ""
-    assert ref_image_warning("t2i", "wanx2.1-t2i-turbo", "economy") == "", "economy 不强制锁脸"
+    assert ref_image_warning("t2i", "wanx2.1-t2i-turbo", "1080P")
+    assert ref_image_warning("t2i", "wan2.7-image", "1080P") == ""
+    assert ref_image_warning("t2i", "wanx2.1-t2i-turbo", "480P") == "", "economy 不强制锁脸"
 
 
 # ─────────────────────────── 选择真的影响装配 ───────────────────────────
 def test_run_override_switches_provider_and_model(tmp_path):
     """点名的模型必须连带把 provider 改道到它真正的协议端点（否则请求必然 400）。"""
     # dotenv_path 指向不存在的文件：不吃开发者机器上的 .env，档位差异才测得准
-    cfg = load_config(quality="economy", dotenv_path=tmp_path / "none.env")
+    cfg = load_config(resolution="480P", dotenv_path=tmp_path / "none.env")
     cfg.dashscope_api_key = "sk-test"
     cfg.model_overrides = {}
     apply_run_overrides(cfg, {"model_overrides": {"t2i": "wan2.7-image", "i2v": "wan3.0-video"}})
@@ -256,7 +256,7 @@ def test_run_override_beats_dotenv_and_yaml(tmp_path):
     这条是"全局开关把三个档位一起换掉"那个坑的正解：用户在这次生成里点了名，
     就不该被机器上那份 `.env` 顶掉。
     """
-    cfg = load_config(quality="cinema", dotenv_path=tmp_path / "none.env")
+    cfg = load_config(resolution="1080P", dotenv_path=tmp_path / "none.env")
     cfg.dashscope_api_key = "sk-test"
     cfg.model_overrides = {"t2i": "qwen-image-3.0"}  # 模拟 .env 的全局覆盖
     apply_run_overrides(cfg, {"model_overrides": {"t2i": "wan2.7-image"}})
@@ -266,7 +266,7 @@ def test_run_override_beats_dotenv_and_yaml(tmp_path):
     # 没点名的那次调用（meta 里没有 model_overrides）继续跟随 .env/yaml —— 行为与改造前一致。
     # 用**新装的 cfg** 断言：每个步骤进程都是 load_config 之后再恢复一次 meta，
     # 在同一实例上连着盖两次不是真实调用序列，测出来的"没恢复"是假的。
-    cfg2 = load_config(quality="cinema", dotenv_path=tmp_path / "none.env")
+    cfg2 = load_config(resolution="1080P", dotenv_path=tmp_path / "none.env")
     cfg2.dashscope_api_key = "sk-test"
     cfg2.model_overrides = {"t2i": "qwen-image-3.0"}
     apply_run_overrides(cfg2, {})
@@ -276,7 +276,7 @@ def test_run_override_beats_dotenv_and_yaml(tmp_path):
 
 def test_empty_meta_restores_nothing(tmp_path):
     """空值＝跟随档位：**不能**把 .env 的既有覆盖清掉，也不能被当成用户点过名。"""
-    cfg = load_config(quality="economy", dotenv_path=tmp_path / "none.env")
+    cfg = load_config(resolution="480P", dotenv_path=tmp_path / "none.env")
     cfg.model_overrides = {"t2i": "qwen-image-3.0"}  # 模拟 .env 的全局覆盖
     apply_run_overrides(cfg, None)
     apply_run_overrides(cfg, {"model_overrides": {"t2i": "   "}})
@@ -285,7 +285,7 @@ def test_empty_meta_restores_nothing(tmp_path):
 
 # ─────────────────────────── API：清单与建任务 ───────────────────────────
 def test_model_choices_endpoint_lists_effective_and_source(client):
-    r = client.get("/api/model-choices?quality=cinema")
+    r = client.get("/api/model-choices?resolution=cinema")
     assert r.status_code == 200
     data = r.json()
     caps = {c["capability"]: c for c in data["capabilities"]}
@@ -317,7 +317,7 @@ def test_every_selectable_model_shows_a_real_price(client):
     from fastvideo3.core.cost import load_pricing
 
     table = load_pricing().get("models") or {}
-    data = client.get("/api/model-choices?quality=cinema").json()
+    data = client.get("/api/model-choices?resolution=cinema").json()
     caps = {c["capability"]: c for c in data["capabilities"]}
     assert set(caps) == set(CHOICES), "面板的能力行数必须与目录一致"
     for cap, block in caps.items():
@@ -351,7 +351,7 @@ def test_create_run_persists_model_choices(client, outdir):
         "/api/runs",
         json={
             "topic": "模型选择冒烟",
-            "quality": "cinema",
+            "resolution_tier": "1080P",
             "duration": 30,
             "fake": True,
             "model_overrides": {
@@ -374,7 +374,7 @@ def test_create_run_persists_model_choices(client, outdir):
     # 下线的 i2v 名字：建任务就拒（等它跑到 m4 就是真花钱了），并且要说清能选谁
     gone = client.post(
         "/api/runs",
-        json={"topic": "x", "quality": "cinema", "fake": True,
+        json={"topic": "x", "resolution_tier": "1080P", "fake": True,
               "model_overrides": {"i2v": "wan2.7-i2v"}},
     )
     assert gone.status_code == 400, gone.text
@@ -385,7 +385,7 @@ def test_create_run_persists_model_choices(client, outdir):
 def test_create_run_rejects_unknown_model_with_choices(client):
     r = client.post(
         "/api/runs",
-        json={"topic": "x", "quality": "economy", "fake": True,
+        json={"topic": "x", "resolution_tier": "480P", "fake": True,
               "model_overrides": {"t2i": "wan2.2-i2v-flash"}},
     )
     assert r.status_code == 400
@@ -403,7 +403,7 @@ def test_create_run_rejects_non_selectable_capability(client):
     for cap, model in (("vlm", "qwen-vl-max"), ("talk", "wan3.0-video")):
         r = client.post(
             "/api/runs",
-            json={"topic": "x", "quality": "economy", "fake": True,
+            json={"topic": "x", "resolution_tier": "480P", "fake": True,
                   "model_overrides": {cap: model}},
         )
         assert r.status_code == 400, (cap, r.text)
@@ -413,7 +413,7 @@ def test_create_run_rejects_non_selectable_capability(client):
 def test_create_run_rejects_overflow_capabilities(client):
     r = client.post(
         "/api/runs",
-        json={"topic": "x", "quality": "economy", "fake": True,
+        json={"topic": "x", "resolution_tier": "480P", "fake": True,
               "model_overrides": {f"c{i}": "m" for i in range(9)}}
     )
     assert r.status_code == 422  # max_length=8 由 pydantic 拦下
@@ -427,7 +427,7 @@ def test_cli_new_persists_and_prints_choices(outdir):
 
     r = CliRunner().invoke(
         app,
-        ["new", "--topic", "CLI模型", "--quality", "cinema", "--fake",
+        ["new", "--topic", "CLI模型", "--resolution", "1080P", "--fake",
          "--t2i-model", "wan2.7-image", "--i2v-model", "wan3.0-video-prime"],
     )
     assert r.exit_code == 0, r.output

@@ -335,12 +335,12 @@ def test_ablation_overlay_wins_over_quality_profile(tmp_path, monkeypatch):
     """P1-7：消融配置在质量档之后叠加（否则会被 cinema 反向覆盖，测不到开关）。"""
     from fastvideo3.core.config import load_config
 
-    cfg = load_config(dotenv_path=tmp_path / "none.env", quality="cinema",
+    cfg = load_config(dotenv_path=tmp_path / "none.env", resolution="1080P",
                       ablation="consistency_off")
-    assert cfg.quality == "cinema"
+    assert cfg.i2v_resolution == "1080P"
     assert cfg.use_reference_keyframes is False
     assert cfg.keyframe_seed_scope == "shot"
-    cfg2 = load_config(dotenv_path=tmp_path / "none.env", quality="cinema", ablation="full_cinema")
+    cfg2 = load_config(dotenv_path=tmp_path / "none.env", resolution="1080P", ablation="full_cinema")
     assert cfg2.use_reference_keyframes is True and cfg2.asset_candidates == 2
 
 

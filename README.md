@@ -71,12 +71,20 @@ ffmpeg 的解析顺序（`fastvideo3/core/runtime.py`，唯一一份）：`FV3_F
 部署包带着自己的二进制，行为由项目决定，不由宿主机装了什么决定。
 `fastvideo3 doctor` 会把 ffmpeg 的**来源**一起显示出来，没在项目内就附补齐指令。
 
-画质档位与成本（30 秒成片估算，**含口型开销**；权威口径是
-`python scripts/probe_fal_infinitalk.py check` 与 `GET /api/cost-estimate`）：
-`economy` ≈¥14-20 · `high` ≈¥28-40 · `cinema` ≈¥52-82。
-口型按**输出秒**计价（s2v 480P ¥0.5、720P ¥0.9），**熔断低于预估下限时的表现是"对白
-镜头静默降级成无口型叠音"** —— 这就是"成片没有对口型"的成因之一，所以预估与熔断必须一起看。
-教学/演示请用 `--fake`（零成本占位产物）。
+分辨率与成本（30 秒成片估算；权威口径是 `GET /api/cost-estimate` 与 `GET /api/resolutions`）：
+`480P` ≈¥14-20 · `720P` ≈¥28-40 · `1080P` ≈¥52-82。
+
+**分辨率是唯一的规格旋钮**：成片尺寸、一致性深度、抽卡数、单价量级、是否自动重拍都由它带出来
+（`configs/profile_<档>.yaml`；480P 就是 `default.yaml` 本体）。以前还有一层
+`economy/high/cinema` 的档位名，与分辨率一对一 —— 两个旋钮表达同一件事，就必然出现
+"cinema + 480P"这种自相矛盾的组合（`talkmode` 里还专门为它写过特例），所以删掉了；
+老 run 的 `run_meta.quality` 仍能被 `config.resolution_of_meta` 读出来，续跑不受影响。
+
+场景片段按**输出秒**计价（wan3.0-video：480P ¥0.3/秒、720P ¥0.6/秒、1080P ¥1.2/秒）。
+预估不够只是红幅警告；**实时累计**费用到上限时会停下来弹「是否继续生成」的人工审核窗口
+（`core/pause.py`），确认即抬高上限并从停下处接着跑 —— 已出的产物一个不动、不重复花钱。
+旧行为是"到线后静默跳过剩余付费提交、步骤照样报完成"，实测后果就是钱花在运动片段上、
+口型一条没出而看板毫无提示。教学/演示请用 `--fake`（零成本占位产物）。
 
 **一把 `DASHSCOPE_API_KEY` 跑通全系统**（含对口型：百炼 wan2.2-s2v 数字人）。
 `FAL_KEY` 是**可选**的——只用于口型兜底通道 fal.ai InfiniteTalk（s2v 挂掉时换它再试一次），
@@ -98,7 +106,7 @@ ffmpeg 的解析顺序（`fastvideo3/core/runtime.py`，唯一一份）：`FV3_F
 
 | 命令                                                                                 | 说明                                             |
 | ------------------------------------------------------------------------------------ | ------------------------------------------------ |
-| `fastvideo3 new --topic ... [--fake] [--talk-mode audio_overlay] [--quality cinema]` | **建任务**（只写 run_meta.json，不花钱、不启动生成） |
+| `fastvideo3 new --topic ... [--fake] [--resolution 1080P]` | **建任务**（只写 run_meta.json，不花钱、不启动生成） |
 | `fastvideo3 step <run_id>`                                                          | **开始生成**：点一次只跑最靠前的未完成步骤（剧本→角色图→场景图→分镜图→镜头视频→成片） |
 | `fastvideo3 script-regen <run_id> --prompt "..." [--mode revise\|rewrite]`         | 按人的意见重写剧本：`revise` 保留剧情只改被点名部分（外貌卡/必留词/蒸馏提示词按 id 继承，只作废真被改到的镜头）/ `rewrite` 推倒重写 |
 | `fastvideo3 stage script/assets/storyboard/shots/audio/talk/edit/metrics`         | 单阶段运行（教学；**不含** cinema 的一致性装配，别拿去出片） |

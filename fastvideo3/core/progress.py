@@ -753,7 +753,7 @@ def invalidate_artifact(
     return targets
 
 
-def apply_lipsync_verdict(verdict: dict | None, cov: dict, quality: str) -> dict:
+def apply_lipsync_verdict(verdict: dict | None, cov: dict, resolution: str) -> dict:
     """把口型覆盖率并入成片判定 —— 判定只有这一份实现。
 
     单一实现是为了不让"一处判不合格、另一处却放行"这种分叉再出现
@@ -762,7 +762,7 @@ def apply_lipsync_verdict(verdict: dict | None, cov: dict, quality: str) -> dict
     run_summary 与看板，缺不缺口型永远可见。
     """
     out = dict(verdict or {})
-    if not cov.get("missing") or quality not in ("high", "cinema"):
+    if not cov.get("missing") or (resolution or "").upper() not in ("720P", "1080P"):
         return out
     out["passed"] = False
     out["lipsync_missing"] = cov["missing"]

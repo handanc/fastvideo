@@ -274,7 +274,7 @@ async def test_step_consumes_script_prompt(cfg, outdir):
             "topic": "带意见重试", "style": "都市轻喜剧",
             "target_duration_sec": 15, "aspect_ratio": "9:16",
         },
-        "fake": True, "quality": "economy", "talk_mode": "audio_overlay",
+        "fake": True, "resolution_tier": "480P", "talk_mode": "audio_overlay",
         "budget_limit_cny": 100.0,
     }
     storage.save_json("run_meta.json", meta)

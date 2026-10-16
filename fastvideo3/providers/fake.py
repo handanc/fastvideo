@@ -242,7 +242,7 @@ def _sample_model(model: type[BaseModel]) -> dict:
 class FakeT2IProvider(T2IProvider):
     name = "fake_t2i"
     model = "fake-t2i"
-    # Fake 声明支持参考图/种子：让 --fake --quality cinema 的冒烟能跑通真实拓扑
+    # Fake 声明支持参考图/种子：让 --fake --resolution 1080P 的冒烟能跑通真实拓扑
     # （m3 的 _char_refs 门控、m4 的 r2v 路由），而不是在 fake 里悄悄绕过。
     supports_reference_image = True
 

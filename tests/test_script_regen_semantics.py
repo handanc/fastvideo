@@ -92,7 +92,7 @@ def _seed(outdir: Path, run_id: str) -> RunStorage:
     storage.save_json("run_meta.json", {
         "run_id": run_id,
         "base_info": script.base_info.model_dump(mode="json"),
-        "fake": False, "quality": "cinema", "talk_mode": "audio_overlay",
+        "fake": False, "resolution_tier": "1080P", "talk_mode": "audio_overlay",
         "budget_limit_cny": 500.0,
     })
     storage.save_json("script.json", script.model_dump(mode="json"))

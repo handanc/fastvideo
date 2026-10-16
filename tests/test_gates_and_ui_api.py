@@ -15,9 +15,10 @@ import pytest
 from PIL import Image
 
 from fastvideo3.core.config import (
-    RESOLUTION_TO_QUALITY,
-    quality_for_resolution,
-    resolution_for_quality,
+    DEFAULT_RESOLUTION,
+    LEGACY_QUALITY_TO_RESOLUTION,
+    RESOLUTIONS,
+    resolution_of_meta,
 )
 from fastvideo3.utils import ffmpeg as ff
 from fastvideo3.utils import qc
@@ -267,15 +268,24 @@ def test_multi_ref_missing_cards_and_unavailable_layer_never_raise(monkeypatch, 
     assert r2["available"] is False and r2["verdict"] == "inconclusive"
 
 
-# ─────────────────────────── 分辨率 ↔ 档位映射 ───────────────────────────
-def test_resolution_mapping_is_single_source_and_reversible():
-    assert list(RESOLUTION_TO_QUALITY) == ["480P", "720P", "1080P"]
-    assert quality_for_resolution("720P") == "high"
-    assert quality_for_resolution("1080p") == "cinema", "大小写要宽容"
-    assert quality_for_resolution("", "economy") == "economy"
-    assert quality_for_resolution("4K", "high") == "high", "认不出来不猜，回落"
-    for res, q in RESOLUTION_TO_QUALITY.items():
-        assert resolution_for_quality(q) == res
+# ─────────────────── 分辨率就是档位（旧档位名只用于读老 run）───────────────────
+def test_resolution_is_the_single_knob():
+    """分辨率是唯一旋钮：`resolution_of_meta` 是它唯一的恢复入口。
+
+    以前有两个（`quality` 与 `resolution_tier`）且一对一 —— 那种设计必然出现
+    "cinema + 480P" 这种自相矛盾的组合，talkmode 里还专门为它写过特例。
+    """
+    assert list(RESOLUTIONS) == ["480P", "720P", "1080P"]
+    assert resolution_of_meta({"resolution_tier": "720P"}) == "720P"
+    assert resolution_of_meta({"resolution_tier": "1080p"}) == "1080P", "大小写要宽容"
+    # 老 run 的 meta 里只有旧档位名：必须仍能换算，否则续跑会静默按默认档跑
+    # （一致性闸门全关 → 成片脸会漂，而用户看到的是"和以前一样的按钮"）
+    for legacy, tier in LEGACY_QUALITY_TO_RESOLUTION.items():
+        assert resolution_of_meta({"quality": legacy}) == tier
+    assert resolution_of_meta({}) == DEFAULT_RESOLUTION, "两者都没有就按默认档，不猜也不报错"
+    assert resolution_of_meta({"resolution_tier": "4K"}) == DEFAULT_RESOLUTION, "认不出来不猜"
+    # 新 run 两个字段都在时，以分辨率为准（老字段不再有任何作用）
+    assert resolution_of_meta({"resolution_tier": "480P", "quality": "cinema"}) == "480P"
 
 
 def test_api_resolutions_endpoint_lists_three():
@@ -296,22 +306,24 @@ def test_api_resolutions_endpoint_lists_three():
 
 
 def test_resolution_label_actually_drives_output_size():
-    """面板写 720P 就必须真出 720P —— 档位 yaml 的数字不能盖过用户看得见的规格承诺。
+    """面板写 720P 就必须真出 720P —— 分辨率是唯一的规格承诺，谁也不能盖过它。
 
-    这是本轮真抓到的 bug：720P 映射到 `high` 档，而 `profile_high.yaml` 的 resolution 是
+    这是本轮真抓到的 bug：720P 曾经映射到 `high` 档，而那一档 yaml 的 resolution 写着
     1080×1920，于是"选 720P、出 1080P"，成本与规格双双对不上。
+    现在 `load_config(resolution=…)` 内部就把尺寸落定（RESOLUTION_SIZES 是唯一来源），
+    调用方不必再补一次 apply_resolution —— 少一处"忘了调"的机会。
     """
     from fastvideo3.core.config import RESOLUTION_SIZES, apply_resolution, load_config
 
     for tier, size in RESOLUTION_SIZES.items():
         res, aspect = tier
-        cfg = apply_resolution(load_config(quality=quality_for_resolution(res)), res)
+        cfg = load_config(resolution=res)
         cfg.aspect_ratio = aspect
         cfg = apply_resolution(cfg, res)  # 画幅变了要重算（尺寸表是 分辨率×画幅 两维）
         assert tuple(cfg.resolution) == size, (tier, cfg.resolution)
         assert cfg.i2v_resolution == res, (tier, cfg.i2v_resolution)
     # 认不出来的分辨率不动 cfg（不猜规格）
-    cfg = load_config(quality="cinema")
+    cfg = load_config(resolution="1080P")
     before = tuple(cfg.resolution)
     apply_resolution(cfg, "4K")
     assert tuple(cfg.resolution) == before
@@ -346,7 +358,7 @@ def test_api_resolutions_sizes_are_truthful():
     assert rows["720P"]["i2v_resolution"] == "720P"
 
 
-def test_create_run_with_resolution_persists_tier_and_maps_quality(outdir, monkeypatch):
+def test_create_run_with_resolution_persists_tier(outdir, monkeypatch):
     from fastapi.testclient import TestClient
 
     import fastvideo3.app.api as api_mod
@@ -357,7 +369,7 @@ def test_create_run_with_resolution_persists_tier_and_maps_quality(outdir, monke
         assert r.status_code == 201, r.text
         meta = json.loads((outdir / r.json()["run_id"] / "run_meta.json").read_text(encoding="utf-8"))
         assert meta["resolution_tier"] == "720P"
-        assert meta["quality"] == "high", "分辨率决定内部档位"
+        assert "quality" not in meta, "档位名已删：分辨率就是档位，meta 里不该再有第二个旋钮"
 
 
 def test_cli_new_accepts_resolution(outdir):
@@ -368,7 +380,8 @@ def test_cli_new_accepts_resolution(outdir):
     r = CliRunner().invoke(app, ["new", "--topic", "CLI分辨率", "--resolution", "1080P", "--fake"])
     assert r.exit_code == 0, r.output
     meta = json.loads(sorted(Path(outdir).glob("run_*/run_meta.json"))[-1].read_text(encoding="utf-8"))
-    assert meta["resolution_tier"] == "1080P" and meta["quality"] == "cinema"
+    assert meta["resolution_tier"] == "1080P"
+    assert "quality" not in meta
     bad = CliRunner().invoke(app, ["new", "--topic", "x", "--resolution", "4K"])
     assert bad.exit_code != 0 and "未知分辨率" in bad.output
 
@@ -386,7 +399,7 @@ def client(outdir, monkeypatch):
 
 
 def _mk(client, outdir, **over):
-    body = {"topic": "中途改模型", "quality": "cinema", "fake": True, **over}
+    body = {"topic": "中途改模型", "resolution_tier": "1080P", "fake": True, **over}
     r = client.post("/api/runs", json=body)
     assert r.status_code == 201, r.text
     rid = r.json()["run_id"]

@@ -35,7 +35,7 @@ def _mk_run(outdir, run_id="run_20260101_000000", *, with_script=True, with_fina
                 "run_id": run_id,
                 "base_info": {"topic": "测试主题", "style": "都市轻喜剧",
                               "target_duration_sec": 30, "aspect_ratio": "9:16"},
-                "fake": True, "quality": "cinema",
+                "fake": True, "resolution_tier": "1080P",
             },
             ensure_ascii=False,
         ),
@@ -245,4 +245,4 @@ def test_take_counter_changes_seed_and_candidate_names(client, outdir):
 def load_config_for_test():
     from fastvideo3.core.config import load_config
 
-    return load_config(dotenv_path="none.env", quality="economy")
+    return load_config(dotenv_path="none.env", resolution="480P")

@@ -44,7 +44,7 @@ def test_wrong_key_fails_at_assembly_not_after_nine_minutes(tmp_path):
     # 用真实路由表（configs/default.yaml），但不读用户 .env：装配路径要与线上一致才有意义
     from fastvideo3.core.config import load_config
 
-    cfg = load_config(quality="economy", dotenv_path=tmp_path / "none.env")
+    cfg = load_config(resolution="480P", dotenv_path=tmp_path / "none.env")
     cfg.dashscope_api_key = "sk-x"
     cfg.deepseek_api_key = ""
     cfg.fake = False
@@ -131,7 +131,7 @@ def test_panel_refuses_a_text_model_that_is_not_in_the_catalog(tmp_path, monkeyp
         r = client.post(
             "/api/runs",
             json={
-                "topic": "女儿国", "duration": 30, "quality": "cinema", "fake": True,
+                "topic": "女儿国", "duration": 30, "resolution_tier": "1080P", "fake": True,
                 "model_overrides": {"text": "gpt-99-not-a-model"},
             },
         )
@@ -143,7 +143,7 @@ def test_panel_refuses_a_text_model_that_is_not_in_the_catalog(tmp_path, monkeyp
         ok = client.post(
             "/api/runs",
             json={
-                "topic": "女儿国", "duration": 30, "quality": "cinema", "fake": True,
+                "topic": "女儿国", "duration": 30, "resolution_tier": "1080P", "fake": True,
                 "model_overrides": {"text": "qwen3.7-flash"},
             },
         )

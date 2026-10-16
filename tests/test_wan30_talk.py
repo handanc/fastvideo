@@ -250,9 +250,9 @@ def test_scripted_talk_mode_selects_its_own_channel_and_needs_no_clip(cfg):
     assert needs_clip_for_dialogue("v2v_overlay") is True
     assert needs_clip_for_dialogue("s2v_direct") is False
     assert needs_clip_for_dialogue("audio_overlay") is True
-    assert tier_conflict("v2v_overlay", "economy", "480P"), "480P 片段喂不进 videoretalk，要提前说"
-    assert tier_conflict("scripted_talk", "cinema", "1080P"), "音色一致性取舍必须说明"
-    assert tier_conflict("s2v_direct", "cinema", "1080P") == ""
+    assert tier_conflict("v2v_overlay", "480P"), "480P 片段喂不进 videoretalk，要提前说"
+    assert tier_conflict("scripted_talk", "1080P"), "音色一致性取舍必须说明"
+    assert tier_conflict("s2v_direct", "1080P") == ""
 
 
 def test_scripted_talk_dialogue_shots_skip_i2v():
@@ -427,9 +427,9 @@ async def test_default_voice_source_is_model_and_makes_no_driver(cfg, storage, l
 def test_master_choice_is_spelled_out_in_the_conflict_warning():
     from fastvideo3.core.talkmode import tier_conflict
 
-    assert "0～2.2" in tier_conflict("scripted_talk", "cinema", "1080P", "master")
+    assert "0～2.2" in tier_conflict("scripted_talk", "1080P", "master")
     # 默认的 model 口径不该出现这条警告（它已经是正确配对了）
-    assert "0～2.2" not in tier_conflict("scripted_talk", "cinema", "1080P", "model")
+    assert "0～2.2" not in tier_conflict("scripted_talk", "1080P", "model")
 
 
 def test_scripted_prompt_anchors_timbre_deterministically():

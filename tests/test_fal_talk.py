@@ -444,7 +444,7 @@ def test_estimate_follows_whichever_talk_channel_is_routed():
     通道由**口型模式**决定（`core/talkmode.py`），yaml 路由只在形态相容时作为覆盖 ——
     所以比价时把模式钉成 s2v_direct（fal 与 s2v 都吃得下"图片+音频"，两条都合法）。
     """
-    cfg = load_config(quality="cinema")
+    cfg = load_config(resolution="1080P")
     cfg.fake = False
     cfg.talk_mode = "s2v_direct"
     cfg.routing["talk"] = ProviderRouting(default="fal_infinitalk")
@@ -574,7 +574,7 @@ def test_cost_estimate_endpoint_is_backend_authoritative():
     from fastvideo3.app.api import app
 
     with TestClient(app) as client:
-        r = client.get("/api/cost-estimate?quality=cinema&duration=30&talk_mode=v2v_overlay")
+        r = client.get("/api/cost-estimate?resolution=cinema&duration=30&talk_mode=v2v_overlay")
         assert r.status_code == 200
         data = r.json()
         assert data["talk_route"] == "dashscope_videoretalk"
@@ -584,5 +584,5 @@ def test_cost_estimate_endpoint_is_backend_authoritative():
         assert data["talk_rate_per_sec"] == 0.08
         assert data["hi"] > data["lo"] > 0
         # audio_overlay：口型项必须归零（用户显式不要口型）
-        r2 = client.get("/api/cost-estimate?quality=cinema&duration=30&talk_mode=audio_overlay")
+        r2 = client.get("/api/cost-estimate?resolution=cinema&duration=30&talk_mode=audio_overlay")
         assert r2.json()["talk_rate_per_sec"] == 0.0

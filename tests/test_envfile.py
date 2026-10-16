@@ -23,7 +23,7 @@ FAL_KEY=fal-secret-keep-me
 FV3_TEXT_MODEL=qwen3.7-plus
 FV3_T2I_MODEL=wanx2.1-t2i-turbo   # 行尾注释要保留
 # FV3_I2V_MODEL=  (注释掉的例子)
-FV3_QUALITY=economy
+FV3_RESOLUTION=economy
 """
 
 
@@ -45,7 +45,7 @@ def test_replaces_only_the_target_lines_and_keeps_secrets(dotenv):
     # 密钥与无关配置一行都没动
     assert "DASHSCOPE_API_KEY=sk-super-secret-keep-me" in out
     assert "FAL_KEY=fal-secret-keep-me" in out
-    assert "FV3_QUALITY=economy" in out
+    assert "FV3_RESOLUTION=economy" in out
     assert "wanx2.1-t2i-turbo" not in out
 
 
@@ -88,7 +88,7 @@ def test_talk_model_is_writable_and_drives_mode(tmp_path):
     p = tmp_path / ".env"
     changed, err = update_env_models({"talk": "wan3.0-video-prime"}, path=p)
     assert changed == ["FV3_TALK_MODEL"] and err is None
-    cfg = load_config(quality="cinema", dotenv_path=p)
+    cfg = load_config(resolution="1080P", dotenv_path=p)
     assert cfg.model_overrides.get("talk") == "wan3.0-video-prime"
     assert cfg.talk_mode == "scripted_talk", "模式必须跟着 .env 的口型模型走"
 
@@ -117,7 +117,7 @@ def test_written_value_becomes_the_effective_model(tmp_path, dotenv, monkeypatch
     from fastvideo3.core.config import load_config
 
     update_env_models({"t2i": "qwen-image-3.0"}, path=dotenv)
-    cfg = load_config(quality="economy", dotenv_path=dotenv)
+    cfg = load_config(resolution="480P", dotenv_path=dotenv)
     assert cfg.model_overrides.get("t2i") == "qwen-image-3.0"
     assert cfg.model_for("t2i", "dashscope_t2i", "wanx2.1-t2i-turbo") == "qwen-image-3.0"
 
@@ -129,7 +129,7 @@ def test_api_create_run_writes_back_and_records_provenance(outdir, dotenv, monke
     with TestClient(api_mod.app) as client:
         r = client.post(
             "/api/runs",
-            json={"topic": "写回冒烟", "quality": "cinema", "duration": 30,
+            json={"topic": "写回冒烟", "resolution_tier": "1080P", "duration": 30,
                   "model_overrides": {"t2i": "wan2.7-image", "i2v": "wan3.0-video"}},
         )
         assert r.status_code == 201, r.text
@@ -157,7 +157,7 @@ def test_api_fake_run_does_not_touch_env(outdir, dotenv, monkeypatch):
     with TestClient(api_mod.app) as client:
         r = client.post(
             "/api/runs",
-            json={"topic": "fake", "quality": "economy", "fake": True,
+            json={"topic": "fake", "resolution_tier": "480P", "fake": True,
                   "model_overrides": {"t2i": "wan2.7-image"}},
         )
         assert r.status_code == 201
@@ -173,7 +173,7 @@ def test_env_write_failure_still_creates_the_run(outdir, tmp_path, monkeypatch):
     with TestClient(api_mod.app) as client:
         r = client.post(
             "/api/runs",
-            json={"topic": "写不回", "quality": "cinema", "model_overrides": {"i2v": "wan3.0-video"}},
+            json={"topic": "写不回", "resolution_tier": "1080P", "model_overrides": {"i2v": "wan3.0-video"}},
         )
         assert r.status_code == 201, r.text
         assert r.json()["env_error"]
@@ -193,7 +193,7 @@ def test_cli_new_writes_back_too(outdir, dotenv, monkeypatch):
 
     monkeypatch.setattr(envfile, "env_path", lambda: dotenv)
     r = CliRunner().invoke(
-        app, ["new", "--topic", "CLI写回", "--quality", "high", "--t2i-model", "qwen-image-3.0"]
+        app, ["new", "--topic", "CLI写回", "--resolution", "720P", "--t2i-model", "qwen-image-3.0"]
     )
     assert r.exit_code == 0, r.output
     assert "已写回 .env" in r.output
@@ -219,7 +219,7 @@ def test_catalog_names_are_loadable_and_env_keys_match_config(cap, tmp_path, dot
         assert is_known(cap, model)
         p = dotenv.with_suffix(f".{cap}")
         p.write_text(f"{key}={model}\n", encoding="utf-8")
-        cfg = load_config(quality="economy", dotenv_path=p)
+        cfg = load_config(resolution="480P", dotenv_path=p)
         cfg.dashscope_api_key = cfg.dashscope_api_key or "sk-test"
         cfg.siliconflow_api_key = cfg.siliconflow_api_key or "sk-test"
         assert cfg.model_overrides.get(cap) == model, (key, model)

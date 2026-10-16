@@ -132,7 +132,7 @@ onMounted(load)
           <td><span class="badge" :class="statusOf(r.status).cls">{{ statusOf(r.status).label }}</span></td>
           <td>
             <span class="tag" style="margin: 0">{{ r.fake ? 'Fake' : '真实' }}</span>
-            <span class="tag">{{ r.quality }}</span>
+            <span class="tag">{{ r.resolution }}</span>
           </td>
           <td class="num">{{ r.cost_total_cny.toFixed(2) }}</td>
           <td class="muted">{{ r.updated }}</td>

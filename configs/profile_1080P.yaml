@@ -26,7 +26,8 @@ providers:
   # tts 继承 default.yaml：主 = cosyvoice-v2、兜底 = edge-tts（三档同一套配音口径）
 
 generation:
-  resolution: [1080, 1920]
+  # 成片尺寸不写在这里：唯一来源是 core/config.py 的 RESOLUTION_SIZES（分辨率×画幅）。
+  # 两处都写就会出现「面板显示 720P、实际按 1080P 出片」（这条 bug 修过一次）。
   i2v_resolution: 1080P
   use_reference_keyframes: true   # 首帧带角色立绘参考图（硬锁脸）
   require_reference_keyframes: true  # 硬门控：t2i 主供应商不支持参考图 → 花钱前报错

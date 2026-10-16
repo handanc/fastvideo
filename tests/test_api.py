@@ -45,7 +45,7 @@ def _make_run(
             "aspect_ratio": "9:16",
         },
         "fake": True,
-        "quality": "economy",
+        "resolution_tier": "480P",
     }
     (root / "run_meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     (root / "events.jsonl").write_text(

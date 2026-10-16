@@ -55,14 +55,14 @@ export const api = {
     fetch(`/api/runs/${encodeURIComponent(id)}/artifacts/clips/scene_${encodeURIComponent(gid)}.mp4`,
       { method: 'DELETE' }).then(unwrap),
   // 成本预估（单价权威在后端 pricing.yaml + 模式解析出的通道，前端不再手抄量级表）
-  costEstimate: (quality, duration, talkMode) =>
-    fetch(`/api/cost-estimate?quality=${encodeURIComponent(quality)}&duration=${encodeURIComponent(duration)}&talk_mode=${encodeURIComponent(talkMode || '')}`).then(unwrap),
+  costEstimate: (resolution, duration, talkMode) =>
+    fetch(`/api/cost-estimate?resolution=${encodeURIComponent(resolution)}&duration=${encodeURIComponent(duration)}&talk_mode=${encodeURIComponent(talkMode || '')}`).then(unwrap),
   // 口型模式清单：选项、通道名、输入形态、档位冲突提示都来自后端 core/talkmode.py
   // 模型选择器：可选清单 + 当前实际生效的模型 + 是谁定的（run/.env/yaml），
   // 唯一来源 core/model_catalog.py（前端不抄第二份模型名表）
-  modelChoices: (quality, runId) =>
+  modelChoices: (resolution, runId) =>
     fetch(
-      `/api/model-choices?quality=${encodeURIComponent(quality || '')}` +
+      `/api/model-choices?resolution=${encodeURIComponent(resolution || '')}` +
       `&run_id=${encodeURIComponent(runId || '')}`
     ).then(unwrap),
   // 中途改模型（含口型模型）：只对**之后**的步骤生效（已落盘产物不动）；持锁期间后端会拒绝。

@@ -96,7 +96,7 @@ TALK_CHANNELS: dict[str, TalkChannel] = {
         note=(
             "两段链：m4 先出动作视频（首帧/首尾帧），videoretalk 只重绘嘴部 → 不重画画面、"
             "输出分辨率与帧率=输入（1080P 不降级）、语音仍来自我们的母带。"
-            "缺点：**链路最长最慢**（两次付费异步任务），且要求运动片段边长 ≥640 → economy 用不了。"
+            "缺点：**链路最长最慢**（两次付费异步任务），且要求运动片段边长 ≥640 → 480P 用不了。"
         ),
     ),
     "scripted_talk": TalkChannel(
@@ -243,9 +243,12 @@ def fallback_name(cfg: Any, mode: str) -> str | None:
 
 
 def tier_conflict(
-    mode: str, quality: str, i2v_resolution: str = "", voice_source: str = ""
+    mode: str, i2v_resolution: str = "", voice_source: str = ""
 ) -> str:
-    """模式 × 画质档 × 音轨来源的**真实硬冲突**，返回人话警告（无冲突返回空串）。
+    """模式 × 分辨率 × 音轨来源的**真实硬冲突**，返回人话警告（无冲突返回空串）。
+
+    参数里不再有"画质档"：它与分辨率一对一，两个旋钮表达同一件事就必然出现
+    "cinema + 480P"这种自相矛盾的组合 —— 本函数过去正是为那个组合写了特例。
 
     这条判据必须留在后端而不是写进前端 JS：它一半来自供应商规格（videoretalk 要求输入
     视频边长 ≥640），一半来自实测的声画关系（C 链换母带会错位 0～2.2s）——
@@ -256,14 +259,14 @@ def tier_conflict(
     res = (i2v_resolution or "").strip().upper()
     # 文案按"外行一眼看懂"写：只说**后果 + 怎么办**，不解释协议名与内部机制
     # （细节留在本模块注释与 INTEGRATION；界面不抄第二份，抄了就会漂）。
-    if ch.mode == "v2v_overlay" and (quality == "economy" or res.startswith("48")):
+    if ch.mode == "v2v_overlay" and res.startswith("48"):
         return (
             "videoretalk 要求运动片段边长 ≥640 像素，480P 会被拒 → 对白镜头没有口型。"
             "请改用 720P / 1080P，或口型选 wan2.2-s2v。"
         )
     if ch.mode == "scripted_talk":
         parts: list[str] = []
-        if quality == "economy":
+        if res.startswith("48"):
             parts.append("480P 不锁脸，人物长相只靠文字描述，跨镜头容易漂。")
         parts.append("口型与声音都由模型生成（默认用模型原声）；音色由模型定，同一角色跨镜头可能不同。")
         if (voice_source or DEFAULT_VOICE_SOURCE) == "master":

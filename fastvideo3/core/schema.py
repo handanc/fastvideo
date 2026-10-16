@@ -195,10 +195,11 @@ class ProjectConfig(BaseModel):
     budget_limit_cny: float = 150.0
     max_parallel_jobs: int = 4
     fake: bool = False
-    quality: str = "economy"  # economy | high | cinema（内部档位：驱动一致性深度与单价量级）
-    # 面板上用户选的是**分辨率**（480P/720P/1080P），档位由它映射而来
-    # （`config.RESOLUTION_TO_QUALITY`）。单独存一份是为了让老 run（没有这个字段）
-    # 与新 run 在看板上都能显示分辨率，也避免"用户选了 720P 却看到 economy"这种对不上。
+    # 分辨率档 = 配置档（480P | 720P | 1080P）：一致性深度、抽卡数、单价量级、
+    # 是否自动重拍都由它带出来（configs/profile_<档>.yaml）。**这是唯一的规格旋钮** ——
+    # 旧字段 `quality`（economy/high/cinema）已删：它与分辨率一对一，留两个就能配出
+    # "cinema + 480P" 这种自相矛盾的组合（talkmode 里曾专门为它写特例）。
+    # 空串只出现在 2026-10 之前的老 run 上，由 `config.resolution_of_meta` 按旧档位名换算。
     resolution_tier: str = ""
     ablation: str = ""  # 消融配置名（必须原样恢复，否则配置向量对不上）
     # run 级模型选择（能力 → 模型名；空值＝跟随画质档位）。**必须落进 meta 并原样恢复**：

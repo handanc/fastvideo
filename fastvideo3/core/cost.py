@@ -107,10 +107,12 @@ def price_of_route(
 
 # 各档位的**非口型**多模态生成量级（¥/成片秒），来自实测台账：
 # economy=wan2.2-i2v-flash 480P；high=i2v-plus 1080P；cinema=wan2.7 + 抽卡/重拍。
-QUALITY_BASE_RATE_CNY_PER_SEC: dict[str, tuple[float, float]] = {
-    "economy": (0.15, 0.35),
-    "high": (0.40, 0.80),
-    "cinema": (1.20, 2.20),
+#: 分辨率档 → 成片每秒的成本量级（低, 高）。键就是分辨率：档位名与它一对一，
+#: 再留一份按档位名的表就会出现"两张表各改一次"的漂移。
+RESOLUTION_BASE_RATE_CNY_PER_SEC: dict[str, tuple[float, float]] = {
+    "480P": (0.15, 0.35),
+    "720P": (0.40, 0.80),
+    "1080P": (1.20, 2.20),
 }
 # 短剧里"有对白的镜头"占成片时长的经验比例（口型只对这些秒计费）。
 # 取 0.6 是保守中位：拿不准就多估，少估的后果是熔断中途跳闸 → 成片没口型。
@@ -127,7 +129,10 @@ def estimate_run_cost_cny(
     按低档预估得到的"够用熔断"实际会在跑到口型步骤前跳闸，而跳闸的表现形式恰好是
     用户最不能接受的那一种：成片没有对口型，且钱已经花在运动片段上了。
     """
-    lo, hi = QUALITY_BASE_RATE_CNY_PER_SEC.get(cfg.quality, QUALITY_BASE_RATE_CNY_PER_SEC["economy"])
+    tier = str(getattr(cfg, "i2v_resolution", "") or "480P").upper()
+    lo, hi = RESOLUTION_BASE_RATE_CNY_PER_SEC.get(
+        tier, RESOLUTION_BASE_RATE_CNY_PER_SEC["480P"]
+    )
     talk_rate = 0.0
     # 通道由**口型模式**决定（映射表 `core/talkmode.py`），不是由 yaml 路由决定 ——
     # 抄路由会估错：cinema 的 yaml 路由写着 videoretalk(¥0.08/秒)，而用户选的可能是

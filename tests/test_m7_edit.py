@@ -350,7 +350,7 @@ def test_generated_prompts_forbid_onscreen_text():
     from fastvideo3.modules.m4_shots import _motion_prompt
     from fastvideo3.modules.m6_talk import _no_text_prompt
 
-    cfg = load_config(quality="economy")
+    cfg = load_config(resolution="480P")
     assert "字幕" in cfg.negative_prompt and "text" in cfg.negative_prompt
     script = fake_script(BaseInfo(topic="文字"))
     shot = script.all_shots()[0]

@@ -105,7 +105,7 @@ def test_pricing_covers_all_configured_models():
     priced = set(sheet()["models"])
 
     configured: set[str] = set()
-    for name in ("default.yaml", "profile_high.yaml", "profile_cinema.yaml"):
+    for name in ("default.yaml", "profile_720P.yaml", "profile_1080P.yaml"):
         with open(CONFIGS_DIR / name, encoding="utf-8") as f:
             yml = yaml.safe_load(f) or {}
         configured.update((yml.get("models") or {}).values())

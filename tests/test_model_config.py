@@ -28,7 +28,7 @@ def _cfg(monkeypatch, tmp_path, **env):
         monkeypatch.delenv(k, raising=False)
     for k, v in {**KEYS, **env}.items():
         monkeypatch.setenv(k, v)
-    return load_config(dotenv_path=tmp_path / "none.env", quality="economy")
+    return load_config(dotenv_path=tmp_path / "none.env", resolution="480P")
 
 
 def test_env_model_override_beats_yaml(monkeypatch, tmp_path):

@@ -16,7 +16,7 @@ providers:
   #   v2v_overlay   = **B 链** `dashscope_videoretalk`：m4 的 1080P 运动片段 + 音频 →
   #     只重绘嘴部（¥0.08/秒 + 新账号 1800 秒免费额度）。不重画画面 → 身份继承 m3 锁脸，
   #     输出分辨率/帧率=输入（1080P 不降级）；代价是两段付费、链路最慢，
-  #     且要求运动片段边长 ≥640 → economy 的 480P 用不了。
+  #     且要求运动片段边长 ≥640 → 480P 档用不了。
   #   scripted_talk = **C 链** `dashscope_wan30_talk`：首帧 + **提示词（台词写在里面）** →
   #     一条调用出口型 + 动作 + 音轨，原生 1080P、显式 9:16，且是唯一能做**多人同屏各自
   #     对口型**的链路。音轨恒为模型原声（嘴型与声音同轨）。
@@ -27,7 +27,7 @@ providers:
   # "模式与路由各写一份、漂一次就静默降级"的老失效（run_20261002_235904、run_20261011_164152）。
   talk: {default: dashscope_wan22_s2v, fallback: fal_infinitalk}
   # 配音（2026-10-05 定档）：主 = 百炼 cosyvoice-v2，兜底 = 免费 edge-tts。
-  # 换掉"economy 用 edge-tts"的理由：用户听片反馈"人物音频很奇怪"，实测根因是
+  # 换掉"480P 档用 edge-tts"的理由：用户听片反馈"人物音频很奇怪"，实测根因是
   # ① 旧音色池写的是无后缀的 v1 音色名 → 配 cosyvoice-v2 全句 418 → 悄悄降级 edge-tts；
   # ② 音色按 md5 抽签、不看性别（唐僧可能拿女声）；③ 中文情绪词查不到韵律表 → 全片一个语调。
   # 三处都修了（m5 按性别分桶分配 + utils/emotion 归一 + 降级写进 degradations.json）。
@@ -60,8 +60,7 @@ generation:
   # master 的诱惑是全片音色统一（官方 first_frame/last_frame 与 reference_audio **互斥**，
   # 锁脸就不能克隆音色），代价是嘴不上：要"音色统一 **且** 嘴型对着这条配音"，
   # 正确的链路是 v2v_overlay（videoretalk 对着我们的母带重画嘴），不是在这里换音轨。
-  resolution: [540, 960]        # 成片统一规格(宽,高); 交付档用 profile_high 提到 [1080,1920]
-  quality: economy              # economy=性价比 | high=交付画质(--quality high 覆盖)
+  resolution: [540, 960]        # 成片统一规格(宽,高); 720P/1080P 档由 profile_*.yaml 提到 [1080,1920]
   i2v_resolution: 480P          # wan 系 I2V 档位: 480P | 720P | 1080P
   # 首尾帧生视频：给需要运动片段的镜头额外生成一张「动作结束态」尾帧，i2v/口型时一起发。
   # 官方原文"用首帧（或首帧+尾帧）锁定画面起止，模型负责补全中间的运动过程"——
@@ -70,14 +69,14 @@ generation:
   # 只对支持 last_frame 的通道生效（wan2.7/wan3.0 的 media 协议）；wan2.2 旧协议与
   # r2v 参考生视频（官方 first/last_frame 与 reference_image 互斥）自动退回单首帧并记事件。
   use_last_frames: true
-  style_suffix: ""              # 全局风格锚(全片画风统一), high 档内置真人电影感锚
+  style_suffix: ""              # 全局风格锚(全片画风统一), 720P/1080P 档内置真人电影感锚
   # 全局负向提示词：防卡通化 + **防画面里出现文字**（字幕/水印/标题一律不许模型自己画：
   # 成片字幕只由 m7 用剧本台词烧录，字体、位置、时间轴全部确定 —— 模型画出来的字幕
-  # 会错字、会与我们烧的那条叠成两层）。high/cinema 的 profile 在此基础上再加风格项。
+  # 会错字、会与我们烧的那条叠成两层）。720P/1080P 的 profile 在此基础上再加风格项。
   negative_prompt: "字幕，文字，水印，logo，标题，台词，token，subtitles, text, caption, watermark"
   color_grade: false            # 成片轻度调色
   loudnorm: false               # 交付响度归一 -16 LUFS
-  encode_crf: 23                # 中间编码 CRF(越小越清, high 档 20)
+  encode_crf: 23                # 中间编码 CRF(越小越清, 720P/1080P 档 20)
   encode_preset: ultrafast
   bgm_volume: 0.15
   storyboard_sample_rate: 0.5   # 分镜 VLM 一致性抽查比例
@@ -92,7 +91,7 @@ generation:
   #    → 所以 consistency_metric 出厂即 sample（**不再是 off**）：480P 也要量。
   #    权重缺失时自动退回 Tier A/B 并在报告里写 faceid_available=false，绝不静默放行。
   # 注意"量"与"花钱重做"是两件事：度量三档全开；`consistency_gate: reshoot`（自动重拍，
-  # 要花钱）仍只在 high/cinema 打开 —— 480P 教学档量出问题只报告、不自动烧钱。
+  # 要花钱）仍只在 720P/1080P 打开 —— 480P 教学档量出问题只报告、不自动烧钱。
   consistency_metric: sample
 
 limits:

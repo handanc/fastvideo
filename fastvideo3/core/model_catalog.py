@@ -231,20 +231,20 @@ def protocol_error(
     return None
 
 
-def ref_image_warning(capability: str, model: str, quality: str) -> str:
+def ref_image_warning(capability: str, model: str, resolution: str) -> str:
     """选了不支持参考图的 t2i，而该档位要求硬锁脸 → 花钱前就会报错，提前说出来。
 
     判据用协议而不是模型名表：`multimodal_sync`（messages 端点）这一族才带 `ref_image`
     （`DashScopeWan27ImageProvider.supports_reference_image=True`），异步 text2image 端点
     不支持 —— 与 m3 的 `require_reference_keyframes` 硬门控是同一条事实，两处各写必然漂。
     """
-    if capability != "t2i" or not model or quality not in ("high", "cinema"):
+    if capability != "t2i" or not model or (resolution or "").upper() not in ("720P", "1080P"):
         return ""
     from fastvideo3.providers import protocols
 
     if protocols.infer_protocol(model, "t2i") != protocols.T2I_MULTIMODAL:
         return (
-            f"{quality} 档强制「参考图锁脸」（require_reference_keyframes），"
+            f"{(resolution or '').upper()} 档强制「参考图锁脸」（require_reference_keyframes），"
             f"而 {model} 不走 multimodal-generation 协议、不支持参考图 → m3 会在花钱前报错。"
         )
     return ""

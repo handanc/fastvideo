@@ -27,7 +27,7 @@ def _mk_run(outdir: Path, rid: str) -> RunStorage:
             "run_id": rid,
             "base_info": BaseInfo(topic="图编排", target_duration_sec=15).model_dump(),
             "fake": True,
-            "quality": "economy",
+            "resolution_tier": "480P",
             "talk_mode": "scripted_talk",
             "budget_limit_cny": 100.0,
         },

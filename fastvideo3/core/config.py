@@ -30,17 +30,27 @@ DURATION_MIN = 1
 DURATION_MAX = 3600
 
 RESOLUTIONS: tuple[str, ...] = ("480P", "720P", "1080P")
-RESOLUTION_TO_QUALITY: dict[str, str] = {
-    "480P": "economy",
-    "720P": "high",
-    "1080P": "cinema",
+#: 分辨率 = 配置档名（`configs/profile_<tier>.yaml`）。**用户只有一个旋钮**：选分辨率。
+#: "一致性深度 / 抽卡数 / 单价量级 / 是否自动重拍"这些由它带出来，不用逐条记。
+#: 480P 没有 overlay 文件（= default.yaml 本体），720P/1080P 各叠一层。
+#:
+#: 为什么不再有 economy/high/cinema 这层名字：它与分辨率一对一，两个旋钮表达同一件事，
+#: 就必然出现"cinema + 480P"这种自相矛盾的组合（talkmode 里曾专门为它写特例）。
+#: 一个旋钮 = 不可能配错。
+PROFILE_FOR_RESOLUTION: dict[str, str] = {t: t for t in RESOLUTIONS}
+#: 2026-10 之前的 run_meta 里写着旧档位名。**只用于读旧数据**，新代码一律用分辨率；
+#: 不留这张表，老 run 续跑时会拿不到档位 → 静默按 480P 跑（一致性闸门全关，成片脸会漂）。
+LEGACY_QUALITY_TO_RESOLUTION: dict[str, str] = {
+    "economy": "480P",
+    "high": "720P",
+    "cinema": "1080P",
 }
-QUALITY_TO_RESOLUTION: dict[str, str] = {v: k for k, v in RESOLUTION_TO_QUALITY.items()}
+DEFAULT_RESOLUTION = "720P"
 
 
 #: 分辨率 × 画幅 → 成片尺寸（宽, 高）。**显式列出来而不按比例算**：480P 档沿用项目既有
 #: 约定 540×960（不是 480×853），按短边反推会和存量 run 的尺寸对不上。
-#: 为什么必须有这张表：档位 yaml 里写着各自的 resolution（profile_high 是 1080×1920），
+#: 为什么必须有这张表：档位 yaml 里写着各自的 resolution（profile_720P 是 1080×1920），
 #: 面板显示"720P"却按 1080P 出片就是**骗人** —— 分辨率是用户唯一看得见的规格承诺。
 RESOLUTION_SIZES: dict[tuple[str, str], tuple[int, int]] = {
     ("480P", "9:16"): (540, 960),
@@ -72,14 +82,18 @@ def apply_resolution(cfg: "AppConfig", resolution_tier: str) -> "AppConfig":
     return cfg
 
 
-def quality_for_resolution(resolution: str, fallback: str = "economy") -> str:
-    """分辨率 → 档位；认不出的分辨率**不猜**，回落到给定档位（调用方负责报错或提示）。"""
-    return RESOLUTION_TO_QUALITY.get((resolution or "").strip().upper(), fallback)
+def resolution_of_meta(meta: dict | None) -> str:
+    """run_meta → 分辨率档位（**唯一**的恢复入口，CLI 与 API 都走它）。
 
-
-def resolution_for_quality(quality: str) -> str:
-    """档位 → 它对应的分辨率标签（给看板/列表显示用；老 run 没有 resolution_tier 时靠它）。"""
-    return QUALITY_TO_RESOLUTION.get(quality or "", "")
+    新 run 写 `resolution_tier`；2026-10 之前的 run 只有旧档位名 `quality`，按兼容表换算。
+    两者都没有就按默认档 —— 不猜、不报错，因为续跑一个老 run 不该被一个显示字段卡住。
+    """
+    m = meta or {}
+    tier = str(m.get("resolution_tier") or "").strip().upper()
+    if tier in RESOLUTIONS:
+        return tier
+    legacy = str(m.get("quality") or "").strip().lower()
+    return LEGACY_QUALITY_TO_RESOLUTION.get(legacy, DEFAULT_RESOLUTION)
 
 
 class ProviderRouting(BaseModel):
@@ -148,12 +162,13 @@ class AppConfig(BaseModel):
     storyboard_sample_rate: float = 0.5
     max_script_revisions: int = 1  # 台词句长违规后的重写上限（不是 AI 评审回路，那条已删）
 
-    # ── 画质档位（economy=教学 | high=交付 | cinema=商业级，见 configs/profile_*.yaml）──
-    quality: str = "economy"
+    # ── 配置档 = 分辨率档（480P/720P/1080P，见 configs/profile_*.yaml）──
+    # 档位标签就是 `i2v_resolution` 本身：再存一个同义字段，就会出现两者不一致时
+    # "看板显示 720P、实际按 1080P 出片"这类对不上（这条 bug 修过一次）。
     ablation: str = ""  # 消融配置名（写入 run_meta，续跑原样恢复）
     use_r2v_for_characters: bool = False  # 角色动作镜头走 wan2.7-r2v 参考生视频（像素级一致）
     use_reference_keyframes: bool = False  # 首帧带角色立绘参考图生成（硬锁脸，wan2.7-image）
-    require_reference_keyframes: bool = False  # 硬门控：主供应商不支持参考图时直接报错（cinema）
+    require_reference_keyframes: bool = False  # 硬门控：主供应商不支持参考图时直接报错（720P/1080P）
     ref_max_chars: int = 1  # 首帧最多带几张角色参考图（双人镜头=2；探单通过前保持 1）
     keyframe_seed_scope: Literal["cast", "scene_cast", "shot"] = "cast"
     # 种子作用域：scene_cast（旧行为）会把"场景"编进种子 → 角色换场景即换采样起点，
@@ -181,7 +196,7 @@ class AppConfig(BaseModel):
     voice_nonspeech_band_low: float = 0.30  # 非语音占比下限（低于它=念稿）
     voice_nonspeech_band_high: float = 0.45  # 非语音占比上限（高于它=空转）
     # 成片前一致性闸门：off=不拦；reshoot=不达标镜头自动带参考图重做（≤2 轮）后仍不达标
-    # 则 quality_verdict 标不合格。high/cinema 强制 reshoot，economy 不做要求。
+    # 则 quality_verdict 标不合格。720P/1080P 档强制 reshoot，480P 教学档只报告不烧钱。
     consistency_gate: Literal["off", "reshoot"] = "off"
     # 双人（多人）对白镜头的口型策略：
     #   overlay     = 运动片段 + 音轨叠加，**不模拟口型**（默认）
@@ -215,7 +230,7 @@ class AppConfig(BaseModel):
     #   auto        = 按 scenegroup.choose_input_mode 的确定性规则选（默认）
     #   reference   = 强制参考生视频（立绘+场景图+音色样本；≈90% 的主干）
     #   first_last  = 强制首尾帧（像素级锁起止；≈10% 的串联/单镜头/重拍）
-    #   off         = 关掉场景级生成，回到逐镜头路径（economy/A链/B链本来就走那边）
+    #   off         = 关掉场景级生成，回到逐镜头路径（480P/A链/B链本来就走那边）
     # 官方硬约束：reference_* 与 first/last_frame **互斥**，所以这是"二选一"不是"叠加"。
     scene_clip_mode: Literal["auto", "reference", "first_last", "off"] = "auto"
     style_suffix: str = ""  # 全局风格锚：追加到所有文生图提示词尾部（统一全片画风）
@@ -306,29 +321,34 @@ def _resolve_ablation(name: str) -> Path:
 def load_config(
     config_path: str | Path | None = None,
     dotenv_path: str | Path | None = None,
-    quality: str | None = None,
+    resolution: str | None = None,
     ablation: str | None = None,
 ) -> AppConfig:
     """构建运行时配置。优先级：显式参数 > 环境变量 > .env 文件 > yaml > 默认值。
 
     用 dotenv_values 只读不注入 —— 避免污染进程环境变量（测试隔离的关键）。
-    画质档位（--quality / FV3_QUALITY）通过 configs/profile_<quality>.yaml overlay 生效。
-    消融配置（--ablation）在质量档**之后**再叠一层：若当 base 传入会被质量档反向
+    分辨率档（`--resolution` / `FV3_RESOLUTION`）通过 `configs/profile_<tier>.yaml`
+    overlay 生效（480P 没有 overlay，就是 default.yaml 本体）。
+    消融配置（--ablation）在档**之后**再叠一层：若当 base 传入会被档反向
     覆盖（overlay 顺序陷阱），消融就测不到它想测的开关。
     """
     dotenv_vals = dotenv_values(dotenv_path or PROJECT_ROOT / ".env")
 
     yml = _load_yaml(Path(config_path) if config_path else CONFIGS_DIR / "default.yaml")
-    quality = (
-        quality
-        or os.getenv("FV3_QUALITY")
-        or dotenv_vals.get("FV3_QUALITY")  # type: ignore[assignment]
-        or (yml.get("generation") or {}).get("quality", "economy")
+    tier = (
+        resolution
+        or os.getenv("FV3_RESOLUTION")
+        or dotenv_vals.get("FV3_RESOLUTION")  # type: ignore[assignment]
+        or str((yml.get("generation") or {}).get("i2v_resolution") or DEFAULT_RESOLUTION)
     )
-    if quality not in ("", "economy"):
-        overlay = _load_yaml(CONFIGS_DIR / f"profile_{quality}.yaml")
-        if overlay:
-            _deep_merge(yml, overlay)
+    tier = (tier or DEFAULT_RESOLUTION).strip().upper()
+    # 认不出的写法（含旧档位名）→ 走兼容表，再不行按默认档：配置读不出来就整条流水线停摆，
+    # 不值得为一个显示字段这么做；但换算过程要在事件里看得见（调用方负责）。
+    if tier not in RESOLUTIONS:
+        tier = LEGACY_QUALITY_TO_RESOLUTION.get(tier.lower(), DEFAULT_RESOLUTION)
+    overlay = _load_yaml(CONFIGS_DIR / f"profile_{PROFILE_FOR_RESOLUTION[tier]}.yaml")
+    if overlay:
+        _deep_merge(yml, overlay)
     if ablation:
         _deep_merge(yml, _load_yaml(_resolve_ablation(ablation)))
     gen = yml.get("generation", {})
@@ -341,14 +361,14 @@ def load_config(
             v = dotenv_vals.get(key)  # type: ignore[assignment]
         return v or default
 
-    resolution = tuple(gen.get("resolution", [540, 960]))
+    size = tuple(gen.get("resolution", [540, 960]))
 
     # 口型模式曾是可选项（s2v_direct/v2v_overlay/scripted_talk/audio_overlay），由此踩过的
     # 坑（.env 点名 wan3.0 而 talk_mode 还是 s2v_direct → m6 喂音频 → 全镜头降级无口型）
     # 随选项一起消失：talk_mode 现在恒为 scripted_talk，`.env` 的 FV3_TALK_MODEL 只负责
     # 在 wan3.0-video 与 -prime 之间选模型（见 model_overrides["talk"]）。
 
-    return AppConfig(
+    cfg = AppConfig(
         deepseek_api_key=env("DEEPSEEK_API_KEY"),
         deepseek_base_url=env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         dashscope_api_key=env("DASHSCOPE_API_KEY"),
@@ -377,10 +397,9 @@ def load_config(
         retry_per_shot=int(limits.get("retry_per_shot", 2)),
         aspect_ratio=gen.get("aspect_ratio", "9:16"),
         shot_duration_sec=float(gen.get("shot_duration_sec", 5)),
-        resolution=(int(resolution[0]), int(resolution[1])),  # type: ignore[index]
+        resolution=(int(size[0]), int(size[1])),  # type: ignore[index]
         storyboard_sample_rate=float(gen.get("storyboard_sample_rate", 0.5)),
         max_script_revisions=int(gen.get("max_script_revisions", 1)),
-        quality=quality or "economy",
         ablation=ablation or "",
         use_r2v_for_characters=bool(gen.get("use_r2v_for_characters", False)),
         use_reference_keyframes=bool(gen.get("use_reference_keyframes", False)),
@@ -410,7 +429,7 @@ def load_config(
         candidates_per_shot=int(gen.get("candidates_per_shot", 1)),
         asset_candidates=int(gen.get("asset_candidates", 1)),
         auto_reshoot=bool(gen.get("auto_reshoot", False)),
-        i2v_resolution=gen.get("i2v_resolution", "480P"),
+        i2v_resolution=tier,
         use_last_frames=bool(gen.get("use_last_frames", True)),
         scene_clip_mode=gen.get("scene_clip_mode", "auto"),
         style_suffix=gen.get("style_suffix", ""),
@@ -443,6 +462,8 @@ def load_config(
         pg_user=env("FV3_PG_USER", "fv3"),
         pg_password=env("FV3_PG_PASSWORD", ""),
     )
+    # 成片尺寸与档位标签必须一起落定：只设一个就会出现「看板显示 720P、实际按 1080P 出片」
+    return apply_resolution(cfg, tier)
 
 
 def apply_run_overrides(cfg: AppConfig, meta: dict | None) -> AppConfig:

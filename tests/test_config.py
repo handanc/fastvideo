@@ -41,7 +41,9 @@ models:
     # yaml 里写 talk_mode 也不再生效：口型恒为 scripted_talk（wan3.0 场景片段自带口型）。
     # 这条断言钉的是"配置里残留的旧选项不会悄悄改变管线行为"。
     assert cfg.talk_mode == "scripted_talk"
-    assert cfg.resolution == (320, 568)
+    # 成片尺寸由**分辨率档**决定（RESOLUTION_SIZES 是唯一来源）；自定义 yaml 里写的
+    # generation.resolution 不再权威 —— 否则"面板显示 720P、实际按 yaml 出片"又会回来。
+    assert cfg.resolution == (720, 1280)
     assert cfg.max_parallel_jobs == 2
     assert cfg.routing["text"].default == "deepseek"
     assert cfg.routing["text"].fallback == "dashscope_qwen"

@@ -36,7 +36,7 @@ def _mk_run(client, outdir, run_id="run_sg"):
     )
     (root / "script.json").write_text(script.model_dump_json(), encoding="utf-8")
     (root / "run_meta.json").write_text(
-        json.dumps({"run_id": run_id, "fake": True, "quality": "high",
+        json.dumps({"run_id": run_id, "fake": True, "resolution_tier": "720P",
                     "talk_mode": "scripted_talk", "budget_limit_cny": 100.0}),
         encoding="utf-8",
     )
