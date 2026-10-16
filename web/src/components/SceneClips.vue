@@ -107,6 +107,67 @@ async function pickCharImage(g, cid, rel) {
   } catch (e) { error.value = e.message }
 }
 
+// ── 参考角色的增删 ────────────────────────────────────────────
+// 自动名单（`g.characters`）现在包含"只入画不说话"的人（与 m3 首帧同一份 implied cast 判据），
+// 这里再让人手动加减。**候选池 = 剧本角色 ∩ 已有角色图**：没有图的人加了也发不出去
+// （编号由存活名单现算，会静默少一张），不如根本不让选。
+const MAX_IMG = 10  // 官方 reference_image 上限（与 core.scenegroup.MAX_REF_IMAGES 同值）
+const addPick = ref({})
+
+function castMap(g) {
+  const m = {}
+  for (const o of g.cast_options || []) m[o.id] = o
+  return m
+}
+
+function shownChars(g) {
+  const seen = []
+  for (const cid of [...(g.characters || []), ...(g.char_refs || [])]) {
+    if (cid && !seen.includes(cid)) seen.push(cid)
+  }
+  return seen
+}
+
+// 素材信息两个来源合并：自动名单里的人有完整候选（char_options），
+// 手动加进来的"场外"角色只有 cast_options 的基本信息 —— 不给回落就会出现"缺定妆照"的假告警。
+function charOpt(g, cid) {
+  const base = (g.char_options && g.char_options[cid]) || {}
+  const o = castMap(g)[cid] || {}
+  return {
+    portrait: base.portrait || o.portrait || null,
+    portrait_rel: base.portrait_rel || o.portrait_rel || `assets/char_${cid}.png`,
+    candidates: base.candidates || [],
+    candidates_rel: base.candidates_rel || [],
+  }
+}
+
+function charLabel(g, cid) {
+  const o = castMap(g)[cid]
+  const nm = o ? o.name : cid
+  // 说话人要音色样本，只入画的只要脸 —— 这个区别决定官方 5 段/15 秒的音色预算花给谁
+  return o && o.speaking ? nm : `${nm}（只入画，不配音）`
+}
+
+function addable(g) {
+  const shown = shownChars(g)
+  return (g.cast_options || []).filter((o) => o.portrait && !shown.includes(o.id))
+}
+
+async function resetCharRefs(g) {
+  // 空清单 = 撤回手动增删（后端按"回到自动"处理）
+  try {
+    const d = await api.patchSceneGroup(props.runId, g.group_id, { char_refs: [] })
+    groups.value = d.groups || groups.value
+    flash(`${sceneLabel(g.group_id)}：已回到按出场顺序自动选择`)
+  } catch (e) { error.value = e.message }
+}
+
+async function addChar(g, cid) {
+  if (!cid) return
+  await toggleRef(g, 'char', cid)
+  addPick.value[g.group_id] = ''
+}
+
 async function toggleRef(g, kind, id) {
   const key = kind === 'char' ? 'char_refs' : 'scene_refs'
   const cur = g[key] || []
@@ -228,22 +289,31 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
       <!-- 编辑区跟着**用户的选择**走，不跟着"生效形态"走：选了首尾帧却只显示参考素材，
            等于把「生成首尾帧」按钮藏起来，用户无路可走（2026-10-14 实测的死角）。 -->
       <div v-if="g.mode === 'reference' && g.override_mode !== 'first_last'" class="modelBar">
-        <div v-for="cid in g.characters" :key="cid" class="refRow">
-          <label class="chk">
+        <div v-for="cid in shownChars(g)" :key="cid" class="refRow">
+          <label class="chk" :title="(g.char_refs || []).includes(cid) ? '点掉勾 = 这段不用这张脸' : '勾上 = 加回这张脸'">
             <input type="checkbox" :checked="(g.char_refs || []).includes(cid)"
                    @change="toggleRef(g, 'char', cid)" />
-            {{ cid }}
+            {{ charLabel(g, cid) }}
           </label>
-          <template v-if="g.char_options && g.char_options[cid]">
-            <img v-if="g.char_options[cid].portrait" :src="g.char_options[cid].portrait"
-                 :class="{ picked: (g.char_images[cid] || g.char_options[cid].portrait_rel) === g.char_options[cid].portrait_rel }"
-                 title="定妆照" @click="pickCharImage(g, cid, g.char_options[cid].portrait_rel)" />
-            <img v-for="(u, k) in (g.char_options[cid].candidates || [])" :key="u" :src="u"
-                 :class="{ picked: g.char_images[cid] === (g.char_options[cid].candidates_rel || [])[k] }"
-                 title="候选立绘" @click="pickCharImage(g, cid, (g.char_options[cid].candidates_rel || [])[k])" />
-            <span v-if="!g.char_options[cid].portrait" class="muted small">缺定妆照 → 去「角色图」页补</span>
+          <template v-if="charOpt(g, cid).portrait">
+            <img :src="charOpt(g, cid).portrait"
+                 :class="{ picked: (g.char_images[cid] || charOpt(g, cid).portrait_rel) === charOpt(g, cid).portrait_rel }"
+                 title="定妆照" @click="pickCharImage(g, cid, charOpt(g, cid).portrait_rel)" />
+            <img v-for="(u, k) in charOpt(g, cid).candidates" :key="u" :src="u"
+                 :class="{ picked: g.char_images[cid] === charOpt(g, cid).candidates_rel[k] }"
+                 title="候选立绘" @click="pickCharImage(g, cid, charOpt(g, cid).candidates_rel[k])" />
           </template>
           <span v-else class="muted small">缺定妆照 → 去「角色图」页补</span>
+        </div>
+        <div class="refRow addRow">
+          <select v-model="addPick[g.group_id]" @change="addChar(g, addPick[g.group_id])">
+            <option value="">＋ 添加角色（只列已有角色图的）</option>
+            <option v-for="o in addable(g)" :key="o.id" :value="o.id">{{ o.name }}</option>
+          </select>
+          <button class="btn sm" title="撤回手动增删，回到按出场顺序自动选" @click="resetCharRefs(g)">
+            回到自动
+          </button>
+          <span class="muted small">参考图上限 {{ MAX_IMG }} 张（含场景背景）</span>
         </div>
         <div v-for="sid in g.scene_ids" :key="sid" class="refRow">
           <label class="chk">
@@ -353,6 +423,8 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
   background: var(--panel, #f3f4f6);
 }
 .refRow img.picked { opacity: 1; outline: 2px solid var(--accent, #4a9); }
+.refRow.addRow { gap: 8px; align-items: center; margin-top: 6px; }
+.refRow.addRow select { max-width: 220px; }
 .chk { display: flex; gap: 4px; align-items: center; }
 .field { display: flex; flex-direction: column; gap: 2px; min-width: 260px; }
 .field.wide { width: 100%; }

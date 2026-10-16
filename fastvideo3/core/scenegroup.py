@@ -31,6 +31,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from fastvideo3.core.schema import effective_cast
+
 #: 官方 duration 上限（无视频输入时取值范围 [2,30] 的整数）——**物理约束**，超过服务端直接拒
 MAX_CLIP_SEC = 30
 #: 单次调用的**预算线**（用户裁定：单个视频片段的预估时长不超过 25s）。
@@ -107,7 +109,9 @@ def group_scenes(script: Any, *, max_clip_sec: float = CLIP_CAP_SEC) -> list[Sce
         shots = list(scene.shots or [])
         if not shots:
             continue
-        groups.append(_new_group(scene, shots, _scene_key(scene), groups, max_clip_sec=max_clip_sec))
+        groups.append(
+            _new_group(script, scene, shots, _scene_key(scene), groups, max_clip_sec=max_clip_sec)
+        )
     out: list[SceneGroup] = []
     for g in groups:
         out.extend(_split_oversized(g, max_clip_sec))
@@ -124,22 +128,28 @@ def _windows(shots: list[Any], start: float = 0.0) -> tuple[dict[str, tuple[floa
     return win, t
 
 
-def _cast(scene: Any, shots: list[Any]) -> tuple[str, ...]:
-    """本组出场角色（**有序去重**）：决定发几张立绘参考、取谁的音色样本。"""
+def _cast(script: Any, scene: Any, shots: list[Any]) -> tuple[str, ...]:
+    """本组出场角色（**有序去重**）：决定发几张立绘参考。
+
+    判据与 m3 首帧**同一份**（`schema.effective_cast`）：声明的在场 + 台词说话人 +
+    画面/镜头文字里点名的人。以前这里只看前两项，于是"八戒张大嘴巴，沙僧险些跪倒，
+    悟空默默后退一步"这种**只入画不说话**的人根本拿不到参考图 —— 同一张脸在首帧里是
+    锁住的，在场景片段里却交给模型自由发挥，一致性从源头就分成两套口径
+    （实测 run_20261015_220939 场景4：画面点名 5 人，只发了 2 张立绘）。
+
+    音色样本不走这条放宽的路：**只给说话人**（`plan_inputs` 按 dialogues 取），
+    不会说话的人发了音色样本也是白占官方 5 段 / 总 15 秒的预算。
+    """
     seen: list[str] = []
     for sh in shots:
-        for cid in list(getattr(sh, "characters", []) or []):
-            if cid not in seen:
-                seen.append(cid)
-        for d in list(getattr(sh, "dialogues", []) or []):
-            cid = getattr(d, "character_id", "")
+        for cid in effective_cast(script, sh)[0]:  # type: ignore[arg-type]
             if cid and cid not in seen:
                 seen.append(cid)
     return tuple(seen)
 
 
 def _new_group(
-    scene: Any, shots: list[Any], key: tuple[str, str], prev: list[SceneGroup],
+    script: Any, scene: Any, shots: list[Any], key: tuple[str, str], prev: list[SceneGroup],
     *, max_clip_sec: float = CLIP_CAP_SEC,
 ) -> SceneGroup:
     win, total = _windows(shots)
@@ -155,7 +165,7 @@ def _new_group(
         duration=round(total, 3),
         location=key[0],
         time_of_day=key[1],
-        characters=_cast(scene, shots),
+        characters=_cast(script, scene, shots),
         windows=win,
         note="" if total <= max_clip_sec
         else f"本场景 {total:.0f}s 超过单次预算 {max_clip_sec:.0f}s，将按镜头边界拆分",

@@ -1043,6 +1043,20 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
                 },
                 "scene_options_rel": {sid: f"assets/scene_{sid}.png" for sid in g.scene_ids},
                 "char_refs": list(ov.get("char_refs") or g.characters),
+                # 手动增删的候选池：**全剧本角色 ∩ 盘上有角色图**。
+                # 不给"没有图的"是因为选了也发不出去（编号由存活名单现算 → 静默少一张），
+                # 与其让人加了没反应，不如根本不让选。
+                "cast_options": [
+                    {
+                        "id": c.character_id,
+                        "name": c.name or c.character_id,
+                        "portrait": (char_imgs.get(c.character_id) or [None])[0],
+                        "portrait_rel": f"assets/char_{c.character_id}.png",
+                        "in_cast": c.character_id in g.characters,
+                        "speaking": c.character_id in speakers,
+                    }
+                    for c in script.characters
+                ],
                 "char_images": dict(ov.get("char_images") or {}),
                 "scene_options": {sid: scene_imgs.get(sid) for sid in g.scene_ids},
                 "scene_refs": list(ov.get("scene_refs") or g.scene_ids),
@@ -1079,7 +1093,8 @@ def scene_groups(run_id: str) -> dict:
 
 class SceneGroupPatch(BaseModel):
     mode: Literal["", "auto", "reference", "first_last"] = ""
-    char_refs: list[str] = Field(default_factory=list, max_length=10)
+    # None = 不改动；[] = 撤回人工选择，回到"按出场顺序自动选"
+    char_refs: list[str] | None = None
     scene_refs: list[str] = Field(default_factory=list, max_length=10)
     char_images: dict[str, str] = Field(default_factory=dict, max_length=10)
     prompt_first: str = ""
@@ -1110,11 +1125,36 @@ def patch_scene_group(run_id: str, group_id: str, req: SceneGroupPatch) -> dict:
     ov = dict((meta.get("scene_overrides") or {}).get(group_id) or {})
     if req.mode:
         ov["mode"] = req.mode
-    if req.char_refs:
-        bad = [c for c in req.char_refs if c not in group.characters]
-        if bad:
-            raise HTTPException(status_code=400, detail=f"这些角色不在本组：{bad}")
-        ov["char_refs"] = req.char_refs
+    if req.char_refs is not None:
+        if not req.char_refs:
+            ov.pop("char_refs", None)  # 空清单 = 回到自动选择
+        else:
+            # 用**生成时同一个解析器**判有没有图（登记表 + 盘上回落）：换第二个判据就会出现
+            # 「界面说能加、生成时说缺图」
+            from fastvideo3.core.assets import load_assets
+            from fastvideo3.modules.m4_scene import asset_image
+
+            _assets = load_assets(RunStorage(run_id, root=root.parent))
+            _st = RunStorage(run_id, root=root.parent)
+            known = {c.character_id: (c.name or c.character_id) for c in script.characters}
+            bad = [c for c in req.char_refs if c not in known]
+            if bad:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"剧本里没有这些角色：{bad}（能加的前提是他先出现在剧本的角色表里）",
+                )
+            # 只能添加"角色图已经有了"的人：没有图就发不出去，选了等于没选
+            no_img = [
+                known[c] for c in req.char_refs
+                if asset_image(_assets, _st, f"char_{c}") is None
+            ]
+            if no_img:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"这些角色还没有角色图，不能当参考素材：{'、'.join(no_img)}"
+                           f"（先到「角色图」那一步生成或上传，再回来添加）",
+                )
+            ov["char_refs"] = list(req.char_refs)
     if req.scene_refs:
         bad = [s for s in req.scene_refs if s not in group.scene_ids]
         if bad:
@@ -1122,8 +1162,8 @@ def patch_scene_group(run_id: str, group_id: str, req: SceneGroupPatch) -> dict:
         ov["scene_refs"] = req.scene_refs
     if req.char_images:
         for cid, rel in req.char_images.items():
-            if cid not in group.characters:
-                raise HTTPException(status_code=400, detail=f"角色不在本组：{cid}")
+            if cid not in {c.character_id for c in script.characters}:
+                raise HTTPException(status_code=400, detail=f"剧本里没有这个角色：{cid}")
             if not _re.fullmatch(r"assets/(char_|_cand_char_)[A-Za-z0-9_\-]+\.png", rel):
                 raise HTTPException(status_code=400, detail=f"非法素材路径：{rel}")
             if not (root / rel).is_file():

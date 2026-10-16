@@ -323,7 +323,10 @@ def _ordered_refs(
     `storage` 给了才能做"登记表为空但盘上有图"的回落（手动上传场景的必用路径）。
     """
     ov = ov or {}
-    want_chars = [c for c in (ov.get("char_refs") or []) if c in group.characters]
+    # 人工增删过的名单是**权威**：以前这里与自动名单求交，界面刚加进去的角色会被
+    # 静默丢掉（表现就是「加了没反应」）。真不能用的（盘上没图）由下面那关滤掉，
+    # 编号仍由存活名单现算，不会出现"提示词说图3、media 里只有两张"。
+    want_chars = [str(c) for c in (ov.get("char_refs") or [])]
     want_chars += [c for c in group.characters if c not in want_chars]
     # 先按**出场顺序**定出"谁该有参考图"，再只保留盘上有文件的。编号由**存活名单**现算
     # （调用方拿同一份列表同时生成提示词与 media 数组），所以缺一张只会少一个 图N，
