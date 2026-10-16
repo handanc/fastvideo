@@ -111,6 +111,38 @@ def test_five_speakers_all_get_a_voice_ref_within_budget(storage):
         assert voiceref.wav_duration(Path(p)) >= voiceref.MIN_VOICE_REF_SEC, "短到抓不住音色就没意义"
 
 
+def test_stale_long_samples_are_recut_when_the_budget_shrinks(storage):
+    """盘上已有 4s 样本、但这一组说话人变多 → 必须**重切**，不能沿用它把总时长顶穿。
+
+    这是"复用已切好的样本"与"预算随人数收紧"之间的冲突：沿用旧长度的话，兜底逻辑只能
+    丢掉一个说话人的音色参考（白白少锁一个角色）。重切一次后长度就达标，下一轮仍走复用，
+    不会形成"每跑一次就作废一次"的死循环（那条死循环历史上真出现过，见 build_voice_refs 注释）。
+    """
+    script = _script(3)
+    lines = _lines(storage, script, seconds=6.0)
+    group = group_scenes(script)[0]
+    speakers = [d.character_id for d in script.all_shots()[0].dialogues]
+    first, _ = voiceref.build_voice_refs(storage, lines, group, speakers)
+    assert all(
+        abs(voiceref.wav_duration(Path(p)) - 4.0) < 0.2 for p in first.values()
+    ), "前提：3 人时按 4s 切"
+
+    # 同一批母带，改成 5 个说话人（预算把每段压到 ~2.9s）
+    script5 = _script(5)
+    for sc in script5.scenes:
+        for sh in sc.shots:
+            sh.characters = [c.character_id for c in script5.characters]
+    lines5 = _lines(storage, script5, seconds=6.0)
+    group5 = group_scenes(script5)[0]
+    speakers5 = [d.character_id for d in script5.all_shots()[0].dialogues]
+    got5, skipped5 = voiceref.build_voice_refs(storage, lines5, group5, speakers5)
+    assert len(got5) == 5 and skipped5 == [], (got5, skipped5)
+    lens = [voiceref.wav_duration(Path(p)) for p in got5.values()]
+    assert max(lens) < 3.5, f"该重切的没重切：{lens}"
+    assert voiceref.total_seconds(got5) <= MAX_REF_AUDIO_TOTAL_SEC
+    assert voiceref.within_budget(got5)
+
+
 def test_more_than_five_speakers_drops_the_tail_with_a_note(storage):
     script = _script(7)
     lines = _lines(storage, script)
