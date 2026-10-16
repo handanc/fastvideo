@@ -17,6 +17,12 @@ const gate = computed(() => steps.value?.budget_gate || null)
 const gateOpen = ref(false)
 const gateBusy = ref(false)
 const newLimit = ref(0)
+// 弹窗里的错误必须显示在**弹窗内**：这个遮罩盖住整页，写到外面的 error 里等于没写
+// （实测就是"点了确认继续生成毫无反应" —— 后端其实回了 400：新上限没高于现上限）。
+// 声明必须排在下面那个 `immediate: true` 的 watch 之前：watch 注册时就同步跑一次回调，
+// 晚声明会直接 TDZ 崩掉整个页面。
+const gateError = ref('')
+const notice = ref('')
 const suggestedLimit = computed(() => {
   const g = gate.value || {}
   // 默认给"已花 + 20"，且至少比现上限高 20%：只清标记不抬上限，下一段又立刻停
@@ -27,21 +33,48 @@ const suggestedLimit = computed(() => {
 
 watch(
   () => gate.value?.pending,
-  (p) => { if (p) { gateOpen.value = true; newLimit.value = 0 } },
+  (p) => {
+    if (p) {
+      gateOpen.value = true
+      // **预填建议值**：留空要靠后端猜、填现上限会被 400 挡回来，两种都让人以为按钮坏了。
+      newLimit.value = suggestedLimit.value
+      gateError.value = ''
+    }
+  },
   { immediate: true },
 )
 
 async function resumeBudget() {
+  const limit = Number(gate.value?.limit_cny || 0)
+  const want = Number(newLimit.value || 0)
+  if (want > 0 && want <= limit) {
+    gateError.value = `新上限 ¥${want.toFixed(2)} 必须高于现上限 ¥${limit.toFixed(2)}`
+      + `（已花 ¥${Number(gate.value?.spent_cny || 0).toFixed(2)}）—— 建议 ¥${suggestedLimit.value}`
+    return
+  }
   gateBusy.value = true
+  gateError.value = ''
+  // 两段分开处理，因为错误该显示的位置不同：
+  // 抬上限失败 → 弹窗还开着，错误必须写在**弹窗里**（页面被遮罩盖住）；
+  // 抬上限成功、启动下一步失败 → 弹窗已关，错误写回页面顶部的错误条。
+  let raised = 0
   try {
-    const want = Number(newLimit.value || 0)
-    await api.budgetContinue(props.runId, want > 0 ? want : null)
-    await api.stepRun(props.runId)   // 确认即继续：从停下处接着跑
-    await load()
+    const r = await api.budgetContinue(props.runId, want > 0 ? want : null)
+    raised = Number(r.new_limit_cny || 0)
   } catch (e) {
-    error.value = `继续失败：${e.message}`
+    gateError.value = `继续失败：${e.message}`
+    gateBusy.value = false
+    return
+  }
+  gateOpen.value = false
+  notice.value = `✔ 上限已抬到 ¥${raised.toFixed(2)}，接着生成剩余部分`
+  try {
+    await api.stepRun(props.runId)   // 确认即继续：从停下处接着跑，已出产物不重复花钱
+  } catch (e) {
+    error.value = `上限已抬到 ¥${raised.toFixed(2)}，但启动下一步失败：${e.message}`
   } finally {
     gateBusy.value = false
+    await load()
   }
 }
 const task = ref(null)
@@ -228,6 +261,7 @@ onUnmounted(() => clearInterval(timer))
     </div>
 
     <div v-if="error" class="alert err">{{ error }}</div>
+    <div v-if="notice" class="alert ok">{{ notice }}</div>
     <p v-if="!detail && !error" class="muted">加载中…</p>
 
     <template v-if="detail">
@@ -321,10 +355,18 @@ onUnmounted(() => clearInterval(timer))
             </p>
             <label>
               继续用到新上限 ¥
-              <input v-model.number="newLimit" type="number" min="0" step="1"
-                     :placeholder="String(suggestedLimit)" />
+              <input
+                v-model.number="newLimit" type="number" step="10"
+                :min="Math.ceil(Number(gate.limit_cny || 0) + 1)"
+                :placeholder="String(suggestedLimit)"
+              />
             </label>
-            <p class="muted">留空 = 用建议值 ¥{{ suggestedLimit }}（不抬高上限就没法继续，会立刻再停一次）。</p>
+            <p class="muted">
+              必须高于现上限 ¥{{ Number(gate.limit_cny || 0).toFixed(2) }}；留空 = 用建议值
+              ¥{{ suggestedLimit }}（不抬高上限就没法继续，会立刻再停一次）。
+            </p>
+            <!-- 错误就在按钮上方：遮罩盖住整页，写到外面的错误条用户根本看不见 -->
+            <div v-if="gateError" class="alert err">{{ gateError }}</div>
             <div class="toolbar">
               <button class="btn primary" :disabled="gateBusy" @click="resumeBudget">
                 {{ gateBusy ? '提交中…' : '✔ 确认继续生成' }}
