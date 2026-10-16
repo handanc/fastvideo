@@ -20,6 +20,7 @@ from langgraph.types import interrupt
 from fastvideo3.core import progress as prog
 from fastvideo3.core import stages
 from fastvideo3.core.config import AppConfig
+from fastvideo3.core.pause import BudgetPaused
 from fastvideo3.core.scenegroup import group_scenes
 from fastvideo3.core.storage import RunStorage
 from fastvideo3.graph.state import ProductionState
@@ -63,7 +64,10 @@ async def _run_step_ids(
         )
         for st, res in zip(todo, results):
             if isinstance(res, BaseException):
-                errors.append(f"{st.id}: {res}")
+                # 暂停不是崩溃：成本到线停下来等人工确认，措辞必须分开，
+                # 否则看板上"失败"和"等你点头"长得一样，人去找根本不存在的 bug
+                tag = '⏸ 等待确认' if isinstance(res, BudgetPaused) else '✘'
+                errors.append(f"{tag} {st.id}: {res}")
             else:
                 produced += list(res or [])
     else:
@@ -73,7 +77,8 @@ async def _run_step_ids(
                     await _run_step(g.ensure_ctx(), g.storage, g.cfg, g.meta, st) or []
                 )
             except Exception as e:  # noqa: BLE001 单步失败不吞掉：交给状态留痕与人工处置
-                errors.append(f"{st.id}: {str(e)[:200]}")
+                tag = '⏸ 等待确认' if isinstance(e, BudgetPaused) else '✘'
+                errors.append(f"{tag} {st.id}: {str(e)[:200]}")
                 break
     rep_after = prog.compute_progress(g.storage, g.meta, g.cfg)
     return {

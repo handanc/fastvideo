@@ -34,6 +34,7 @@ from pathlib import Path
 from fastvideo3.core.config import AppConfig
 from fastvideo3.core.cost import CostLedger
 from fastvideo3.core.jobs import JobStore
+from fastvideo3.core.pause import BudgetPaused, current_limit, stop_for_budget
 from fastvideo3.core.prompts import NO_ONSCREEN_TEXT
 from fastvideo3.core.schema import AudioLine, JobStatus, RunJob, Script
 from fastvideo3.core.storage import RunStorage
@@ -96,9 +97,8 @@ async def make_talk_clips(
             if dest0.exists():
                 results[shot.shot_id] = str(dest0)
             continue  # 不在本轮补齐名单
-        if ledger.exceeded():  # 中途熔断：不再提交新的付费口型任务
-            storage.log_event("m6_talk", "budget_skip", shot=shot.shot_id)
-            continue
+        if stop_for_budget(storage, ledger, node="m6_talk", unit=shot.shot_id):
+            break  # 成本到线：停下来问人（旧写法逐条 continue，事件流刷成一堵墙）
         lines = lines_by_shot.get(shot.shot_id, [])
         if not lines:
             continue
@@ -663,7 +663,8 @@ def _scripted_duration(shot, cfg, lines: list[AudioLine]) -> int:
         base += 0.25 * max(0, counted - 1) + 1.0  # 句间换气 + 呼吸余量
     else:
         chars = sum(len((d.text or "").strip()) for d in shot.dialogues)
-        base = max(float(shot.duration_sec or cfg.shot_duration_sec), (chars / 4.5) + 1)
+        base = max(float(shot.duration_sec or cfg.shot_duration_sec),
+                 (chars / getattr(cfg, "voice_cps", 4.5)) + getattr(cfg, "voice_breath_sec", 1.0))
     return max(2, min(30, int(math.ceil(base))))
 
 
@@ -879,8 +880,8 @@ async def _s2v_one(
         job = jobs.get(job_id)
         if job is not None and job.status is JobStatus.SUCCEEDED and dest.exists():
             return  # 续跑/驳回重拍跳过：产物已在盘，不重复花钱
-        if ledger.exceeded():
-            raise ProviderError(f"预算熔断，跳过口型生成: {shot_id}")
+        if stop_for_budget(storage, ledger, node="m6_talk", unit=shot_id):
+            raise BudgetPaused(f"成本已达上限 ¥{current_limit(storage):.2f}，等待人工确认")
         if job is None:  # 重跑时复用旧行, 避免主键冲突
             jobs.submit(
                 RunJob(
@@ -1091,8 +1092,8 @@ async def _fallback_overlay(cfg, i2v, shot, frames, lines, storage, ledger, jobs
     """S2V 失败降级：I2V 出片 + m7 叠音轨（标记为无口型）。"""
     if i2v is None or shot.shot_id not in frames:
         return None
-    if ledger.exceeded():  # 熔断后降级 I2V 同样花钱 —— 跳过，由 m7 静帧兜底保叙事
-        storage.log_event("m6_talk", "budget_skip_fallback", shot=shot.shot_id)
+    if stop_for_budget(storage, ledger, node="m6_talk", unit=f"{shot.shot_id}:fallback"):
+        # 降级 I2V 同样花钱 —— 到线就停，由 m7 静帧兜底保叙事
         return None
     try:
         from fastvideo3.modules.m4_shots import generate_shots  # noqa: F401

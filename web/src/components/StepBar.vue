@@ -19,7 +19,11 @@ const next = computed(() => props.steps?.next || null)
 const otherBusy = computed(
   () => props.taskBusy?.busy && props.taskBusy.run_id !== props.runId,
 )
-const disabled = computed(() => busy.value || props.steps?.running || otherBusy.value)
+const gate = computed(() => props.steps?.budget_gate || null)
+// 成本闸门：**实时累计**到线就停手问人（预估不够只是红幅警告，不拦）。
+// 按钮不置灰到不可理解的程度 —— 文案直接说在等什么。
+const paused = computed(() => !!gate.value?.pending)
+const disabled = computed(() => busy.value || props.steps?.running || otherBusy.value || paused.value)
 
 const STATE_CLS = { done: 'ok', gap: 'warn', active: 'run', failed: 'err', pending: 'idle' }
 const STATE_LABEL = {
@@ -73,7 +77,9 @@ async function runStep() {
 
     <div class="toolbar" style="margin-top: 10px">
       <button class="btn primary" :disabled="disabled || !next" @click="runStep">
-        {{ busy ? '提交中…' : next ? `▶ 开始生成 · ${next.label}` : '✔ 已全部完成' }}
+        {{ busy ? '提交中…'
+         : paused ? `⏸ 已花 ¥${Number(gate?.spent_cny || 0).toFixed(2)} 达上限，等待确认`
+         : next ? `▶ 开始生成 · ${next.label}` : '✔ 已全部完成' }}
       </button>
       <span class="muted">
         已花 ¥{{ Number(props.steps?.spent_cny || 0).toFixed(2) }} /

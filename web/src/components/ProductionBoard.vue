@@ -56,6 +56,20 @@ const tabs = computed(() => [
   { id: 'final', label: '成片', n: counts.value.final },
 ])
 
+const capacity = computed(() => props.board?.capacity || null)
+const capWarn = computed(() => {
+  const c = capacity.value
+  if (!c) return ''
+  const dev = Number(c.deviation_pct || 0)
+  if (Math.abs(dev) > 15) {
+    return `语音预算：这份稿子的内容约 ${c.need_sec}s（光念台词 ${c.speech_sec}s），`
+      + `目标 ${c.target_sec}s —— ${dev > 0 ? `超出 ${dev}%，钱用完前出不完` : `只用上 ${100 + dev}%`}。`
+      + (c.unsayable ? `${c.unsayable} 个镜头原先装不下自己的台词，已按预算抬到最小可行时长。` : '')
+      + `预估 ${c.clips} 段（单段 ≤25s）。`
+  }
+  return ''
+})
+
 const typeLabel = { dialogue: '对白', action: '动作', scenery: '空镜' }
 const transLabel = { cut: '硬切', dissolve: '叠化', fade: '淡入淡出', scenery: '空镜转场' }
 
@@ -247,12 +261,31 @@ function cancelInline() {
   inline.value = null
 }
 
+// 2 秒自动消失的告警条（时长写短了用）：不打断操作，也不允许被当成错误
+const warn = ref('')
+let warnTimer = 0
+function flashWarn(msg) {
+  warn.value = msg
+  clearTimeout(warnTimer)
+  warnTimer = setTimeout(() => { warn.value = '' }, 2000)
+}
+
 function commitInline() {
   const e = inline.value
   inline.value = null
   if (!e) return
-  const text = e.text.trim()
-  if (text === (e.original || '').trim()) return // 没改：不涨版本、不作废、不打扰后端
+  const isNum = e.field === 'duration_sec'
+  const text = isNum ? e.text : String(e.text).trim()
+  if (String(text).trim() === String(e.original ?? '').trim()) return // 没改：不打扰后端
+  if (isNum) {
+    const n = Number(text)
+    if (!Number.isFinite(n) || n <= 0 || n > 300) {
+      error.value = '时长要写 0 到 300 之间的秒数（官方单次生成上限 30s，这里放宽到 300 便于排节奏）'
+      return
+    }
+    saveDescription(e, n)
+    return
+  }
   saveDescription(e, text)
 }
 
@@ -272,11 +305,27 @@ async function saveDescription(e, text) {
     if (!target) throw new Error(`剧本里找不到 ${e.id}`)
     target[e.field] = text
     const r = await api.putScript(props.runId, script)
-    const what = e.kind === 'script' ? '片名' : `「${e.id}」的描述`
-    notice.value = e.kind === 'script'
-      ? `✔ 片名已保存（剧本 v${r.version}）—— 片名不参与生成，不作废任何产物`
-      : `✔ 已保存${what}（剧本 v${r.version}），作废 ${r.invalidated} 个产物；`
-        + '点「开始生成」即按新描述重画（不删图也会重画）'
+    if (e.field === 'duration_sec') {
+      const need = Number((props.board?.capacity?.per_shot || {})[e.id]?.need_sec || 0)
+      const now = Number(text)
+      notice.value = `✔ 时长已保存为 ${now}s（剧本 v${r.version}）`
+        + (r.invalidated ? `，作废 ${r.invalidated} 个产物` : '')
+      if (need > 0 && now + 0.05 < need) {
+        const ps = (props.board?.capacity?.per_shot || {})[e.id] || {}
+        flashWarn(
+          `⚠ 「${e.id}」时长 ${now}s 小于最小预估 ${need}s（${ps.lines || 0} 句 `
+          + `${ps.chars || 0} 字≈念 ${ps.speech_sec}s + 呼吸/演出余量）—— `
+          + `建议 ≥ ${need}s：这个数会直接成为提交给 wan3.0 的片段时长，`
+          + `写短了台词会被吞句尾`,
+        )
+      }
+    } else {
+      const what = e.kind === 'script' ? '片名' : `「${e.id}」的描述`
+      notice.value = e.kind === 'script'
+        ? `✔ 片名已保存（剧本 v${r.version}）—— 片名不参与生成，不作废任何产物`
+        : `✔ 已保存${what}（剧本 v${r.version}），作废 ${r.invalidated} 个产物；`
+          + '点「开始生成」即按新描述重画（不删图也会重画）'
+    }
     emit('changed')
   } catch (err) {
     error.value = err.message
@@ -367,6 +416,8 @@ watch(() => props.board?.script_version, (v, old) => {
           {{ scenes.length }} 场 · 档位 {{ b.meta?.quality }}
         </p>
         <p class="muted small">剧本评审由<b>你</b>来做；分镜抽查、镜头选优、成片终审、一致性闸门自动跑。</p>
+        <p v-if="capWarn" class="alert warn">{{ capWarn }}</p>
+        <p v-if="warn" class="alert warn">{{ warn }}</p>
 
         <section v-for="s in scenes" :key="s.id" class="scene-block">
           <h3>
@@ -413,7 +464,23 @@ watch(() => props.board?.script_version, (v, old) => {
                     <b>{{ d.who }}</b>：{{ d.text }}<span class="muted">（{{ d.emotion }}）</span>
                   </div>
                 </td>
-                <td class="num">{{ sh.duration_sec }}s</td>
+                <td class="num">
+                  <span
+                    v-if="!editKey('shot', sh.shot_id, 'duration_sec')"
+                    class="editable"
+                    title="单击修改时长（秒）；可以写得比最小预估短，会给出告警"
+                    @click="startInline('shot', sh.shot_id, 'duration_sec', sh.duration_sec)"
+                  >{{ sh.duration_sec }}s</span>
+                  <span v-else class="dur-edit">
+                    <input
+                      class="inline-edit one" type="number" min="0" step="0.5" autofocus
+                      v-model="inline.text"
+                      @blur="commitInline"
+                      @keydown.esc.prevent="cancelInline"
+                      @keydown.enter="commitInline"
+                    /><span class="muted">s</span>
+                  </span>
+                </td>
                 <td class="muted">{{ transLabel[sh.transition_out] || sh.transition_out }}</td>
               </tr>
             </tbody>

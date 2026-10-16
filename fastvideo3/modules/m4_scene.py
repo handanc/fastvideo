@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastvideo3.core import voiceref
+from fastvideo3.core import pause, voiceref
 from fastvideo3.core.config import AppConfig
 from fastvideo3.core.cost import CostLedger
 from fastvideo3.core.jobs import JobStore
@@ -470,7 +470,7 @@ async def generate_scene_clips(
     lines = lines or []
     groups = (
         groups if groups is not None
-        else group_scenes(script, max_clip_sec=float(MAX_CLIP_SEC))
+        else group_scenes(script)  # 预算线取 scenegroup.CLIP_CAP_SEC，与看板/进度同一套切法
     )
     char_map = script.character_map()
     out: dict[str, str] = {}
@@ -552,6 +552,18 @@ async def generate_scene_clips(
         resumed = str(existing.output_uri or "") if (
             existing is not None and existing.status == JobStatus.RUNNING
         ) else ""
+
+        # 成本到线 → **停下来问人**，而不是静默少出几段（实现见 core/pause.py）。
+        # 注意 `resumed`：在途任务的**钱已经花出去了**，必须继续轮询把那段拿回来，
+        # 只有"新的付费提交"要停 —— 所以守卫放在 resumed 之后、submit 之前。
+        if not resumed and pause.stop_for_budget(storage, ledger, node="m4_scene", unit=gid):
+            storage.log_degradation(
+                "scene", "budget_pause",
+                f"实时费用已达上限 ¥{pause.current_limit(storage):.2f}，"
+                f"从场景 {gid} 起停止提交新的片段",
+                impact="已完成的片段一个不动；确认继续后点「开始生成」从这里接着跑，不重复花钱",
+            )
+            break
         if existing is None:
             # **先把任务行插进台账**：`jobs.update()` 只会 UPDATE 已存在的行，之前只调 update
             # 的写法让台账一直是空的 —— 于是 `jobs.get()` 永远返回 None，"跳过已提交任务"与

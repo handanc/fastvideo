@@ -231,6 +231,7 @@ def test_put_script_text_accepts_markdown_draft(client, run):
     body = r.json()
     assert body["notes"] and "整理" in body["notes"][0], body["notes"]
     assert len(body["notes"]) <= 10, "说明不能刷屏"
+    assert len(body["fixes"]) > 10, "全量清单在 fixes 里，不能只给个截断版"
     script = _saved(run[0].parent)
     assert any(
         any("师父别走了" in d.text for d in sh.dialogues) for sh in script.all_shots()

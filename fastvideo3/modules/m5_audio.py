@@ -10,6 +10,7 @@ import asyncio
 import re
 from pathlib import Path
 
+from fastvideo3.core import pause
 from fastvideo3.core.config import AppConfig
 from fastvideo3.core.cost import CostLedger
 from fastvideo3.core.schema import AudioLine, Script
@@ -176,6 +177,8 @@ async def synthesize_dialogues(
                     )
                 )
                 continue
+            if pause.stop_for_budget(storage, ledger, node="m5_audio", unit=line_id):
+                break  # 成本到线：剩余台词不配音，等人工确认
             await _tts_with_retry(
                 tts,
                 d.text,

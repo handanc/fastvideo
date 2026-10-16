@@ -168,6 +168,18 @@ class AppConfig(BaseModel):
     # TEXT 只改排版（逐字校验内容没被改，失败就拒绝保存而不是静默改词）。
     # 关掉它就等于"只接受标准排版"，报错按行号回给人。
     draft_llm_format: bool = True
+    # ── 语音预算系数（core/voice_budget.py）：全是**软校验**的参数，不做门禁 ──────────
+    # 这一段描述的是"这份稿子拍出来大概多长、哪一镜念不完"，用来在花钱之前给出容量判断；
+    # 片段内部怎么分配时长是 wan3.0 的自由度，不由这些数字控制，也不回写用户写的任何时长。
+    # 语速口径与 m6 的 TTS 档同源：改这里就等于改全链路的语音假设，别再引入第二份。
+    voice_cps: float = 4.5                  # 中文语音语速（字/秒）
+    # 最小预估时长 = round(字数 / voice_cps) + voice_breath_sec（用户裁定的公式）
+    voice_breath_sec: float = 1.0           # 每镜呼吸余量（也起到"每镜固定开销"的作用）
+    voice_beat_sec: float = 1.2             # 一个可拍动作单元的演出秒
+    voice_hold_sec: float = 0.6             # 静默内容的额外留白上限（凝视/落泪/末镜，见 voice_budget）
+    clip_soft_cap_sec: float = 25.0         # 单次调用的软预算；服务端硬顶 30s 见 scenegroup.MAX_CLIP_SEC
+    voice_nonspeech_band_low: float = 0.30  # 非语音占比下限（低于它=念稿）
+    voice_nonspeech_band_high: float = 0.45  # 非语音占比上限（高于它=空转）
     # 成片前一致性闸门：off=不拦；reshoot=不达标镜头自动带参考图重做（≤2 轮）后仍不达标
     # 则 quality_verdict 标不合格。high/cinema 强制 reshoot，economy 不做要求。
     consistency_gate: Literal["off", "reshoot"] = "off"
@@ -380,6 +392,13 @@ def load_config(
         consistency_metric=gen.get("consistency_metric", "off"),
         scene_ref_mode=gen.get("scene_ref_mode", "scenery_only"),
         draft_llm_format=bool(gen.get("draft_llm_format", True)),
+        voice_cps=float(gen.get("voice_cps", 4.5)),
+        voice_breath_sec=float(gen.get("voice_breath_sec", 1.0)),
+        voice_beat_sec=float(gen.get("voice_beat_sec", 1.2)),
+        voice_hold_sec=float(gen.get("voice_hold_sec", 0.6)),
+        clip_soft_cap_sec=float(gen.get("clip_soft_cap_sec", 25.0)),
+        voice_nonspeech_band_low=float(gen.get("voice_nonspeech_band_low", 0.30)),
+        voice_nonspeech_band_high=float(gen.get("voice_nonspeech_band_high", 0.45)),
         consistency_gate=gen.get("consistency_gate", "off"),
         two_person_talk=gen.get("two_person_talk", "overlay"),
         lipsync_min_corr=float(gen.get("lipsync_min_corr", 0.25)),

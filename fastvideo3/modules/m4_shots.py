@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from fastvideo3.core import pause
 from fastvideo3.core.config import AppConfig
 from fastvideo3.core.cost import CostLedger
 from fastvideo3.core.jobs import JobStore
@@ -92,9 +93,8 @@ async def generate_shots(
 
     async def worker(shot) -> None:
         async with sem:
-            if ledger.exceeded():  # 中途熔断：不再提交新的付费任务
-                storage.log_event("m4_shots", "budget_skip", shot=shot.shot_id)
-                return
+            if pause.stop_for_budget(storage, ledger, node="m4_shots", unit=shot.shot_id):
+                return  # 成本到线：不再提交新的付费任务（人工确认后从这里接着跑）
             dest = storage.path("clips", f"shot_{shot.shot_id}.mp4")
             clip_rel = f"clips/shot_{shot.shot_id}.mp4"
             # 续跑优化：台账中已有成功任务且产物在盘**且未被血缘作废** → 跳过（不重复花钱）

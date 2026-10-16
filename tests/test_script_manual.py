@@ -155,13 +155,25 @@ def test_put_script_text_rejects_overlong_line_by_schema(client, run):
 
 
 def test_put_script_text_warns_on_soft_rules_without_blocking(client, run):
-    """建议 ≤30 字：放行，但必须把后果说给人听。"""
+    """软规则只警告、不阻断，并且**改的是时长而不是台词**。
+
+    旧的"单句 >30 字"绝对值判据已被语音预算取代：一句 35 字在 3 秒镜头里必然吞字，
+    在 20 秒镜头里毫无问题 —— 所以判据是"这句话所在的镜头装得下吗"。装不下时
+    系统的动作是**把镜头时长抬到最小可行值**（时长决定 `duration` 与提示词时间戳），
+    绝不删改用户写的字。
+    """
     text = _draft(client)
     line = _first_dialogue_line(text)
-    edited = text.replace(line, f"  c1（平静）: {'话' * 35}", 1)  # 35 字：超建议值、未破 60 硬上限
+    edited = text.replace(line, f"  c1（平静）: {'话' * 35}", 1)  # 35 字：未破 60 硬上限
     r = client.put(f"/api/runs/{RUN}/script/text", json={"text": edited})
     assert r.status_code == 200, r.text
-    assert any("超长" in w for w in r.json()["warnings"]), r.json()["warnings"]
+    body = r.json()
+    saved = _saved(run[0].parent)
+    shot = next(sh for sh in saved.all_shots() if any(d.text == "话" * 35 for d in sh.dialogues))
+    assert shot.duration_sec >= 8.0, f"35 字≈念 7.8s，镜头却还停在 {shot.duration_sec}s（会被吞句尾）"
+    assert "话" * 35 in [d.text for d in shot.dialogues], "台词必须逐字还在"
+    # 要么给出容量告警，要么在说明里交代抬了什么 —— 静默通过是不允许的
+    assert body["warnings"] or body.get("notes"), body
 
 
 def test_put_script_text_autofills_transition_variety(client, run):

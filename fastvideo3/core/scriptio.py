@@ -16,8 +16,8 @@ import time
 from typing import Any
 
 from fastvideo3.core import progress as prog
+from fastvideo3.core import voice_budget
 from fastvideo3.core.schema import Script
-from fastvideo3.core.script_text import duration_warnings
 from fastvideo3.core.storage import RunStorage, safe_unlink
 
 
@@ -130,6 +130,7 @@ async def commit_script(
     source: str,
     node: str = "web_api",
     replaced_unparsable: bool = False,
+    apply_floor: bool = False,
 ) -> dict:
     """校验 → 备份 → version+1 → 工程兜底 → **先作废再落盘** → 补抽被改外貌的卡。
 
@@ -146,10 +147,7 @@ async def commit_script(
     直接复用，只能整片重跑才能收拾。按现在这个顺序崩在中间，最坏是"多标了几项待重做"
     （重跑一遍同样的东西，白花钱），而 `progress` 的准则本来就是**漏标致命、多标可接受**。
     """
-    from fastvideo3.modules.m1_scripting import (
-        enforce_transition_variety,
-        line_length_violations,
-    )
+    from fastvideo3.modules.m1_scripting import enforce_transition_variety
 
     problems = cross_check(new_script)
     if problems:
@@ -163,6 +161,13 @@ async def commit_script(
     notes: list[str] = []
     before = {sh.shot_id: sh.transition_out.value for sh in new_script.all_shots()}
     new_script = enforce_transition_variety(new_script)  # F6 转场多样性：幂等兜底，直接修
+    # 时长下限：镜头时长同时决定 duration 参数与提示词里的分镜时间戳，写短了就是吞句尾。
+    # 但**只在批量入口（整份剧本稿 / 模型改写）生效**：界面里一格一格手填的时长是人的
+    # 明确意图，抬回去等于把 ta 刚敲的数字悄悄改掉（用户裁定：手填可以小于最小预估，
+    # 只弹 2 秒告警）。所以这里默认关，由 draft/revise 路径显式打开。
+    if apply_floor:
+        new_script, dur_notes = voice_budget.apply_duration_floor(new_script, cfg)
+        notes += dur_notes
     after = {sh.shot_id: sh.transition_out.value for sh in new_script.all_shots()}
     fixed = [sid for sid in after if after[sid] != before.get(sid)]
     if fixed:
@@ -189,7 +194,11 @@ async def commit_script(
         "version": new_script.version,
         "invalidated": len(invalidated),
         "items": invalidated[:50],
-        "warnings": line_length_violations(new_script) + duration_warnings(new_script),
+        # 软校验，**不拦保存、也不改任何数字**：换成语音预算（`core/voice_budget`）。
+        # 为什么把"单句 >30 字"换掉：那条绝对值判据在镜头时长可长可短之后已经失真 ——
+        # 实测 run_20261015_220939 有 10 镜 600 字（念完 143s，剧本只 90s），
+        # 30 字一条都没报，反而在两句其实说得下的句子上报警。
+        "warnings": voice_budget.warnings(new_script, cfg),
         "notes": notes,
         "hint": "点「开始生成」只重做被作废的产物；其他镜头不会重复花钱",
     }

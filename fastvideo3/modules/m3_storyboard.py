@@ -16,6 +16,7 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
+from fastvideo3.core import pause
 from fastvideo3.core.config import AppConfig
 from fastvideo3.core.cost import CostLedger, llm_meta
 from fastvideo3.core.prompts import render
@@ -125,6 +126,8 @@ async def build_storyboard(
             continue  # 不在本轮补齐名单：不重画也不报错
         # 画面里有谁：`characters` 漏标时按台词说话人/画面点名补齐（见 effective_cast）
         cast, implied = effective_cast(script, shot)
+        if pause.stop_for_budget(storage, ledger, node="m3_storyboard", unit=shot.shot_id):
+            break  # 成本到线：剩余首帧不画了，等人工确认（已画的帧一个不动）
         prompt = _shot_prompt(cfg, script, scene, shot, char_map, assets, cast)
         tokens = _canonical_tokens(char_map, shot, cast)
         prompt = await _distill_prompt(text, prompt, shot.shot_id, storage, ledger, tokens)
@@ -680,9 +683,8 @@ async def _build_last_frames(
                 artifact="last_frame",
             )
             continue
-        if ledger.exceeded():  # 熔断后不再提交新的付费任务（与首帧同一口径）
-            storage.log_event("m3_storyboard", "budget_skip", shot=shot.shot_id, artifact="last_frame")
-            continue
+        if pause.stop_for_budget(storage, ledger, node="m3_storyboard", unit=f"{shot.shot_id}:last"):
+            break  # 与首帧同一口径：到线就停手问人，不再逐条静默跳过
         try:
             cast, _implied = effective_cast(script, shot)
             refs, ref_cids = _char_refs(cfg, t2i, cast, assets, shot, storage)

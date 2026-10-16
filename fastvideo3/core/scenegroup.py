@@ -31,8 +31,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-#: 官方 duration 上限（无视频输入时取值范围 [2,30] 的整数）
+#: 官方 duration 上限（无视频输入时取值范围 [2,30] 的整数）——**物理约束**，超过服务端直接拒
 MAX_CLIP_SEC = 30
+#: 单次调用的**预算线**（用户裁定：单个视频片段的预估时长不超过 25s）。
+#: 与 `AppConfig.clip_soft_cap_sec`（语音预算里那条软顶）**取同一个数**：改配置只改告警措辞，
+#: 不改这里的分组结果 —— 分组是"产物文件名"级的决定，绝不能依赖某个调用点恰好读了配置。
+#: 要调这条线就改本常量（所有调用点一起变），这也是上面那条"必须同一套切法"的实现方式。
+#: 比物理上限低 5 秒不是保守，而是给两件事留余量：① 语音时长只是估算（有 ±15% 漂移）；
+#: ② 拆分只能落在镜头边界上，凑不满上限是常态。
+#: 这条线改了必须**所有** `group_scenes()` 调用点一起改：看板的场景卡、进度缺口、台账键
+#: (`clips/scene_{gid}.mp4`) 与真正提交给 wan3.0 的分组的**必须是同一套切法**，
+#: 否则界面列 3 段、实际出 2 段，缺口永远算不对（本项目反复出现的分歧根因）。
+CLIP_CAP_SEC = 25.0
 MIN_CLIP_SEC = 2
 #: 官方分镜指南：每段 2–5 秒
 SHOT_MIN_SEC = 2.0
@@ -79,7 +89,7 @@ def _scene_key(scene: Any) -> tuple[str, str]:
     return (str(scene.location or "").strip(), str(getattr(scene, "time_of_day", "") or "").strip())
 
 
-def group_scenes(script: Any, *, max_clip_sec: float = MAX_CLIP_SEC) -> list[SceneGroup]:
+def group_scenes(script: Any, *, max_clip_sec: float = CLIP_CAP_SEC) -> list[SceneGroup]:
     """**一个 scene = 一个场景视频**（用户裁定：不合并多个 scene 成一个片段）。
 
     为什么不再做"同地点相邻场景合并"：合并之后界面上"场景2"没有自己的卡片与模式选择，
@@ -88,15 +98,16 @@ def group_scenes(script: Any, *, max_clip_sec: float = MAX_CLIP_SEC) -> list[Sce
     写进同一个 scene，是 m1 剧本提示词的职责（见 screenwriter.v1.md 的场景语义规则），
     不在这里事后合并。
 
-    唯一的例外是**拆**不是**合**：单个 scene 超过 30 秒（官方单次上限）时按镜头边界
-    拆成多段（`scene_2p1`/`scene_2p2`），否则提交必被服务端拒。拆是物理约束，不是选择。
+    唯一的例外是**拆**不是**合**：单个 scene 的时长超过预算线（`CLIP_CAP_SEC`，默认 25s，
+    物理上限 30s）时按镜头边界拆成多段（`scene_2p1`/`scene_2p2`）。拆段共用**同一张场景图**
+    （`scene_ids` 原样继承），只有提示词不同 —— 给每段另画一张场景图等于给同一场戏换布景。
     """
     groups: list[SceneGroup] = []
     for scene in script.scenes:
         shots = list(scene.shots or [])
         if not shots:
             continue
-        groups.append(_new_group(scene, shots, _scene_key(scene), groups))
+        groups.append(_new_group(scene, shots, _scene_key(scene), groups, max_clip_sec=max_clip_sec))
     out: list[SceneGroup] = []
     for g in groups:
         out.extend(_split_oversized(g, max_clip_sec))
@@ -127,7 +138,10 @@ def _cast(scene: Any, shots: list[Any]) -> tuple[str, ...]:
     return tuple(seen)
 
 
-def _new_group(scene: Any, shots: list[Any], key: tuple[str, str], prev: list[SceneGroup]) -> SceneGroup:
+def _new_group(
+    scene: Any, shots: list[Any], key: tuple[str, str], prev: list[SceneGroup],
+    *, max_clip_sec: float = CLIP_CAP_SEC,
+) -> SceneGroup:
     win, total = _windows(shots)
     # 组 id 默认就是场景 id；万一重复（剧本里 scene_id 撞了）加序号，
     # 因为它是产物文件名（`clips/scene_{gid}.mp4`）与台账 note 的键，撞了就互相覆盖
@@ -143,7 +157,8 @@ def _new_group(scene: Any, shots: list[Any], key: tuple[str, str], prev: list[Sc
         time_of_day=key[1],
         characters=_cast(scene, shots),
         windows=win,
-        note="" if total <= MAX_CLIP_SEC else f"本场景 {total:.0f}s 超过单次上限，将按镜头边界拆分",
+        note="" if total <= max_clip_sec
+        else f"本场景 {total:.0f}s 超过单次预算 {max_clip_sec:.0f}s，将按镜头边界拆分",
     )
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -12,6 +13,7 @@ from rich.table import Table
 
 from fastvideo3.core.assets import load_assets
 from fastvideo3.core.config import OUTPUT_DIR, PROJECT_ROOT, AppConfig, load_config
+from fastvideo3.core.pause import BudgetPaused
 
 
 def _fix_console_encoding() -> None:
@@ -639,6 +641,23 @@ def step(run_id: str = typer.Argument(...)):
     meta = storage.load_json("run_meta.json")
     cfg = _cfg_from_meta(meta)
 
+    # 成本闸门：到线就先问人。命令行与网页必须同一条判据（`core/pause`），
+    # 否则"网页拦住、命令行照花"这种分歧最难查。
+    from fastvideo3.core import pause
+
+    spent_now = _spent_cny(storage)
+    gate = pause.state(storage, spent=spent_now, fallback_limit=float(cfg.budget_limit_cny or 0))
+    if gate["pending"]:
+        console.print(
+            f"[yellow]⏸ 成本已达上限 ¥{gate['limit_cny']:.2f}（实时已花 ¥{gate['spent_cny']:.2f}），"
+            f"已停在 {gate['asked_by'] or '上一步'}。[/]"
+        )
+        console.print(
+            "[yellow]  继续请抬高上限：[/] fastvideo3 budget-continue "
+            f"{run_id} <新上限>（已完成的产物一个不动，从停下处接着跑）[/]"
+        )
+        raise typer.Exit(code=6)
+
     ok, st_lock = tasklock.acquire(OUTPUT_DIR, run_id, "step", adopt_same_run=True)
     if not ok:
         console.print(
@@ -660,6 +679,16 @@ def step(run_id: str = typer.Argument(...)):
         ctx = build_context(cfg, storage)
         try:
             produced = asyncio.run(_run_step(ctx, storage, cfg, meta, nxt))
+        except BudgetPaused as e:
+            # 暂停不是故障：产物照旧、缺口照旧，等的只是人点头（别记 step_failed，
+            # 否则步骤条会红着报一个根本没发生的错误）
+            storage.log_event("step", "step_paused", step=nxt.id, reason=str(e)[:200])
+            console.print(f"[yellow]⏸ {str(e)[:200]}[/]")
+            console.print(
+                f"[yellow]  已出 {len(_produced_now(storage, nxt))} 个产物；"
+                f"确认继续：fastvideo3 budget-continue {run_id} <新上限>[/]"
+            )
+            raise typer.Exit(code=0) from None
         except Exception as e:  # noqa: BLE001
             storage.log_event(
                 "step", "step_failed", step=nxt.id, error=str(e)[:500], kind=type(e).__name__
@@ -673,6 +702,41 @@ def step(run_id: str = typer.Argument(...)):
         )
     finally:
         tasklock.release(OUTPUT_DIR, run_id)
+
+
+def _spent_cny(storage: Any) -> float:
+    from fastvideo3.core.progress import _spent
+
+    return _spent(storage.root)
+
+
+def _produced_now(storage: Any, nxt: Any) -> list[str]:
+    """暂停时"这一步已经出了多少产物"，只用于把话说清楚（不做判据）。"""
+    return [str(p.name) for p in sorted(storage.root.rglob("*")) if p.suffix in (".mp4", ".png", ".wav")]
+
+
+@app.command("budget-continue")
+def budget_continue(
+    run_id: str = typer.Argument(...),
+    new_limit: float = typer.Argument(..., help="新的成本上限(元)，必须高于现上限"),
+) -> None:
+    """人工确认"费用已超、继续生成"：抬高上限，然后照常 step/run 从停下处接着跑。"""
+    from fastvideo3.core import pause
+    from fastvideo3.core.storage import RunStorage
+
+    storage = RunStorage(run_id)
+    meta = storage.load_json("run_meta.json")
+    cfg = _cfg_from_meta(meta)
+    spent = _spent_cny(storage)
+    limit = pause.current_limit(storage, float(cfg.budget_limit_cny or 0))
+    if new_limit <= limit:
+        console.print(f"[red]✘ 新上限 ¥{new_limit:.2f} 不高于现上限 ¥{limit:.2f}。[/]")
+        raise typer.Exit(code=2)
+    pause.approve(storage, new_limit, node="cli")
+    console.print(
+        f"[green]✔ 上限 ¥{limit:.2f} → ¥{new_limit:.2f}（已花 ¥{spent:.2f}）。[/]"
+        f" 接着跑：fastvideo3 step {run_id}"
+    )
 
 
 @app.command("script-regen")
@@ -723,6 +787,8 @@ def script_regen(
             return await scriptio.commit_script(
                 storage, cfg, Script.model_validate(out["script"]),
                 old_script=old, prev_dict=old_dict, source="regenerated", node="cli",
+                # 模型改出来的稿子同样按语音预算抬时长下限（批量入口才抬，界面手填不抬）
+                apply_floor=True,
             )
         # rewrite：没有旧剧本可删也算成功（首次出剧本就是这个形状）
         try:

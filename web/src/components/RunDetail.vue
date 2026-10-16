@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { statusOf } from '../status'
 import ProductionBoard from './ProductionBoard.vue'
@@ -11,6 +11,39 @@ const emit = defineEmits(['back'])
 const detail = ref(null)
 const board = ref(null)
 const steps = ref(null)
+// 成本闸门（后端 core/pause.py）：**实时累计**费用到线才亮，预估不够只出红幅警告。
+// 一直亮到人工确认为止 —— 这正是它存在的目的：不让"钱花完了、片没出完"变成静默事实。
+const gate = computed(() => steps.value?.budget_gate || null)
+const gateOpen = ref(false)
+const gateBusy = ref(false)
+const newLimit = ref(0)
+const suggestedLimit = computed(() => {
+  const g = gate.value || {}
+  // 默认给"已花 + 20"，且至少比现上限高 20%：只清标记不抬上限，下一段又立刻停
+  const spent = Number(g.spent_cny || 0)
+  const limit = Number(g.limit_cny || 0)
+  return Math.max(Math.round(limit * 1.2), Math.round(spent + 20))
+})
+
+watch(
+  () => gate.value?.pending,
+  (p) => { if (p) { gateOpen.value = true; newLimit.value = 0 } },
+  { immediate: true },
+)
+
+async function resumeBudget() {
+  gateBusy.value = true
+  try {
+    const want = Number(newLimit.value || 0)
+    await api.budgetContinue(props.runId, want > 0 ? want : null)
+    await api.stepRun(props.runId)   // 确认即继续：从停下处接着跑
+    await load()
+  } catch (e) {
+    error.value = `继续失败：${e.message}`
+  } finally {
+    gateBusy.value = false
+  }
+}
 const task = ref(null)
 const pane = ref('board') // board=制作看板（剧本/角色/场景/镜头/成片）| flow=事件与成本
 const error = ref('')
@@ -266,6 +299,42 @@ onUnmounted(() => clearInterval(timer))
            "缺口"本来就已经写在步骤条上，再挂一条"没有口型"只是同一件事说两遍，
            而且说法是错的（听起来像口型链路坏了）。真正的安全网在后端：
            lipsync_coverage 仍参与成片判定，缺口型照样 passed=False。 -->
+      <!-- 成本闸门：到线就停下来问人。已完成的产物一个不动，确认后从停下处接着跑。 -->
+      <div v-if="gate?.pending" class="alert err">
+        ⏸ <b>实时费用 ¥{{ Number(gate.spent_cny || 0).toFixed(2) }} 已达上限
+        ¥{{ Number(gate.limit_cny || 0).toFixed(2) }}</b>
+        —— 已停在 {{ gate.asked_by || '当前步骤' }}，新的付费任务不再提交。
+        <button class="btn sm primary" @click="gateOpen = true">继续生成…</button>
+        <span class="muted">（点「开始生成」也会被拦住，直到你确认）</span>
+      </div>
+
+      <Teleport to="body">
+        <div v-if="gate?.pending && gateOpen" class="modal-mask" @click.self="gateOpen = false">
+          <div class="modal" role="dialog" aria-modal="true">
+            <h3>⏸ 当前费用已超上限，是否继续生成？</h3>
+            <p class="muted">
+              已花 <b>¥{{ Number(gate.spent_cny || 0).toFixed(2) }}</b> ／
+              上限 <b>¥{{ Number(gate.limit_cny || 0).toFixed(2) }}</b>。
+              停下来不会丢任何东西：已经出来的图与片段都在盘上，确认之后从停下那一处接着跑，
+              已完成的部分不重复花钱。
+            </p>
+            <label>
+              继续用到新上限 ¥
+              <input v-model.number="newLimit" type="number" min="0" step="1"
+                     :placeholder="String(suggestedLimit)" />
+            </label>
+            <p class="muted">留空 = 用建议值 ¥{{ suggestedLimit }}（不抬高上限就没法继续，会立刻再停一次）。</p>
+            <div class="toolbar">
+              <button class="btn primary" :disabled="gateBusy" @click="resumeBudget">
+                {{ gateBusy ? '提交中…' : '✔ 确认继续生成' }}
+              </button>
+              <button class="btn" @click="gateOpen = false">暂不继续</button>
+            </div>
+            <p class="muted">「暂不继续」只是关掉这个窗口：上限没抬，「开始生成」仍然会被拦住。</p>
+          </div>
+        </div>
+      </Teleport>
+
       <div v-if="costRisk" class="alert err">
         ⚠ 成本上限 <b>¥{{ Math.round(board.meta?.budget_limit_cny || 0) }}</b>
         低于预估 <b>¥{{ Math.round(costRisk.lo) }}</b>：钱用完时场景片段会停出。

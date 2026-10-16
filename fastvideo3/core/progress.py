@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from fastvideo3.core import pause
 from fastvideo3.core.config import AppConfig
 from fastvideo3.core.schema import Script
 from fastvideo3.core.storage import RunStorage
@@ -62,6 +63,9 @@ class ProgressReport:
     running: bool
     spent_cny: float
     budget_cny: float
+    #: 成本闸门（core/pause.py）：pending=True 时界面必须弹人工审核窗口，
+    #: 且「开始生成」在确认之前一律拒绝 —— 到线的是**实时累计**的费用，不是预估。
+    budget_gate: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +74,7 @@ class ProgressReport:
             "running": self.running,
             "spent_cny": self.spent_cny,
             "budget_cny": self.budget_cny,
+            "budget_gate": self.budget_gate,
         }
 
 
@@ -409,13 +414,15 @@ def _finish(
             s.error = errors[s.id]
     if nxt is not None and running and nxt.state == "gap":
         nxt.state = "active"
+    spent = _spent(root)
+    limit = float(meta.get("budget_limit_cny", 0) or 0) or float(cfg.budget_limit_cny)
     return ProgressReport(
         steps=steps,
         next=nxt,
         running=running,
-        spent_cny=_spent(root),
-        # meta 落 0 的老 run 回落到实际生效值，否则步骤条显示"熔断 ¥0"却仍在 ¥120 跳闸
-        budget_cny=float(meta.get("budget_limit_cny", 0) or 0) or float(cfg.budget_limit_cny),
+        spent_cny=spent,
+        budget_gate=pause.state(root, spent=spent, fallback_limit=limit),
+        budget_cny=limit,
     )
 
 
@@ -549,16 +556,21 @@ def diff_invalidation(old: Script, new: Script) -> list[str]:
     # `clips/scene_{gid}.mp4` 的提示词里。一段戏在一个 mp4 里，改组内任何一镜 = 整段作废。
     from fastvideo3.core.scenegroup import group_scenes
 
-    scene_of_shot = {
-        sid: g.group_id for g in group_scenes(new) for sid in g.shot_ids
-    }
+    def _shot_group_map(script_obj: Script) -> dict[str, str]:
+        return {sid: g.group_id for g in group_scenes(script_obj) for sid in g.shot_ids}
+
+    scene_of_shot = _shot_group_map(new)
+    # 旧分组也要算：时长被抬（或台词被加）会让一场戏从 `s1` 拆成 `s1p1`/`s1p2`，
+    # 产物文件名跟着换。只按新分组标 stale，旧的 `clips/scene_s1.mp4` 就永远不被标记 ——
+    # 下次时长又缩回去、分组变回 `s1` 时，那个旧文件会被当成新鲜产物直接复用（静默用旧片）。
+    old_scene_of_shot = _shot_group_map(old)
 
     def shot_rels(shot_id: str, *, audio: bool = False) -> None:
         rels.add(f"storyboard/shot_{shot_id}.png")
         rels.add(f"clips/shot_{shot_id}.mp4")
         rels.add(f"talk/shot_{shot_id}.mp4")
-        gid = scene_of_shot.get(shot_id)
-        if gid:
+        gids = {g for g in (scene_of_shot.get(shot_id), old_scene_of_shot.get(shot_id)) if g}
+        for gid in sorted(gids):
             # 漏掉这条的后果很具体：改了画面描述 → 提示词确实重算了，但已生成的片段仍被
             # 当成新鲜产物，点「生成」只回一句"已有视频片段"，改动永远进不了视频
             # （2026-10-14 实测：字段级作废清单里只有逐镜头产物，没有场景片段）。

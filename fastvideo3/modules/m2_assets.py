@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from fastvideo3.core import pause
 from fastvideo3.core.config import AppConfig
 from fastvideo3.core.cost import CostLedger, llm_meta
 from fastvideo3.core.prompts import render
@@ -264,6 +265,8 @@ async def build_assets(
         if reused is not None:
             _publish(reused)
             continue
+        if pause.stop_for_budget(storage, ledger, node="m2_assets", unit=ch.character_id):
+            break  # 成本到线：停下来等人工确认（core/pause.py），剩下的仍是缺口
         prompt = render(
             "char_portrait.v1",
             char_name=ch.name,
@@ -323,6 +326,8 @@ async def build_assets(
         if reused is not None:
             _publish(reused)
             continue
+        if pause.stop_for_budget(storage, ledger, node="m2_assets", unit=scene.scene_id):
+            break
         prompt = scene_background_prompt(cfg, script, scene)
         dest = storage.path("assets", f"scene_{scene.scene_id}.png")
         await _gen_with_retry(

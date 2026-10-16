@@ -195,6 +195,63 @@ async def _reference_request(run, monkeypatch, cfg=None):
     return storage, cfg, provider, cap, got, ledger
 
 
+async def test_budget_gate_stops_new_submits_without_touching_finished_clips(
+    run, monkeypatch
+):
+    """成本到线：**停手问人**，而不是静默出半片（闸门实现见 core/pause.py）。
+
+    这条路径以前完全没有预算检查 —— m4_scene 是本项目最贵的一步
+    （一段场景片段 ¥5–17），旧行为只在 m3/m4_shots/m6 里有 `exceeded()` 判断，
+    也就是说"熔断"根本拦不住场景片段。
+    """
+    import json
+
+    from fastvideo3.core import pause
+    from fastvideo3.core.cost import CostLedger
+    from fastvideo3.core.jobs import JobStore
+    from fastvideo3.modules.m4_scene import generate_scene_clips
+    from fastvideo3.providers.dashscope import DashScopeWan30TalkProvider
+
+    storage, script = run
+    cfg = _cfg()
+    provider = DashScopeWan30TalkProvider("sk-test", "wan3.0-video")
+    cap = _Capture()
+    cap.install(monkeypatch, provider)
+
+    # 已花 120 / 上限 100：到线
+    meta = json.loads((storage.root / "run_meta.json").read_text(encoding="utf-8"))
+    meta["budget_limit_cny"] = 100.0
+    (storage.root / "run_meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    (storage.root / "cost.json").write_text(
+        json.dumps([{"capability": "i2v", "model": "wan3.0-video", "amount_cny": 120.0}]),
+        encoding="utf-8",
+    )
+    # 上一轮已经出过的那段：必须原地不动
+    done = storage.root / "clips" / "scene_s1.mp4"
+    done.write_bytes(b"already-paid")
+
+    ledger = CostLedger(storage, budget_limit_cny=100.0)
+    jobs = JobStore(f"sqlite:///{storage.root / 'jobs.db'}")
+    got = await generate_scene_clips(
+        cfg, provider, script, {}, storage, ledger, jobs,
+        lines=_lines(storage), frames={}, skip_existing=False,
+    )
+    assert got == {}, "到线后一段都不该新提交"
+    assert cap.bodies == [], "不许再发任何创建任务请求"
+    assert done.read_bytes() == b"already-paid", "已付费的产物一个字节都不动"
+    st = json.loads((storage.root / "pause.json").read_text(encoding="utf-8"))
+    assert st["pending"] is True and st["limit_cny"] == 100.0, st
+    assert pause.stop_for_budget(storage, ledger, node="m4_scene") is True
+
+    # 人工确认（抬上限）之后同一次调用就能继续跑，且台账/血缘都不需要特殊处理
+    pause.approve(storage, 200.0)
+    got2 = await generate_scene_clips(
+        cfg, provider, script, {}, storage, CostLedger(storage, budget_limit_cny=200.0),
+        jobs, lines=_lines(storage), frames={}, skip_existing=False,
+    )
+    assert got2 and cap.bodies, "确认后应该照常把剩下的片段补出来"
+
+
 async def test_reference_mode_body_matches_official_contract(run, monkeypatch):
     storage, cfg, provider, cap, got, ledger = await _reference_request(run, monkeypatch)
     assert got, "参考形态必须出片（这一步空返回说明素材又没解析出来）"

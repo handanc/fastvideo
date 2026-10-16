@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from fastvideo3.core.config import AppConfig
 from fastvideo3.core.scenegroup import (
+    CLIP_CAP_SEC,
     MAX_CLIP_SEC,
     MAX_SHOTS_PER_CLIP,
-    SHOT_MAX_SEC,
     SHOT_MIN_SEC,
     describe,
     group_scenes,
@@ -153,29 +153,35 @@ def test_group_cast_is_ordered_dedup_of_speakers_and_present_chars():
     assert len(g.characters) <= 10
 
 
-def test_enforce_shot_durations_clamps_into_2_to_5s():
-    """官方要求每段 2–5 秒；模型给 6 秒/1.5 秒会让场景时间戳对不上，整段提示词就废了。"""
-    from fastvideo3.modules.m1_scripting import enforce_shot_durations
+def test_duration_floor_only_raises_never_clamps():
+    """旧的"钳进 2–5 秒"已删除：时长只在**装不下**时抬高，其余一律不动。
+
+    为什么不再往下钳：镜头时长是人的节奏（6 秒的慢拍不是错误），而官方那句"每段 2–5 秒"
+    管不住的实际问题只有一个 —— 一镜装不下自己的台词会被吞句尾。抬高就够了，压短是越权。
+    """
+    from fastvideo3.core import voice_budget
+    from fastvideo3.core.config import load_config
 
     script = _script([_scene("scene_1", "街道", "日", [
         _shot("shot_1_1", 6.0), _shot("shot_1_2", 1.5), _shot("shot_1_3", 4.0),
     ])])
-    out, notes = enforce_shot_durations(script)
+    out, notes = voice_budget.apply_duration_floor(script, load_config(dotenv_path="none.env"))
     durs = {sh.shot_id: sh.duration_sec for sh in out.all_shots()}
-    assert durs == {"shot_1_1": SHOT_MAX_SEC, "shot_1_2": SHOT_MIN_SEC, "shot_1_3": 4.0}
-    assert len(notes) == 2 and all("→" in n for n in notes), notes
+    assert durs["shot_1_1"] == 6.0, "写长了的不许压短"
+    assert durs["shot_1_3"] == 4.0
+    assert durs["shot_1_2"] >= SHOT_MIN_SEC, durs  # 1.5s 低于最小可行 → 抬
+    assert len([n for n in notes if "→" in n]) == 1, notes
 
 
-def test_grouping_uses_clamped_durations(cfg: AppConfig):
-    """钳位之后才分组：否则 6 秒镜头会让"28 秒场景"实际变成 34 秒，超限被服务端拒。"""
-    from fastvideo3.modules.m1_scripting import enforce_shot_durations
-
+def test_grouping_splits_oversized_scene_without_touching_durations():
+    """超过单段预算线是**拆段**，不是改时长（拆是物理约束，改是越权）。"""
     script = _script([_scene("scene_1", "街道", "日", [_shot(f"shot_1_{i}", 6.0) for i in range(1, 7)])])
-    script, _ = enforce_shot_durations(script)
+    before = [sh.duration_sec for sh in script.all_shots()]
     groups = group_scenes(script)
-    assert [g.shot_count for g in groups] == [6] or all(g.shot_count <= MAX_SHOTS_PER_CLIP for g in groups)
-    assert all(g.duration <= MAX_CLIP_SEC for g in groups)
-    assert sum(g.duration for g in groups) == 30.0
+    assert all(g.duration <= CLIP_CAP_SEC for g in groups), [g.duration for g in groups]
+    assert sum(g.duration for g in groups) == sum(before), "分段不许吃掉或改动任何时长"
+    assert [sh.duration_sec for sh in script.all_shots()] == before
+    assert all(g.scene_ids == ("scene_1",) for g in groups), "拆段共用同一张场景图"
 
 
 # ─────────────────────── 参考素材预算（官方硬上限）───────────────────────
@@ -324,7 +330,6 @@ def test_coverage_never_swallows_lipsync_in_ab_chains(storage):
     """
     import json as _json
 
-    from fastvideo3.core.config import AppConfig
     from fastvideo3.core.progress import scene_covered_shots
 
     script = _mixed_script()

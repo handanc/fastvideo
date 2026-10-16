@@ -933,7 +933,7 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
     shot_by_id = {sh.shot_id: sh for sh in script.all_shots()}
     storage = RunStorage(run_id, root=root.parent)
     groups = []
-    for g in group_scenes(script, max_clip_sec=30.0):
+    for g in group_scenes(script):
         ov = overrides.get(g.group_id) or {}
         speakers = {
             d.character_id
@@ -1200,6 +1200,55 @@ async def generate_scene_frames(run_id: str, group_id: str) -> dict:
             "last_frame": _url(run_id, "storyboard", f"shot_{group.shot_ids[-1]}_last.png")}
 
 
+class BudgetResumeRequest(BaseModel):
+    #: 新的成本上限（元）。留空 = 按"已花 + 剩余预估"自动给一个值。
+    new_limit_cny: float | None = None
+
+
+@app.post("/api/runs/{run_id}/budget/continue")
+def budget_continue(run_id: str, req: BudgetResumeRequest) -> dict:
+    """人工确认"费用已超，继续生成"：抬上限 + 清 pending，返回下一步。
+
+    上限写进 `run_meta.budget_limit_cny`（CLI 子进程与 API 共同的恢复源），所以点完之后
+    「开始生成」就是从**当初停下的那一处**接着跑：已出的产物在盘上、血缘没动，
+    skip_existing 让已完成的不重复花钱。
+    """
+    from fastvideo3.core import pause
+    from fastvideo3.core.cost import estimate_run_cost_cny
+
+    root = _safe_run_root(run_id)
+    storage = RunStorage(run_id, root=root.parent)
+    cfg = _cfg_for_run(root)
+    spent = _spent_cny(root)
+    limit = pause.current_limit(storage, float(cfg.budget_limit_cny or 0))
+    new_limit = float(req.new_limit_cny or 0)
+    if new_limit <= 0:
+        # 默认值取"已花 + 剩余缺口预估上限"，至少比现上限高 20%：
+        # 只清 pending 不抬上限的话，下一段又会立刻停 —— 弹窗会变成死循环。
+        script = _script_or_none(root)
+        est: dict = {}
+        if script is not None:
+            total = sum(float(sh.duration_sec or 0) for sh in script.all_shots())
+            talk = sum(float(sh.duration_sec or 0) for sh in script.all_shots() if sh.dialogues)
+            est = estimate_run_cost_cny(cfg, total, dialogue_sec=talk)
+        rest_hi = float(est.get("hi") or 0)
+        new_limit = max(limit * 1.2, spent + max(20.0, rest_hi * 0.5))
+    if new_limit <= limit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"新上限 ¥{new_limit:.2f} 不高于现上限 ¥{limit:.2f}：确认继续必须抬高上限",
+        )
+    st = pause.approve(storage, new_limit)
+    return {
+        "ok": True,
+        "spent_cny": round(spent, 4),
+        "previous_limit_cny": round(limit, 4),
+        "new_limit_cny": round(new_limit, 4),
+        "approved_at": st.get("approved_at"),
+        "hint": "上限已抬高，点「开始生成」从停下处继续（已完成的产物不重复花钱）",
+    }
+
+
 @app.get("/api/runs/{run_id}/board")
 def production_board(run_id: str) -> dict:
     """制作看板：剧本 + 角色定妆照 + 场景概念图 + 逐镜头(首帧/片段/口型/一致性) + 成片。
@@ -1273,6 +1322,13 @@ def production_board(run_id: str) -> dict:
     total_sec = sum(float(sh.duration_sec or 0) for sh in script.all_shots())
     talk_sec = sum(float(sh.duration_sec or 0) for sh in script.all_shots() if sh.dialogues)
     board["cost_estimate"] = estimate_run_cost_cny(cfg_run, total_sec, dialogue_sec=talk_sec)
+    # 语音预算（**只读软校验**）：这份稿子实际念得完吗、会被拆成几段。
+    # 取代"单句 >30 字"那条绝对值规则 —— 镜头时长可长可短之后它就失真了
+    # （实测 10 镜 600 字≈念 143s 而剧本只 90s，它一条都没报）。
+    # 这里不改任何人写的时长、也不拦任何步骤：片段内部怎么分配秒数是 wan3.0 的自由度。
+    from fastvideo3.core import voice_budget
+
+    board["capacity"] = voice_budget.capacity(script, cfg_run)
     # meta 里落 0 的老 run（历史 bug：`run` 直接写 `--budget` 默认值）要回落到实际生效值，
     # 否则看板显示"熔断 ¥0"、红条永不触发，而真正会跳闸的是 .env 里的 ¥120
     budget_cny = float(meta.get("budget_limit_cny") or 0) or float(cfg_run.budget_limit_cny)
@@ -1617,6 +1673,22 @@ def run_step(run_id: str) -> dict:
     from fastvideo3.core import tasklock
 
     root = _safe_run_root(run_id)
+    # 成本闸门：**到线就先问人**，不在没确认的情况下再花一分。
+    # 判据是 cost.json 里的实时累计，不是开跑前的预估（预估不够只出红幅警告）。
+    from fastvideo3.core import pause
+
+    spent = _spent_cny(root)
+    gate = pause.state(RunStorage(run_id, root=root.parent), spent=spent,
+                       fallback_limit=float((_load_meta(root) or {}).get("budget_limit_cny") or 0)
+                       or float(_cfg_for_run(root).budget_limit_cny))
+    if gate["pending"]:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"⏸ 成本已达上限 ¥{gate['limit_cny']:.2f}（实时已花 ¥{gate['spent_cny']:.2f}）。"
+                "点「确认继续生成」并给出新上限后才能继续，已完成的产物一个不动、不重复花钱。"
+            ),
+        )
     # API 侧先持锁再 spawn：spawn 到子进程建锁之间有约 1 秒空窗，不先持锁则
     # 连点两次会 spawn 两个子进程、同阶段跑两遍烧双份钱。子进程会认领这把锁。
     ok, st = tasklock.acquire(_out(), run_id, "step")
@@ -1658,6 +1730,8 @@ async def _commit_script(
     new_script: Script,
     old_script: Script | None,
     source: str,
+    *,
+    apply_floor: bool = False,
 ) -> dict:
     """剧本落盘的唯一入口（事务实现见 `core/scriptio.commit_script`）。
 
@@ -1681,6 +1755,7 @@ async def _commit_script(
         prev_dict=prev_dict,
         source=source,
         replaced_unparsable=bool(had and old_script is None),
+        apply_floor=apply_floor,
     )
 
 
@@ -1776,18 +1851,27 @@ async def _commit_text_draft(
 ) -> dict:
     """剧本稿保存的收尾：落盘，并把"整理做了什么"作为 notes 回显（说明不是问题，不挡保存）。"""
     try:
-        result = await _commit_script(storage, run_id, script, old, source="text_edited")
+        # 剧本稿是**批量入口**：一次贴进来几十镜，抬时长下限在这条路上做（界面里逐格手填不做）
+        result = await _commit_script(storage, run_id, script, old, source="text_edited",
+                                      apply_floor=True)
     except Exception as e:  # noqa: BLE001  # pydantic 硬约束（台词 >60 字等）
         raise HTTPException(status_code=422, detail=f"剧本不合法：{e}") from e
+    # 说明给人看，但**一屏看不完的说明和报错一样没用**：全量清单另放在响应的 `fixes`
+    # 字段里（想展开可查），`notes` 只留最有用的几条 —— 时长下限（会影响花钱）排在排版整理之前。
+    lines = list(result.get("notes") or [])
     if fixes:
-        # 条数可能上百（markdown 稿子整份都要重排），只摊开前 8 条再给个数 ——
-        # 一屏看不完的"成功说明"和报错一样没用。
-        head = [f"已自动整理为标准剧本稿（{len(fixes)} 处）：" + fixes[0]]
-        head += [f"　{f}" for f in fixes[1:8]]
-        if len(fixes) > 8:
-            head.append(f"　…另有 {len(fixes) - 8} 处同类整理（都是排版，内容没动）")
-        result["notes"] = head + list(result.get("notes") or [])
+        lines = (
+            [f"已自动整理为标准剧本稿（{len(fixes)} 处）：" + fixes[0]]
+            + [f"　{f}" for f in lines]
+            + [f"　{f}" for f in fixes[1:6]]
+        )
         result["fixes"] = fixes
+    cap = 10
+    if len(lines) > cap:
+        hidden = len(lines) - (cap - 1)
+        lines = lines[: cap - 1] + [f"　…另有 {hidden} 条说明（都是排版与时长下限，台词一个字没动）"]
+    if lines:
+        result["notes"] = lines
     return result
 
 
@@ -1929,6 +2013,13 @@ def _cfg_for_run(root: Path) -> Any:
 
 # （已移到 core/scriptio.py）refresh_looks_for_changed_chars 与 cross_check：剧本事务要用，
 # CLI 子进程也要用，留在 API 层会变成"子进程再抄一遍"。
+
+def _spent_cny(root: Path) -> float:
+    """实时累计花费（cost.json）。闸门的判据必须是这个数，不是预估。"""
+    from fastvideo3.core.progress import _spent
+
+    return _spent(root)
+
 
 def _script_cross_check(script: Script) -> list[str]:
     """引用完整性检查的 API 入口（实现见 `core/scriptio.cross_check`，只有一份）。"""

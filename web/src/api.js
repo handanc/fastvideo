@@ -82,6 +82,13 @@ export const api = {
       { method: 'PUT', body: file }).then(unwrap),
   // 开始生成（一次一步）
   steps: (id) => fetch(`/api/runs/${encodeURIComponent(id)}/steps`).then(unwrap),
+  // 成本到线后的人工确认：抬高上限（留空 = 后端按已花+剩余预估给一个值）
+  budgetContinue: (id, new_limit_cny) =>
+    fetch(`/api/runs/${encodeURIComponent(id)}/budget/continue`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(new_limit_cny ? { new_limit_cny: Number(new_limit_cny) } : {}),
+    }).then(unwrap),
   stepRun: (id) => post(`/api/runs/${encodeURIComponent(id)}/step`, {}),
   putScript: (id, script) => fetch(`/api/runs/${encodeURIComponent(id)}/script`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(script),
