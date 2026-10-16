@@ -25,10 +25,16 @@ const gateError = ref('')
 const notice = ref('')
 const suggestedLimit = computed(() => {
   const g = gate.value || {}
-  // 默认给"已花 + 20"，且至少比现上限高 20%：只清标记不抬上限，下一段又立刻停
+  // 三个数取最大：
+  //  ① 现上限 ×1.2 —— 至少抬一点，否则下一段立刻再停；
+  //  ② 已花 + 20 —— 兜底，够再出几段；
+  //  ③ **整片预估上限**（后端按剧本实况算的 cost_estimate.hi）—— 只有它能回答
+  //     "要把这部片跑完需要多少"。少了这一项，建议值会明显偏低：实测一条已花 ¥108、
+  //     还剩 5 段（约 ¥58）的 run，①②只给到 ¥128，跑到一半又要再确认一次。
   const spent = Number(g.spent_cny || 0)
   const limit = Number(g.limit_cny || 0)
-  return Math.max(Math.round(limit * 1.2), Math.round(spent + 20))
+  const estHi = Number(board.value?.cost_estimate?.hi || 0)
+  return Math.max(Math.round(limit * 1.2), Math.round(spent + 20), Math.round(estHi))
 })
 
 watch(
