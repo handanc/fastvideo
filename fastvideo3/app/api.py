@@ -2278,6 +2278,60 @@ def _events_append(root: Path, node: str, status: str, **data: Any) -> None:
         f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
 
 
+@app.delete("/api/runs/{run_id}")
+def delete_run(run_id: str) -> dict:
+    """删除整个任务：run 目录连同产物、台账、血缘、事件流一起从盘上抹掉（不可撤销）。
+
+    三条护栏，缺一条就会变成"点一下少一部片"：
+    - **正在生成的不许删**：子进程还握着这个目录（在写片段、在轮询任务），
+      删到一半会留下半截目录 + 一个指向空气的锁；
+    - 路径只能落在 `OUTPUT_DIR` 里（`_safe_run_root` 已管），删的永远是 run 目录本身；
+    - Windows 上文件被占用（浏览器正在播片段、杀软扫描）会让 rmtree 半途失败 ——
+      重试后仍失败就**如实报错**，并说清目录可能已被部分删除，绝不回一句"删除成功"。
+
+    锁文件在 `OUTPUT_DIR` 层、不在 run 目录里，所以要先释放再删目录，
+    否则会留下一把指向已消失任务的死锁（全系统被它卡住）。
+    """
+    import shutil
+    import time as _time
+
+    from fastvideo3.core import tasklock
+
+    root = _safe_run_root(run_id)
+    st = tasklock.status(_out())
+    if st.get("busy") and st.get("run_id") == run_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"任务 {run_id} 正在生成中（{st.get('kind')}），先等它结束或解锁再删。",
+        )
+    files = [p for p in root.rglob("*") if p.is_file()]
+    n_files, nbytes = len(files), sum(p.stat().st_size for p in files)
+
+    tasklock.release(_out(), run_id)
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            shutil.rmtree(root)
+            last_err = None
+            break
+        except OSError as e:  # 文件被占用（播放器/杀软/资源管理器预览）
+            last_err = e
+            _time.sleep(0.4)
+    if last_err is not None or root.exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"删除未完成：{str(last_err)[:160] if last_err else '目录仍在'}。"
+                   f"多半是浏览器正在播放片段或有进程占用文件 —— 关掉后重试；"
+                   f"目录可能已被部分删除（剩余文件 {sum(1 for p in root.rglob('*') if p.is_file())} 个）",
+        )
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "removed_files": n_files,
+        "freed_mb": round(nbytes / 1048576, 2),
+    }
+
+
 @app.get("/api/runs/{run_id}")
 def run_detail(run_id: str) -> dict:
     """运行详情：meta + 事件流(末100条) + 成本 + 产物 URL 清单。"""

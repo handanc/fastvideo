@@ -82,6 +82,9 @@ export const api = {
   // 建任务：只写 run_meta.json，不花钱；生成由下面的 step 一步一步来
   createRun: (payload) => post('/api/runs', payload),
   runDetail: (id) => fetch(`/api/runs/${encodeURIComponent(id)}`).then(unwrap),
+  // 删除整个任务（连盘上目录一起）：不可撤销，界面必须先弹确认
+  deleteRun: (id) =>
+    fetch(`/api/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(unwrap),
   board: (id) => fetch(`/api/runs/${encodeURIComponent(id)}/board`).then(unwrap),
   pickPortrait: (id, charId, candidate) =>
     post(`/api/runs/${encodeURIComponent(id)}/characters/${encodeURIComponent(charId)}/portrait`,
