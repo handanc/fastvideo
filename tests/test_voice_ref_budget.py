@@ -143,6 +143,61 @@ def test_stale_long_samples_are_recut_when_the_budget_shrinks(storage):
     assert voiceref.within_budget(got5)
 
 
+def test_budget_retrim_does_not_invalidate_paid_clips(storage):
+    """按预算把样本切短**不许**作废已生成的片段 —— 母带一个字节都没变。
+
+    实测 run_20261016_185252：说话人变多导致每段样本从 4s 压到 3.6s，旧实现照样调
+    `record_regeneration` → 3 段已付费片段（约 ¥50）全被标 stale → 用户点「开始生成」
+    把它们重买了一遍，界面上的表现就是"已经有片段了，却又从头开始生成"。
+    """
+    script3 = _script(3)
+    lines3 = _lines(storage, script3, seconds=6.0)
+    group3 = group_scenes(script3)[0]
+    spk3 = [d.character_id for d in script3.all_shots()[0].dialogues]
+    got3, _ = voiceref.build_voice_refs(storage, lines3, group3, spk3)
+    refs3 = sorted(f"audio/{Path(p).name}" for p in got3.values())
+
+    # 一段"已经花钱出好"的场景片段，血缘里挂着这些音色样本
+    clip = storage.root / "clips" / "scene_s1.mp4"
+    clip.write_bytes(b"paid")
+    storage.record_lineage("clips/scene_s1.mp4", refs3 + ["script.json"])
+    assert not storage.is_stale("clips/scene_s1.mp4")
+
+    # 同一批母带，说话人从 3 变 5 → 每段被压到 ~2.9s → 样本必须重切
+    script5 = _script(5)
+    lines5 = _lines(storage, script5, seconds=6.0)
+    group5 = group_scenes(script5)[0]
+    spk5 = [d.character_id for d in script5.all_shots()[0].dialogues]
+    got5, skipped5 = voiceref.build_voice_refs(storage, lines5, group5, spk5)
+    assert len(got5) == 5 and voiceref.within_budget(got5), (got5, skipped5)
+    assert max(voiceref.wav_duration(Path(p)) for p in got5.values()) < 3.5, "确实重切了"
+
+    assert not storage.is_stale("clips/scene_s1.mp4"), (
+        "只是把窗口切短，母带没变 —— 已付费片段不该被作废重买"
+    )
+    assert clip.read_bytes() == b"paid"
+
+
+def test_source_change_still_invalidates_clips(storage):
+    """反例必须守住：**母带真的换了**（改台词/换音色）时，旧片段的声音就对不上了，必须作废。"""
+    script = _script(3)
+    lines = _lines(storage, script, seconds=6.0)
+    group = group_scenes(script)[0]
+    spk = [d.character_id for d in script.all_shots()[0].dialogues]
+    got, _ = voiceref.build_voice_refs(storage, lines, group, spk)
+    refs = sorted(f"audio/{Path(p).name}" for p in got.values())
+    (storage.root / "clips" / "scene_s1.mp4").write_bytes(b"paid")
+    storage.record_lineage("clips/scene_s1.mp4", refs + ["script.json"])
+
+    # 换母带：同一角色指向另一个 wav 文件（等于台词/音色重配过）
+    moved = []
+    for ln in lines:
+        p2 = _wav(storage.root / "audio" / f"v2_{Path(ln.wav_uri).name}", 6.0)
+        moved.append(ln.model_copy(update={"wav_uri": str(p2)}))
+    voiceref.build_voice_refs(storage, moved, group, spk)
+    assert storage.is_stale("clips/scene_s1.mp4"), "母带换了必须作废下游，否则成片用旧嗓子"
+
+
 def test_more_than_five_speakers_drops_the_tail_with_a_note(storage):
     script = _script(7)
     lines = _lines(storage, script)

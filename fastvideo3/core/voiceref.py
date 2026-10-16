@@ -133,6 +133,7 @@ def build_voice_refs(
     """
     out: dict[str, str] = {}
     skipped: list[str] = []
+    trimmed: list[str] = []     # 因预算收紧而重切（但**不作废**已生成片段）的角色
     by_cid = character_lines(lines)  # 全局取源：见 character_lines 的注释（死循环修复）
     names = list(wanted)
     n = min(len(names), max_segments)
@@ -179,18 +180,12 @@ def build_voice_refs(
                 src_rels.append(str(Path(str(x.wav_uri)).relative_to(storage.root)))
             except ValueError:
                 src_rels.append(str(x.wav_uri))
-        # **源没变就复用，绝不 record_regeneration**：每次跑都登记"重切"会把没变的样本
-        # 也当成变更 → 依赖它的场景片段被标 stale → 步骤永久 gap（实测死循环：
-        # 每点一次「开始生成」就作废一次自己刚出的片段）。
-        # 但"长度还合不合当前预算"必须查：说话人变多时 per_sec 会变短，
-        # 沿用上一轮切好的 4s 样本就会让总时长再次顶穿 15s（那时兜底逻辑只能丢人，
-        # 白白少锁一个角色的音色）。重切一次之后长度就达标，下一轮仍然走复用 —— 不成环。
-        if (
-            dest.exists()
-            and not storage.is_stale(rel)
-            and list(storage.upstream_of(rel)) == src_rels
-            and _safe_dur(dest) <= per_sec + 0.2
-        ):
+        # 复用判据分两层，**必须分开**（混成一条会烧钱，见下面 record 分支）：
+        #   same_source = 母带没换（台词/音色都没改）；
+        #   fits        = 现有样本长度仍合当前预算（说话人变多时 per_sec 会变短）。
+        exists_reusable = dest.exists() and not storage.is_stale(rel)
+        same_source = exists_reusable and list(storage.upstream_of(rel)) == src_rels
+        if same_source and _safe_dur(dest) <= per_sec + 0.2:
             out[cid] = str(dest)
             continue
         got = trim_wav(src, dest, per_sec)
@@ -198,11 +193,30 @@ def build_voice_refs(
             skipped.append(f"{cid}: 切样失败（{src.name}）")
             continue
         out[cid] = str(got)
-        # 母带真的换了（改台词/换音色/首次切）→ 登记重生成，作废依赖它的场景片段：
-        # 锁的嗓子变了，旧片段里的声音就对不上新样本了
         try:
-            storage.record_regeneration(rel, src_rels, reason="音色参考重切")
+            if same_source:
+                # 只是**按预算把窗口切短**（这一组说话人变多了），母带一个字节没变：
+                # 不作废下游。旧片段是同一副嗓子的同一段录音锁出来的，重出一段要 ¥6–17，
+                # 换不来任何可听/可见的差别。
+                # 实测 run_20261016_185252：一次重切把 3 段已付费片段全标成 stale
+                #（reason=音色参考重切），用户点「开始生成」就把它们重买了一遍 ——
+                # 表现正是"已经有片段了，却又从头开始生成"。
+                storage.record_lineage(rel, src_rels)   # 血缘照旧登记，图不会漂
+                storage.clear_stale(rel)
+                trimmed.append(cid)
+            else:
+                # 母带真的换了（改台词/换音色/首次切）→ 登记重生成，作废依赖它的场景片段：
+                # 锁的嗓子变了，旧片段里的声音就对不上新样本了
+                storage.record_regeneration(rel, src_rels, reason="音色参考重切")
         except Exception:  # noqa: BLE001  # 血缘登记失败不该影响生成
+            pass
+    if trimmed:
+        try:
+            storage.log_event(
+                "voiceref", "voice_ref_trimmed", chars=trimmed, per_sec=round(per_sec, 2),
+                hint="按官方 15s 预算切短了样本；母带未变，已生成的片段不作废、不重买",
+            )
+        except Exception:  # noqa: BLE001
             pass
     return out, skipped
 
