@@ -37,6 +37,8 @@ from fastvideo3.core.jobs import JobStore
 from fastvideo3.core.prompts import NO_ONSCREEN_TEXT
 from fastvideo3.core.scenegroup import (
     MAX_CLIP_SEC,
+    MAX_REF_AUDIO_TOTAL_SEC,
+    MAX_REF_AUDIOS,
     MAX_REF_IMAGES,
     MIN_CLIP_SEC,
     MODE_NONE,
@@ -396,9 +398,13 @@ def plan_inputs(
     speakers = tuple(dict.fromkeys(
         d.character_id for sid in group.shot_ids for d in (gshots[sid].dialogues if sid in gshots else [])
     ))
-    # 音色候选顺序：本组有台词的角色优先（他们才需要锁声），其余按出场顺序补
+    # 音色参考**只给本组真说话的人**：官方预算是 ≤5 段且总 ≤15 秒，发给一个在本段里
+    # 不开口的人，等于挤掉一个真说话的人的锁声名额；而且提示词的【音色】块只描述说话人，
+    # 多发的样本没有任何一处引用它（实测 run_20261016_185252：scene_2p2 只有 2 个说话人，
+    # 却发了 4 段音色，总量顶到 16s 被服务端拒 → 整组不出片）。
+    # 以前这里会把"其余角色按出场顺序补上"——那是角色名单还只有说话人时写的，
+    # 名单放宽到"只入画的人"之后，这条补位就变成了纯浪费。
     voice_cids = [c for c in speakers if c in group.characters]
-    voice_cids += [c for c in group.characters if c not in voice_cids]
     got_voice, voice_skipped = voiceref.build_voice_refs(
         storage, list(lines or []), group, voice_cids
     )
@@ -412,6 +418,17 @@ def plan_inputs(
     scene_sids = [s for s, pa in scene_files if pa is not None]
     scene_paths = [pa for _, pa in scene_files if pa is not None]
     audio_cids = [c for c in voice_cids if c in got_voice]
+    # 发送前最后一道自查：官方 `reference_audio` ≤5 段且总 ≤15 秒。
+    # `build_voice_refs` 已经按预算切过，这里只兜"样本比请求值长"这类意外 ——
+    # 与其让请求发出去被服务端 400（整组不出片、用户只看到"点了没反应"），
+    # 不如从尾部丢一段并留下台账。实测 run_20261016_185252 就是这么卡住 5 个场景组的。
+    while audio_cids and not voiceref.within_budget(
+        {c: got_voice[c] for c in audio_cids}
+    ):
+        dropped = audio_cids.pop()
+        voice_skipped.append(
+            f"{dropped}: 音色参考超官方预算（≤{MAX_REF_AUDIOS} 段且总 ≤{MAX_REF_AUDIO_TOTAL_SEC:g}s），未发"
+        )
     plan = RefPlan(
         images=tuple((f"图{i + 1}", c) for i, c in enumerate(img_cids)),
         scene_images=tuple((f"图{len(img_cids) + i + 1}", s) for i, s in enumerate(scene_sids)),

@@ -286,6 +286,12 @@ onUnmounted(() => { clearInterval(timer); clearTimeout(noticeTimer) })
         判定为角色+场景生成，但盘上找不到本组的角色图/场景图文件（见「角色图」「场景图」页）。
       </div>
       <div v-if="g.clip_stale" class="alert warn">片段已作废（上游改过），点「生成」重出</div>
+      <!-- 上一次没出片的**具体原因**。本地规格守卫拦下请求时不花钱也不产物，
+           没有这一行，用户看到的就是"点了生成没反应"（实测事故） -->
+      <div v-if="g.clip_error" class="alert err">
+        ⚠ 上次生成失败：{{ g.clip_error }}
+        <span class="muted">（没花到钱，修好原因后点「生成」即可；原因也会记在「事件流与成本」里）</span>
+      </div>
 
 
       <!-- 参考形态：只允许在**已有**的图里选，不允许在这里改图 -->

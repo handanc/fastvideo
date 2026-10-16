@@ -23,11 +23,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastvideo3.core.scenegroup import VOICE_REF_SEC
+from fastvideo3.core.scenegroup import MAX_REF_AUDIO_TOTAL_SEC, MAX_REF_AUDIOS, VOICE_REF_SEC
 from fastvideo3.utils.audio import wav_duration
 
 #: 样本最短可用长度：再短就抓不住音色，不如不发（发了等于给模型一段噪声参考）
 MIN_VOICE_REF_SEC = 1.5
+
+
+def _safe_dur(path: Path) -> float:
+    """读不出时长就当 0（宁可复用，也不要因为一次探测失败就重切一段样本）。"""
+    try:
+        return float(wav_duration(path))
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 def trim_wav(src: Path, dest: Path, max_sec: float) -> Path | None:
@@ -103,17 +111,41 @@ def build_voice_refs(
     wanted: tuple[str, ...] | list[str],
     *,
     per_sec: float = VOICE_REF_SEC,
+    max_segments: int = MAX_REF_AUDIOS,
+    max_total_sec: float = MAX_REF_AUDIO_TOTAL_SEC,
 ) -> tuple[dict[str, str], list[str]]:
-    """按 `plan_references` 给定的名额切样本。返回 `(character_id → wav 路径, 跳过说明)`。
+    """按官方预算切样本。返回 `(character_id → wav 路径, 跳过说明)`。
 
-    返回顺序无关（调用方按 RefPlan.audios 的顺序上传，编号才对得上）；
-    拿不到样本的角色进 `skipped`，由调用方落事件/降级 —— 静默少发一段音色参考，
-    表现就是"这个角色跨场景换了嗓子"，而台账和看板都看不出来。
+    官方硬上限是 `reference_audio` **≤5 段且总时长 ≤15 秒**，超了服务端直接 400。
+    这里做两件事，顺序是有意的：
+
+    1. **先把每段切短，尽量让所有说话人都锁上音色**：`per = min(per_sec, 预算/人数)`。
+       4 个人 → 每人 3.6s，5 个人 → 每人 2.9s，都还在 `MIN_VOICE_REF_SEC`(1.5s) 之上，
+       抓得住音色。反过来做（先按 4s 切、装不下就丢人）会让第 4、5 个说话人**完全没有
+       音色参考** —— 表现是"这两个角色跨场景换了嗓子"，比样本短一点难查得多。
+    2. **段数仍然硬截到 max_segments**：人数超 5 时，多出来的人不发（进 `skipped`，
+       由调用方落降级台账），因为官方就是只收 5 段。
+
+    实测事故（run_20261016_185252）：本函数以前只管切、不管总量，`plan_inputs` 也没做
+    预算裁剪（`scenegroup.plan_references` 做了，但那条实现不在场景片段这条路上）——
+    4 个说话人 × 4s = 16s > 15s，5 个场景组**全部**被本地规格守卫拦下，用户看到的是
+    "点了生成没反应"。预算判据从此只有这一份。
     """
     out: dict[str, str] = {}
     skipped: list[str] = []
     by_cid = character_lines(lines)  # 全局取源：见 character_lines 的注释（死循环修复）
-    for cid in wanted:
+    names = list(wanted)
+    n = min(len(names), max_segments)
+    if len(names) > max_segments:
+        skipped.append(
+            f"音色参考超官方段数上限（≤{max_segments} 段），未发：{'、'.join(names[max_segments:])}"
+            f"（这些角色的嗓子由模型自由发挥，跨场景可能变）"
+        )
+    # 留 0.5s 余量：样本实际长度会因 wav 帧对齐略大于请求值，卡着 15.0 发就是赌
+    room = max(0.0, max_total_sec - 0.5)
+    per_sec = min(per_sec, room / n) if n else per_sec
+    # 不为了凑够 MIN_VOICE_REF_SEC 而突破总预算：宁可样本短一点，也不能整组发不出去
+    for cid in names[:max_segments]:
         cands = by_cid.get(cid) or []
         if not cands:
             skipped.append(f"{cid}: 本组内没有可用台词母带")
@@ -150,10 +182,14 @@ def build_voice_refs(
         # **源没变就复用，绝不 record_regeneration**：每次跑都登记"重切"会把没变的样本
         # 也当成变更 → 依赖它的场景片段被标 stale → 步骤永久 gap（实测死循环：
         # 每点一次「开始生成」就作废一次自己刚出的片段）。
+        # 但"长度还合不合当前预算"必须查：说话人变多时 per_sec 会变短，
+        # 沿用上一轮切好的 4s 样本就会让总时长再次顶穿 15s（那时兜底逻辑只能丢人，
+        # 白白少锁一个角色的音色）。重切一次之后长度就达标，下一轮仍然走复用 —— 不成环。
         if (
             dest.exists()
             and not storage.is_stale(rel)
             and list(storage.upstream_of(rel)) == src_rels
+            and _safe_dur(dest) <= per_sec + 0.2
         ):
             out[cid] = str(dest)
             continue

@@ -932,6 +932,15 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
     scene_by_id = {s.scene_id: s for s in script.scenes}
     shot_by_id = {sh.shot_id: sh for sh in script.all_shots()}
     storage = RunStorage(run_id, root=root.parent)
+    # 每组最近一次生成失败的原因（事件流里 `scene_failed` 带 group 字段）。
+    # 必须有这一项：本地规格守卫拦下请求时**一分钱都没花、也没有产物**，
+    # 卡片上就只剩"待生成"三个字，用户看到的就是"点了生成没反应"，只能反复点
+    # （实测 run_20261016_185252：5 个组全部因音色参考超官方 15s 被拦，界面无一处提示）。
+    last_fail: dict[str, str] = {}
+    for e in _read_events(root, limit=400):
+        if str(e.get("status")) == "scene_failed" and e.get("group"):
+            last_fail[str(e["group"])] = str(e.get("error") or "")[:220]
+
     groups = []
     for g in group_scenes(script):
         ov = overrides.get(g.group_id) or {}
@@ -1019,6 +1028,16 @@ def _scene_groups_payload(run_id: str, root: Path) -> dict:
                 "mode_reason": why,
                 "clip": _url(run_id, "clips", f"scene_{g.group_id}.mp4")
                 if (root / "clips" / f"scene_{g.group_id}.mp4").is_file() else None,
+                # 只在"没有新鲜片段"时显示旧失败原因：已经重出成功还把旧报错挂在那里，
+                # 会让人以为这一段还是坏的
+                "clip_error": (
+                    ""
+                    if (root / "clips" / f"scene_{g.group_id}.mp4").is_file()
+                    and not RunStorage(run_id, root=root.parent).is_stale(
+                        f"clips/scene_{g.group_id}.mp4"
+                    )
+                    else last_fail.get(g.group_id, "")
+                ),
                 "clip_stale": bool((root / "clips" / f"scene_{g.group_id}.mp4").is_file())
                 and RunStorage(run_id, root=root.parent).is_stale(f"clips/scene_{g.group_id}.mp4"),
                 "first_frame": _url(run_id, "storyboard", f"shot_{first_shot}.png")
