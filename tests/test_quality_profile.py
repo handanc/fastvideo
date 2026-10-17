@@ -28,7 +28,10 @@ def test_load_config_720p_profile_overlay(tmp_path, monkeypatch):
     # 尺寸由 RESOLUTION_SIZES 落定（唯一来源）：档位 yaml 不再自己写 resolution，
     # 否则又会出现"选 720P、按 1080P 出片"
     assert cfg.resolution == (720, 1280)
-    assert cfg.models["dashscope_t2i"] == "wanx2.1-t2i-plus"
+    # 文生图**不再按档各写一份**（2026-10-17）：三档同一个出厂模型，差别只可能来自
+    # 「模型选择」里用户点的那一名。所以这里断言的是"与 480P 完全相同"，而不是某个档位值。
+    assert cfg.models["dashscope_t2i27"] == "wan2.7-image"
+    assert cfg.routing["t2i"].default == "dashscope_wan27_image"
     # 图生视频只剩 wan3.0：720P 与 480P 只差分辨率档，不再是另一套模型
     assert cfg.models["dashscope_i2v"] == "wan3.0-video"
     assert "动漫" in cfg.negative_prompt  # 防卡通化硬约束在档

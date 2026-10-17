@@ -39,6 +39,75 @@ def _talk_route(cfg: AppConfig, route: ProviderRouting) -> ProviderRouting:
     return ProviderRouting(default=name, fallback=fb)
 
 
+#: provider 名 → (yaml `models:` 键, 内置默认)。与 `_build_real` 里每个分支的 `mm(...)`
+#: **一一对应**，并由 `tests/test_model_in_effect.py` 逐条与真实装配结果比对钉住。
+#:
+#: 为什么必须有这张表：想知道"这次会打哪个模型"以前只能猜 provider 键。`api`、`doctor`、
+#: `model_catalog` 三处都硬写了 `dashscope_t2i`，于是 t2i 路由换成 `dashscope_wan27_image`
+#: 之后，**面板显示的模型与真正调用的模型是两个东西**（实测：三档都路由到 wan2.7-image，
+#: 面板"默认"仍显示 wanx2.1-t2i-turbo / plus —— 那两个只是兜底路由）。用户在错的基线上
+#: 做选择，比没有默认值更糟。
+_PROVIDER_MODEL_KEY: dict[str, tuple[str, str]] = {
+    "deepseek": ("deepseek_text", "deepseek-chat"),
+    "dashscope_qwen": ("dashscope_text", "qwen3.7-plus"),
+    "dashscope_t2i": ("dashscope_t2i", "wanx2.1-t2i-turbo"),
+    "dashscope_wan27_image": ("dashscope_t2i27", "wan2.7-image"),
+    "siliconflow_flux": ("siliconflow_t2i", "black-forest-labs/FLUX.1-dev"),
+    "dashscope_wan22_i2v": ("dashscope_i2v", "wan2.2-i2v-flash"),
+    "dashscope_wan27_i2v": ("dashscope_i2v", "wan3.0-video"),
+    "dashscope_wan27_audio": ("dashscope_i2v27", "wan2.7-i2v"),
+    "dashscope_wan30_talk": ("dashscope_wan30_talk", "wan3.0-video"),
+    "siliconflow_wan22": ("siliconflow_i2v", "Wan-AI/Wan2.2-I2V-A14B"),
+    "dashscope_wan27_r2v": ("dashscope_r2v", "wan2.7-r2v"),
+    "dashscope_wan22_s2v": ("dashscope_s2v", "wan2.2-s2v"),
+    "dashscope_videoretalk": ("dashscope_retalk", "videoretalk"),
+    "kling_lipsync": ("kling_talk", "kling-v2-master"),
+    "fal_infinitalk": ("fal_talk", "fal-ai/infinitalk"),
+    "dashscope_cosyvoice": ("dashscope_tts", "cosyvoice-v2"),
+    "edge_tts": ("", ""),
+    "dashscope_vlm": ("dashscope_vlm", "qwen-vl-plus"),
+}
+
+#: 外部平台**不吃** `.env`/run 的能力级模型覆盖（`qwen-image-3.0`、`wan3.0-video` 在
+#: SiliconFlow/可灵平台上不存在，漏进兜底就是 404 —— 见 `_build_real` 里那段注释）。
+#: `edge_tts` 同理：它压根没有"模型名"这个概念。
+#: 显示也必须按同一条规则算，否则 `doctor` 会报出一个"根本不会发出去"的名字。
+_NO_OVERRIDE_PROVIDERS = ("siliconflow_", "kling_", "edge_tts")
+
+
+def provider_for(cfg: AppConfig, capability: Capability | str) -> str:
+    """这一份配置会走**哪个 provider**（含协议自动改道、口型通道解析），不装配、不读 KEY。
+
+    路由解析与 `make_provider` 逐步同序（`_talk_route` → `_auto_route`），因为这两件事必须
+    给出同一个答案：面板显示的那个 provider 就是等一下真正被调用的那个。
+    """
+    cap = capability.value if isinstance(capability, Capability) else str(capability)
+    route = cfg.routing.get(cap)
+    if route is None:
+        return ""
+    if cap == Capability.TALK.value:
+        route = _talk_route(cfg, route)
+    return _auto_route(route.default, cap, cfg.model_overrides or {})
+
+
+def model_in_effect(cfg: AppConfig, capability: Capability | str) -> str:
+    """这一份配置**实际会调用**的模型名（run 选择 > `.env` 覆盖 > 路由对应的 yaml 键 > 内置默认）。
+
+    判据与 `mm()` 完全一致，但**不需要 API KEY、不构造 provider**，所以没配 KEY 也能显示。
+    """
+    cap = capability.value if isinstance(capability, Capability) else str(capability)
+    name = provider_for(cfg, cap)
+    key, builtin = _PROVIDER_MODEL_KEY.get(name, ("", ""))
+    if not key:
+        return ""  # 认不出的路由（或 edge_tts 这种没有模型名的通道）就说不清：留空，别编一个
+    if cap == "talk" and name == "dashscope_wan30_talk":
+        return str(_wan30_talk_model(cfg))  # C 链口型有自己的"跟随 i2v 同族"规则
+    picked = str((cfg.model_overrides or {}).get(cap) or "")
+    if picked and not name.startswith(_NO_OVERRIDE_PROVIDERS):
+        return picked
+    return str(cfg.models.get(key, builtin) or "")
+
+
 def make_provider(capability: Capability, cfg: AppConfig, work_dir: Path | None = None) -> Provider:
     """capability → 具体 Provider 实例。
 

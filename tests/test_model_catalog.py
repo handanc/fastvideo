@@ -28,6 +28,8 @@ from fastvideo3.core.model_catalog import (
     FOLLOW_PROFILE,
     SELECTABLE_CAPS,
     choices_for,
+    configured_models,
+    locks_face_capable,
     protocol_error,
     ref_image_warning,
     validate,
@@ -71,7 +73,7 @@ def test_env_talk_model_drives_talk_mode(tmp_path):
     assert p.name == "dashscope_wan30_talk" and p.model == "wan3.0-video"
 
 
-def test_catalog_covers_the_requested_models():
+def test_catalog_covers_the_requested_models(tmp_path):
     """目录就是面板能点什么的全部真相：点名的模型要在，不该在的不能悄悄回来。
 
     三项都按**集合相等**断言（不是 ⊆）：目录多收一个名字，用户就会选到一个"能选出来、
@@ -86,10 +88,16 @@ def test_catalog_covers_the_requested_models():
         c.model for c in CHOICES["text"]
     }
     assert {"qwen-image-2.0", "qwen-image-2.0-pro", "qwen-image-3.0",
-            "qwen-image-3.0-pro", "wan2.7-image", "wan2.7-image-pro",
-            # 480P/720P 的出厂默认也必须可选：面板已去掉"跟随默认"空选项，
-            # 否则"当前生效值"根本不在下拉里，用户无从选起
-            "wanx2.1-t2i-turbo", "wanx2.1-t2i-plus"} == {c.model for c in CHOICES["t2i"]}
+            "qwen-image-3.0-pro", "wan2.7-image", "wan2.7-image-pro"} == {
+        c.model for c in CHOICES["t2i"]
+    }
+    # 文生图可选项**必须每一个都支持参考图**（2026-10-17 三档都出厂锁脸）：
+    # 列一个"选得出来、后端必然拒绝/静默丢锁脸"的名字，比少一个选项更糟。
+    assert all(locks_face_capable(c.model) for c in CHOICES["t2i"])
+    # 面板已去掉"跟随默认"空选项 → **三档的出厂生效值必须在清单里**，否则用户无从选起
+    for res in ("480P", "720P", "1080P"):
+        eff = configured_models(load_config(dotenv_path=tmp_path / "none.env", resolution=res))
+        assert eff["t2i"] in {c.model for c in CHOICES["t2i"]}, (res, eff["t2i"])
     # 图生视频**只剩 wan3.0 一族**（用户裁定："image2video 只保留 wan3.0 系列模型"）：
     # 场景级多镜头、首尾帧、参考素材、原生台词口型都只有这一族有，留着 wan2.7/wan2.2
     # 就是留着一堆"选得出、跑不对"的入口。用 == 而不是 ⊆：多收一个名字同样要被发现。
@@ -121,12 +129,15 @@ def test_configured_models_reads_env_then_yaml(tmp_path):
     assert got["t2i"] == "wan2.7-image"
     assert got["i2v"] == "wan3.0-video-prime"
     assert got["talk"] == "wan3.0-video-prime"
-    # 没配 .env 时回落到 yaml 的档位默认（480P = wanx2.1-t2i-turbo / wan2.2-i2v-flash）
-    bare = configured_models(load_config(resolution="480P", dotenv_path=tmp_path / "none.env"))
-    assert bare["t2i"] == "wanx2.1-t2i-turbo" and bare["i2v"] == "wan3.0-video", (
-        "yaml 档位默认必须落在**目录允许**的模型上：曾经 yaml 写着 wan2.2-i2v-flash，"
-        "面板显示成\"配置指定\"、`validate` 却回 400，默认值自己选不回来"
-    )
+    # 没配 .env 时回落到 yaml 的档位默认。**三档共用同一条文生图**（2026-10-17）：
+    # wan2.7-image —— 出厂值必须落在目录允许、且支持参考图的模型上，否则默认值自己选不回来，
+    # 而锁脸又变成"写着开、实际空转"（曾经 480P 的出厂值是 wanx2.1-t2i-turbo，正是这个形状）。
+    for res in ("480P", "720P", "1080P"):
+        bare = configured_models(load_config(resolution=res, dotenv_path=tmp_path / "none.env"))
+        assert bare["t2i"] == "wan2.7-image", res
+        assert bare["i2v"] == "wan3.0-video", res
+        assert bare["t2i"] in {c.model for c in CHOICES["t2i"]}, res
+        assert locks_face_capable(bare["t2i"]), res
 
 
 def test_effective_model_outside_catalog_is_added_as_a_choice():

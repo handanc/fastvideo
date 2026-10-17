@@ -388,8 +388,8 @@ def model_choices(resolution: str = "1080P", run_id: str = "") -> dict:
     from fastvideo3.core.config import apply_run_overrides
 
     # 通用三项在这里算生效值；口型（talk）单独一块给 —— 它还要带模式与音轨来源，
-    # 而且它的"模型名"不在下面这张 provider 键映射表里
-    from fastvideo3.core.model_catalog import UI_CAPS, ui_catalog
+    # 而且它的模型名由通道决定，不在这三项的算式里
+    from fastvideo3.core.model_catalog import UI_CAPS, locks_face_capable, ui_catalog
 
     tier = resolution.upper() if resolution.upper() in RESOLUTIONS else "1080P"
     base_cfg = load_config(resolution=tier)
@@ -397,12 +397,11 @@ def model_choices(resolution: str = "1080P", run_id: str = "") -> dict:
     cfg = apply_run_overrides(load_config(resolution=tier), meta) if meta else base_cfg
     run_chosen = (meta or {}).get("model_overrides") or {}
 
-    # 能力 → (yaml models 键, 内置默认)：用于没配 KEY 时也能显示档位默认模型
-    keys = {"text": ("dashscope_text", "qwen3.7-plus"),
-            "t2i": ("dashscope_t2i", "wanx2.1-t2i-turbo"),
-            "i2v": ("dashscope_i2v", "wan2.2-i2v-flash")}
+    from fastvideo3.providers.factory import model_in_effect, provider_for
+
     effective: dict[str, str] = {}
     sources: dict[str, str] = {}
+    routed: dict[str, str] = {}
     for cap in UI_CAPS:
         if cap in run_chosen:
             sources[cap] = "run"
@@ -410,21 +409,22 @@ def model_choices(resolution: str = "1080P", run_id: str = "") -> dict:
             sources[cap] = ".env"
         else:
             sources[cap] = "yaml"
-        key, default = keys[cap]
-        model = ""
-        try:  # 装配真实 provider 读它的 model —— 这才是"等一下会打哪个模型"的真相
-            from fastvideo3.providers.base import Capability
-            from fastvideo3.providers.factory import make_provider
-
-            model = str(getattr(make_provider(getattr(Capability, cap.upper()), cfg), "model", ""))
-        except Exception:  # noqa: BLE001  # 没配 KEY 时装配不了，退回按配置解析（不影响选择器可用）
-            model = cfg.model_for(cap, key, default)
-        effective[cap] = model or cfg.model_for(cap, key, default)
+        # 「当前生效值」与真正装配走**同一条判据**（工厂 `model_in_effect`），这里不再另猜
+        # provider 键。上一版硬写着 `dashscope_t2i`，而三档的 t2i 都路由到了
+        # `dashscope_wan27_image` —— 于是面板显示的是这次**根本不会被调用**的 turbo/plus，
+        # 用户等于在一个假的基线上做选择。没配 KEY 也算得出来（不装配 provider）。
+        effective[cap] = model_in_effect(cfg, cap)
+        routed[cap] = provider_for(cfg, cap)
     # 口型不再是可选能力：wan3.0 场景片段自带台词口型。这里只回一个说明块，
     # 让老前端拿到 200 而不是 404，并明确告诉它"没有口型下拉可渲染"。
     return {
         "resolution": tier,
         "run_id": run_id or "",
+        # 每个能力实际走哪个 provider 端点（面板用它解释"为什么这个模型支持锁脸、那个不支持"）
+        "providers": routed,
+        # 文生图当前生效值能不能带参考图 —— 三档出厂都要求锁脸（2026-10-17），
+        # 所以这一位现在只取决于**选了哪个模型**，与分辨率无关
+        "t2i_locks_face": locks_face_capable(effective.get("t2i") or ""),
         "talk": {
             "removed": True,
             "note": "口型由 wan3.0 场景生成自带，不再是可选项；音轨恒为模型原声",

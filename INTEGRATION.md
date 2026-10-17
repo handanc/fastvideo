@@ -891,6 +891,30 @@ wan2.7-i2v，实际跑出来的是 qwen-image-3.0(-pro) 与 wan3.0-video —— 
 **口型不在这里选**：通道由「口型模式」决定（`core/talkmode.py`，模式即通道）。让面板写
 `FV3_TALK_MODEL` 会把模式与通道重新拆成两份事实 —— 正是本项目反复出问题的形状。
 
+### 2026-10-17 补的三处缺口（"面板选了 A、实际跑 B"的另一种形状）
+
+上面那套优先级本身是对的，但**显示侧各自另算了一遍**，于是显示与装配分家：
+
+1. `api.model_choices` / `cli doctor` / `model_catalog.configured_models` 三处都硬写
+   `cfg.model_for("t2i", "dashscope_t2i", …)`，而 t2i 路由早已是 `dashscope_wan27_image`
+   （它读 `dashscope_t2i27` 那个键）。实测三档面板"默认"都显示 `wanx2.1-t2i-turbo/plus`
+   —— 那两个只是**兜底路由**的模型，这次 run 根本不会调用它们。现在唯一来源是
+   `providers.factory.model_in_effect`（与 `mm()` 同一条判据，且**不需要 API KEY**，
+   没配 KEY 也显示得出来），并由 `tests/test_text2image_choice_is_one_knob.py` 逐档、
+   逐个可选项与真实装配比对。
+2. 档位文件不再各写一份文生图（`profile_720P/1080P` 删掉 `providers.t2i` 与
+   `dashscope_t2i*`）：三档共用 `default.yaml` 那一份，差别只可能来自面板点名。
+   这条有结构判据守着（直接读 yaml 正文），因为留一份在档位里，下次有人只改那一档，
+   三档一致性就又变成看运气。
+3. `stage --run-id` 以前只吃命令行参数 → 同一个 run 网页用 A 模型、命令行用 B 模型。
+   现在复用已有 run 时按 `run_meta` 恢复（分辨率档与 fake 也一样，不一致会打印说明）。
+
+顺带：文生图可选项**只列支持参考图的那一族**（wan2.7-image / qwen-image 系）。三档出厂都
+要求「参考图锁脸」，把收不了参考图的 `wanx2.1-t2i-*` 留在下拉里就是"选得出来、后端必然
+拒绝"的自相矛盾界面；它们仍会作为 `.env`/configs 的生效值显示出来，并标出"不支持参考图
+→ 锁脸会失效"（`choices[].locks_face` 一位来自 `model_catalog.locks_face_capable`，
+判据是协议而不是模型名清单，JS 里没有第二份）。
+
 ### `.env` 写入的安全边界（为什么单开一个模块）
 
 `.env` 里躺着 API 密钥，所以：

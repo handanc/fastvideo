@@ -849,13 +849,37 @@ def stage(
 ):
     """单阶段运行（教学用）：独立跑某一环节并查看中间产物。
 
-    ⚠ 这条命令**直接调模块**，不经过 `core/stages.py` 那份装配，因此 1080P 档的参考图
-    锁脸、抽卡选优、风格闸门、降级台账在这里都不生效 —— 只适合看单个环节的产物形状。
+    ⚠ 这条命令**直接调模块**，provider 照常按配置与 run_meta 装配（所以**参考图锁脸是生效的**，
+    2026-10-17 起三档都开），但 `core/stages.py` 那一层的额外机制不在这里：提示词蒸馏、
+    抽卡 best-of-N 与 VLM 选优、`wan2.7-r2v` 参考生视频、兜底供应商与降级台账都跳过；
+    也没有场景级生成那一步（`shots` 是历史的逐镜头路径）。只适合看单个环节的产物形状，
     要出可交付的片请用 `new` + `step`。
     """
     cfg = load_config(resolution=resolution, ablation=ablation or None)
     cfg.fake = fake
     rid = run_id or _new_run_id()
+    if run_id:
+        # **复用已有 run 时，这个 run 记在 run_meta 里的选择说了算**（含网页上选的模型、
+        # 建任务那刻定的分辨率档）。以前这里只吃命令行参数：同一个 run 在网页上点「开始生成」
+        # 用 A 模型、在命令行 `stage` 用 B 模型 —— 产物不同源，而看板看不出是谁跑的。
+        from fastvideo3.core.config import resolution_of_meta
+        from fastvideo3.core.storage import RunStorage
+
+        meta = RunStorage(rid, root=OUTPUT_DIR).load_json("run_meta.json") or {}
+        if meta:
+            tier = resolution_of_meta(meta)
+            if tier != cfg.i2v_resolution:
+                console.print(
+                    f"[yellow]本 run 建任务时定的是 {tier}，--resolution={resolution} 已被忽略"
+                    f"（续跑必须同源）。[/]"
+                )
+            cfg = _cfg_from_meta(meta)
+            if bool(meta.get("fake", cfg.fake)) != fake:
+                console.print(
+                    f"[yellow]本 run 记的是 {'Fake（零成本占位）' if cfg.fake else '真实 API'}，"
+                    f"续跑按它走，--{'fake' if fake else 'real'} 已忽略"
+                    f"（换模式会让同一个 run 的产物不同源）。[/]"
+                )
     asyncio.run(_run_stage(cfg, name, rid, topic))
     console.print(f"[green]✔ stage '{name}' 完成[/]  产物目录: {OUTPUT_DIR / rid}")
 
@@ -1046,22 +1070,21 @@ def doctor(
 
     # ── 模型解析表：.env 覆盖是否真生效、走哪种协议、用哪个 provider 类 ──
     from fastvideo3.providers import protocols
+    from fastvideo3.providers.factory import model_in_effect, provider_for
 
-    for cap, key, builtin in (
-        ("text", "dashscope_text", "qwen3.7-plus"),
-        ("t2i", "dashscope_t2i", "wanx2.1-t2i-turbo"),
-        ("i2v", "dashscope_i2v", "wan2.2-i2v-flash"),
-        ("talk", "dashscope_s2v", "wan2.2-s2v"),
-        ("vlm", "dashscope_vlm", "qwen-vl-plus"),
-    ):
+    for cap in ("text", "t2i", "i2v", "talk", "vlm"):
         route = cfg.routing.get(cap)
         routed = route.default if route else "-"
-        model = cfg.model_for(cap, key, builtin)
-        proto = protocols.infer_protocol(model, cap)
-        want = protocols.provider_for(cap, proto)
-        src = ".env" if cap in cfg.model_overrides else "yaml"
-        note = f"{model} ←{src}  协议={proto or '未知(保持路由)'}  provider={want or routed}"
-        if want and want != routed:
+        # 模型名与 provider 都问工厂那一份判据（`model_in_effect` / `provider_for`）：
+        # 这里以前硬写 `cfg.model_for(cap, "dashscope_t2i", …)`，而 t2i 早已路由到
+        # dashscope_wan27_image —— doctor 报的是这次根本不会被调用的名字，
+        # 自检工具反而成了最难查的那份假证据。
+        model = model_in_effect(cfg, cap)
+        actual = provider_for(cfg, cap) or routed
+        proto = protocols.infer_protocol(model, cap) if model else ""
+        src = ".env" if cap in (cfg.model_overrides or {}) else "yaml"
+        note = f"{model or '未配置'} ←{src}  协议={proto or '未知(保持路由)'}  provider={actual}"
+        if actual != routed:
             note += " [已按协议自动改道]"
         table.add_row(f"模型/{cap}", note)
 

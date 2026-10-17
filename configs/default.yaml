@@ -141,7 +141,7 @@ models:                        # 各能力实际调用的模型名(可热更新,
   dashscope_t2i: wanx2.1-t2i-turbo
   siliconflow_t2i: black-forest-labs/FLUX.1-dev
   # 视频: flash 档 480P ¥0.11/秒（性价比之王）
-  dashscope_i2v: wan3.0-video   # economy 档实发 i2v_resolution=480P → ¥0.3/秒
+  dashscope_i2v: wan3.0-video   # 480P 档实发 i2v_resolution=480P → ¥0.3/秒
   siliconflow_i2v: Wan-AI/Wan2.2-I2V-A14B
   # 口型主通道: 数字人 wan2.2-s2v（480P ¥0.5/秒、720P ¥0.9/秒，新账号送 100 秒）
   dashscope_s2v: wan2.2-s2v

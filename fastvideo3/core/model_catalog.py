@@ -68,15 +68,18 @@ CHOICES: dict[str, list[ModelChoice]] = {
     # （拦不拦由 configs 决定，见 `config.tier_locks_faces`，不在这里抄一份分辨率清单）。
     # ⚠ 清单必须**涵盖 configs 会默认用到的每一个模型**：面板去掉了"跟随默认"这个空选项，
     # 于是"当前生效值"必须本身就是可选项。
+    # 可选清单里**只列支持参考图的文生图**（2026-10-17 定）：三档出厂都要求「参考图锁脸」，
+    # 而 wanx2.1-t2i-turbo / -plus 走异步 text2image 端点、收不了参考图 —— 留在下拉里就是
+    # "选得出来、后端必然拒绝"的自相矛盾界面（本项目对这种界面的判断：比少一个选项更糟）。
+    # 它们并没有消失：作为 .env/configs 的**当前生效值**仍会显示（见 ui_catalog 的补项），
+    # 而 m3 的 require_reference_keyframes 门控 + `ref_image_warning` 继续守住判据。
     "t2i": [
+        ModelChoice("wan2.7-image", "wan2.7-image", "三档出厂值：参考图锁脸靠它 + 单边 1440 上限"),
+        ModelChoice("wan2.7-image-pro", "wan2.7-image-pro", "2.7 高配档：细节更足"),
+        ModelChoice("qwen-image-3.0", "qwen-image-3.0", "支持参考图；立绘/首帧主力"),
+        ModelChoice("qwen-image-3.0-pro", "qwen-image-3.0-pro", "3.0 高配档"),
         ModelChoice("qwen-image-2.0", "qwen-image-2.0", "支持参考图；写实质感与提示词遵循度好"),
         ModelChoice("qwen-image-2.0-pro", "qwen-image-2.0-pro", "2.0 高配档"),
-        ModelChoice("qwen-image-3.0", "qwen-image-3.0", "支持参考图；立绘/首帧主力"),
-        ModelChoice("qwen-image-3.0-pro", "qwen-image-3.0-pro", "3.0 高配档：细节更足"),
-        ModelChoice("wan2.7-image", "wan2.7-image", "三档出厂值：参考图锁脸靠它 + 单边 1440 上限"),
-        ModelChoice("wan2.7-image-pro", "wan2.7-image-pro", "2.7 高配档"),
-        ModelChoice("wanx2.1-t2i-turbo", "wanx2.1-t2i-turbo", "最省，但**不支持参考图** → 任何档选它都会丢掉锁脸"),
-        ModelChoice("wanx2.1-t2i-plus", "wanx2.1-t2i-plus", "构图/质感优于 turbo；同样不支持参考图"),
     ],
     # ── 图生视频（动作镜头 / 空镜 / B 链的运动片段）──
     # wan3.0/wan2.7 走 `input.media` 新协议（→ provider `dashscope_wan27_i2v`），wan2.2 系走
@@ -156,13 +159,12 @@ def validate(capability: str, model: str, extra_allowed: Iterable[str] = ()) -> 
     return None
 
 
-#: 能力 → yaml `models:` 里对应的键（用于算出"当前配置在用哪个模型"）。
-#: 口型的键随模式而变（`talkmode.TalkChannel.model_key`），所以单独处理。
-_YAML_MODEL_KEY = {
-    "text": ("dashscope_text", "qwen3.7-flash"),
-    "t2i": ("dashscope_t2i", "wanx2.1-t2i-turbo"),
-    "i2v": ("dashscope_i2v", "wan3.0-video"),
-}
+#: 面板可选的能力（**口型不在这里**：它的键随通道而变，见下面 `configured_models` 的 talk 分支）。
+#: ⚠ 这里**不再存"能力 → yaml models 键"的映射**：那条键属于**路由**（`dashscope_t2i` 与
+#: `dashscope_wan27_image` 读的是两个不同的键），抄一份在这里就会在路由改动后显示错的模型 ——
+#: 实测过：三档 t2i 都路由到 `wan2.7-image`，面板"默认"还写着 `wanx2.1-t2i-turbo`。
+#: 唯一来源改成 `providers.factory.model_in_effect`（与装配同一条判据）。
+UI_ONLY_CAPS = ("text", "t2i", "i2v")
 
 
 def configured_models(cfg: Any) -> dict[str, str]:
@@ -171,9 +173,14 @@ def configured_models(cfg: Any) -> dict[str, str]:
     这是面板"默认 X"的唯一来源，也是 `validate` 的 `extra_allowed`：
     目录没收录、但配置正在用的名字，必须既显示得出来、也保存得下去。
     """
+    from fastvideo3.providers.factory import model_in_effect
+
     out: dict[str, str] = {}
-    for cap, (key, builtin) in _YAML_MODEL_KEY.items():
-        out[cap] = str(cfg.model_for(cap, key, builtin) or "")
+    for cap in UI_ONLY_CAPS:
+        # 走工厂那份"路由 → models 键"的判据：能力级覆盖 > **当前路由**对应的键 > 内置默认。
+        # 这里绝不能再写死 provider 键，否则路由一改（480P 的 t2i 就从 dashscope_t2i
+        # 改到了 dashscope_wan27_image）面板就会显示一个这次根本不会调用的模型。
+        out[cap] = model_in_effect(cfg, cap)
     # 口型：模式决定通道，通道再决定模型（.env 的 FV3_TALK_MODEL 是最高优先级覆盖）
     from fastvideo3.core.talkmode import channel, provider_name
 
@@ -246,19 +253,36 @@ def ref_image_warning(capability: str, model: str, resolution: str) -> str:
     if capability != "t2i" or not model:
         return ""
     from fastvideo3.core import config as config_mod
-    from fastvideo3.providers import protocols
 
     if not config_mod.tier_locks_faces(resolution):
         return ""
-    if protocols.infer_protocol(model, "t2i") != protocols.T2I_MULTIMODAL:
+    if not locks_face_capable(model):
         gate = config_mod.tier_hard_gates_faces(resolution)
+        ok = "、".join(
+            c.model for c in CHOICES.get("t2i", []) if locks_face_capable(c.model)
+        )
         return (
             f"{config_mod.normalize_resolution(resolution)} 档要求「参考图锁脸」"
             f"（use_reference_keyframes），而 {model} 不走 multimodal-generation 协议、"
             f"不支持参考图 → "
             + ("m3 会在花钱前报错。" if gate else "m3 会静默丢掉参考图，同一角色跨镜头换脸。")
+            + f" 可选：{ok}"
         )
     return ""
+
+
+def locks_face_capable(model: str) -> bool:
+    """这个文生图模型能不能带参考图（= 能不能锁脸）。
+
+    判据与 `ref_image_warning` 同一条（看协议，不另抄模型名清单）：`multimodal-generation`
+    同步端点这一族才收 `ref_image`。前端要用它把"选了这个名字会丢锁脸"标在选项上 ——
+    三档出厂都要求锁脸（2026-10-17），所以这个差别现在与分辨率无关，只与所选模型有关。
+    """
+    if not model:
+        return False
+    from fastvideo3.providers import protocols
+
+    return protocols.infer_protocol(model, "t2i") == protocols.T2I_MULTIMODAL
 
 
 def ui_catalog(effective: dict[str, str], sources: dict[str, str]) -> dict:
@@ -276,14 +300,26 @@ def ui_catalog(effective: dict[str, str], sources: dict[str, str]) -> dict:
         rows: list[dict[str, Any]] = []
         eff = effective.get(cap, "")
         if eff and eff not in {row["model"] for row in choices_for(cap)}:
+            # 生效值不在可选清单里（多半来自 .env 或 configs）：**照实说它能不能锁脸**，
+            # 不要写"仍可继续使用"就完事 —— 一个收不了参考图的 t2i 会让三档的锁脸承诺落空，
+            # 而这条 run 现在就是这么跑的，用户必须看见。
+            risky = cap == "t2i" and not locks_face_capable(eff)
             rows.append(
                 {
                     "model": eff,
                     "label": f"{eff}（配置指定）",
-                    "note": "来自 .env / configs 的当前配置，未收录进可选清单；仍可继续使用",
-                    # 补项不走下面的循环，priced/current 得在这儿一次给齐
+                    "note": (
+                        "来自 .env / configs 的当前配置，未收录进可选清单；"
+                        + (
+                            "**不支持参考图 → 这一档的首帧锁脸会失效**（改选 wan2.7-image / qwen-image 系即可恢复）"
+                            if risky
+                            else "仍可继续使用"
+                        )
+                    ),
+                    # 补项不走下面的循环，priced/current/locks_face 得在这儿一次给齐
                     "priced": _pricing_known(eff),
                     "current": True,
+                    "locks_face": (not risky) if cap == "t2i" else None,
                 }
             )
         for row in choices_for(cap):
@@ -293,6 +329,9 @@ def ui_catalog(effective: dict[str, str], sources: dict[str, str]) -> dict:
                     **row,
                     "priced": bool(m) and _pricing_known(m),
                     "current": eff == m,
+                    # 前端用它给"选了就会丢锁脸"的选项直接标红 —— 判据在后端一条，
+                    # JS 里不再抄一份"哪些模型支持参考图"的清单（抄了就会漂）
+                    "locks_face": locks_face_capable(m) if cap == "t2i" else None,
                 }
             )
         out.append(
@@ -302,6 +341,7 @@ def ui_catalog(effective: dict[str, str], sources: dict[str, str]) -> dict:
                 "effective_model": effective.get(cap, ""),
                 "source": sources.get(cap, "yaml"),  # run | .env | yaml
                 "current_priced": _pricing_known(effective.get(cap, "")),
+                "locks_face": locks_face_capable(effective.get(cap, "")) if cap == "t2i" else None,
             }
         )
     return {"capabilities": out}

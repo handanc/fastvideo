@@ -819,6 +819,18 @@ async def _retry_gen(
                     seed_value=seed,
                     ref_count=len(ref_paths(ref_image)),
                 )
+                if "ref_image" in dropped:
+                    # 事件只进 events.jsonl，人不会去翻；**降级台账才会出现在看板上**。
+                    # 参考图被丢掉 = 这一帧没有锁脸（同一角色可能换脸），是三档共同的
+                    # 交付承诺被打破，必须在看板降级区点名，而不是留一行日志。
+                    storage.log_degradation(
+                        "storyboard",
+                        "lockface_dropped_on_fallback",
+                        f"{tag}：主供应商失败后落到 {fallback.name}({fallback.model})，"
+                        f"它不支持参考图，本次未发 {len(ref_paths(ref_image))} 张角色图",
+                        impact="这一帧的脸由模型自由发挥，可能与该角色的角色图不一致"
+                        "（重出这一帧：把 providers.t2i 换成支持参考图的端点后重跑「分镜首帧」）",
+                    )
             return fallback.name, fallback.model, {"dropped": dropped, "fallback": True}
         except Exception as e:  # noqa: BLE001
             last = e

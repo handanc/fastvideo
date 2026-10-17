@@ -94,6 +94,16 @@ const selectedNote = (cap) => {
   const model = form.model_overrides[cap.capability]
   return (cap.choices || []).find((c) => c.model === model)?.note || ''
 }
+// 文生图能不能带参考图（= 能不能锁脸）：**每位都来自后端**（choices[].locks_face /
+// cap.locks_face），JS 里不抄"哪些模型支持参考图"的清单 —— 抄一份就会漂，
+// 而 480P 那次漂的代价是"开关开着、锁脸从来没生效过"。
+// 没点名 = 跟随档位出厂值，用 cap.locks_face（后端按实际装配算出来的那一位）。
+const selectedLocksFace = (cap) => {
+  const model = form.model_overrides[cap.capability]
+  if (!model) return cap.locks_face
+  const row = (cap.choices || []).find((c) => c.model === model)
+  return row ? row.locks_face : null
+}
 // 不在 pricing.yaml 表内的模型：台账与熔断会按"能力默认价"估算，可能与真实账单不符
 const selectedUnpriced = (cap) => {
   const model = form.model_overrides[cap.capability]
@@ -268,6 +278,14 @@ async function submit() {
             </option>
           </select>
         </label>
+        <!-- 文生图这一行必须说清"选它还能不能锁脸"：三档出厂都要求用角色图出片 -->
+        <div v-if="cap.capability === 't2i' && selectedLocksFace(cap) === false" class="modelNote warnText">
+          ⚠ {{ form.model_overrides.t2i || cap.effective_model }} 不支持参考图 →
+          同一角色跨镜头会换脸（改用 wan2.7-image / qwen-image 系列即可）
+        </div>
+        <div v-else-if="cap.capability === 't2i' && selectedLocksFace(cap) === true" class="modelNote">
+          ✔ 角色图作参考图生成首帧：480P / 720P / 1080P 都锁脸
+        </div>
         <div v-if="selectedNote(cap)" class="modelNote">{{ selectedNote(cap) }}</div>
         <div v-if="selectedUnpriced(cap)" class="modelNote warnText">
           ⚠ 该模型暂无单价数据 → 成本按默认价估算，可能与真实账单不符
