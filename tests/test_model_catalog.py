@@ -226,13 +226,18 @@ def test_validate_rejects_unknown_names_and_non_selectable_caps():
 
 
 def test_ref_image_gate_conflict_is_spelled_out():
-    """high/cinema 强制参考图锁脸：选了不走 multimodal 协议的 t2i 就该提前拦住。
+    """要求锁脸的档选了不走 multimodal 协议的 t2i → 提前拦住（花钱前报错，不是静默漂脸）。
 
     目录里目前没有这类选项，所以这条只作为函数级防线（将来往目录加便宜档时不会漏）。
+    ⚠ 判据来自 configs（`config.tier_locks_faces`），**不再在本函数里抄分辨率清单** ——
+    上一版写着死的 `("720P", "1080P")`，于是 480P 打开锁脸后这条拦截静默失效了一整档。
     """
     assert ref_image_warning("t2i", "wanx2.1-t2i-turbo", "1080P")
     assert ref_image_warning("t2i", "wan2.7-image", "1080P") == ""
-    assert ref_image_warning("t2i", "wanx2.1-t2i-turbo", "480P") == "", "economy 不强制锁脸"
+    # 三档出厂都锁脸（2026-10-17）→ 任何档挑收不了参考图的模型都要被说出来
+    for res in ("480P", "720P", "1080P"):
+        assert ref_image_warning("t2i", "wanx2.1-t2i-turbo", res), res
+        assert ref_image_warning("t2i", "qwen-image-3.0", res) == "", res
 
 
 # ─────────────────────────── 选择真的影响装配 ───────────────────────────

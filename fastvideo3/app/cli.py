@@ -568,7 +568,12 @@ async def _run_step(ctx, storage, cfg, meta, st) -> list[str]:
 def _quality_verdict(report: dict, rounds: int, bad_left: list) -> dict:
     """一致性闸门结论：三种"不通过"必须可区分（真不合格 / 没度量 / 裁判不可信）。"""
     if not report:
-        return {"passed": None, "note": "一致性度量未启用（480P 教学档不做要求）"}
+        # 不再写"480P 教学档不做要求"：三档现在都度量、都锁脸（2026-10-17），
+        # 空报告的原因只剩两个，都得如实说出来 —— 否则"没测"看起来像"测了且通过"。
+        return {
+            "passed": None,
+            "note": "没有一致性报告：本档 `consistency_metric=off`，或度量步骤还没跑到",
+        }
     verdict = {
         "passed": not bad_left,
         "rounds": rounds,

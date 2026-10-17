@@ -855,7 +855,9 @@ watch(() => props.board?.script_version, (v, old) => {
           已测 {{ b.consistency.summary.shots_measured }} 镜 ·
           评审可信 {{ b.consistency.judge_trusted }}
         </p>
-        <p v-else class="muted">无一致性报告（480P 或未跑到度量阶段）</p>
+        <!-- 三档出厂都度量（consistency_metric 与分辨率无关，2026-10-12 裁定；锁脸也无关，2026-10-17），
+             所以"没有报告"只剩两个原因，都不该被写成"480P 天生没有" -->
+        <p v-else class="muted">无一致性报告（本档未开度量，或还没跑到度量这一步）</p>
         <template v-if="b.degradations?.length">
           <h3>本次降级记录（{{ b.degradations.length }} 条）</h3>
           <ul class="degs">

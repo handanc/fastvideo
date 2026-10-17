@@ -297,6 +297,65 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return base
 
 
+def normalize_resolution(raw: Any) -> str:
+    """任意写法 → 合法分辨率档（认不出就按默认档，旧档位名走兼容表）。"""
+    tier = str(raw or DEFAULT_RESOLUTION).strip().upper()
+    if tier not in RESOLUTIONS:
+        tier = LEGACY_QUALITY_TO_RESOLUTION.get(tier.lower(), DEFAULT_RESOLUTION)
+    return tier
+
+
+#: 一致性相关的 generation 位（`configs/*.yaml` 决定的那几项）。
+FACE_LOCK_KEYS = (
+    "use_reference_keyframes",
+    "require_reference_keyframes",
+    "consistency_gate",
+    "consistency_metric",
+)
+
+
+@lru_cache(maxsize=32)
+def _profile_flags_cached(configs_dir: str, tier: str) -> dict[str, Any]:
+    yml = _load_yaml(Path(configs_dir) / "default.yaml")
+    overlay = _load_yaml(Path(configs_dir) / f"profile_{PROFILE_FOR_RESOLUTION[tier]}.yaml")
+    if overlay:
+        _deep_merge(yml, overlay)
+    gen = yml.get("generation") or {}
+    return {k: gen.get(k) for k in FACE_LOCK_KEYS}
+
+
+def profile_flags(resolution: str) -> dict[str, Any]:
+    """这一档**在 configs 里**的一致性承诺（不读 .env、不读环境变量）。
+
+    为什么单开一个入口，而不是让调用方 `load_config(resolution=...)` 再取字段：
+    建任务时的拦截（`model_catalog.ref_image_warning`）和面板的档位说明都要回答同一句
+    话——「这一档到底锁不锁脸」。走 load_config 会把 `.env` 与进程环境变量卷进来，
+    于是同一份 configs 在两台机器上能给出两个答案，而一致性承诺不该跟着机器漂。
+    """
+    tier = normalize_resolution(resolution)
+    yml = _load_yaml(CONFIGS_DIR / "default.yaml")
+    overlay = _load_yaml(CONFIGS_DIR / f"profile_{PROFILE_FOR_RESOLUTION[tier]}.yaml")
+    if overlay:
+        _deep_merge(yml, overlay)
+    gen = yml.get("generation") or {}
+    return {k: gen.get(k) for k in FACE_LOCK_KEYS}
+
+
+def tier_locks_faces(resolution: str) -> bool:
+    """这一档是否要求「首帧带角色参考图」（= 同一个角色用同一张角色图出片）。"""
+    return bool(profile_flags(resolution).get("use_reference_keyframes"))
+
+
+def tier_hard_gates_faces(resolution: str) -> bool:
+    """路由撑不起锁脸时是否**在花钱前报错**（false = 只会记事件、成片照常交付）。"""
+    return bool(profile_flags(resolution).get("require_reference_keyframes"))
+
+
+def tier_auto_reshoots(resolution: str) -> bool:
+    """这一档是否会为不达标镜头**自动重拍**（要花钱，只有 720P/1080P 开）。"""
+    return profile_flags(resolution).get("consistency_gate") == "reshoot"
+
+
 def _resolve_ablation(name: str) -> Path:
     """消融配置路径解析：必须落在 configs/ 内（防路径穿越，同 api.py 的三重防护风格）。
 
@@ -335,17 +394,16 @@ def load_config(
     dotenv_vals = dotenv_values(dotenv_path or PROJECT_ROOT / ".env")
 
     yml = _load_yaml(Path(config_path) if config_path else CONFIGS_DIR / "default.yaml")
-    tier = (
+    # 认不出的写法（含旧档位名）→ 走兼容表，再不行按默认档：配置读不出来就整条流水线停摆，
+    # 不值得为一个显示字段这么做；但换算过程要在事件里看得见（调用方负责）。
+    # 归一化只有一份（`normalize_resolution`）：档位决定一致性承诺，两处各漂一次就会出现
+    # "面板说这档锁脸、真正跑的却是另一档"。
+    tier = normalize_resolution(
         resolution
         or os.getenv("FV3_RESOLUTION")
         or dotenv_vals.get("FV3_RESOLUTION")  # type: ignore[assignment]
         or str((yml.get("generation") or {}).get("i2v_resolution") or DEFAULT_RESOLUTION)
     )
-    tier = (tier or DEFAULT_RESOLUTION).strip().upper()
-    # 认不出的写法（含旧档位名）→ 走兼容表，再不行按默认档：配置读不出来就整条流水线停摆，
-    # 不值得为一个显示字段这么做；但换算过程要在事件里看得见（调用方负责）。
-    if tier not in RESOLUTIONS:
-        tier = LEGACY_QUALITY_TO_RESOLUTION.get(tier.lower(), DEFAULT_RESOLUTION)
     overlay = _load_yaml(CONFIGS_DIR / f"profile_{PROFILE_FOR_RESOLUTION[tier]}.yaml")
     if overlay:
         _deep_merge(yml, overlay)

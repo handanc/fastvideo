@@ -37,12 +37,20 @@ def test_load_config_720p_profile_overlay(tmp_path, monkeypatch):
 
 
 def test_load_config_480p_default_untouched(tmp_path):
+    """480P = `default.yaml` 本体：画质与包装项仍是教学档，**一致性一项都不许少**。
+
+    "untouched" 只指画质/后期那些花钱项。2026-10-17 起参考图锁脸不再随分辨率关掉
+    （细节与档位判据在 `tests/test_480p_face_lock.py`，这里只钉最显眼的两位）。
+    """
     cfg = load_config(dotenv_path=tmp_path / "none.env")
     assert cfg.i2v_resolution == "480P"
     assert cfg.resolution == (540, 960)
     assert cfg.i2v_resolution == "480P"
     assert not cfg.color_grade
-    # 新增质量开关的默认值（480P 零成本教学定位不变）
+    # 一致性：锁脸 + 度量都开，自动重拍关（重拍一段 ¥6–17，教学档不自动烧）
+    assert cfg.use_reference_keyframes and cfg.require_reference_keyframes
+    assert cfg.consistency_metric == "sample" and cfg.consistency_gate == "off"
+    # 新增质量开关的默认值（480P 不抽卡、不自动重拍的成本取向不变）
     assert cfg.asset_candidates == 1
     # 剧本评审交给人工：一次生成，只有台词句长违规才允许重写一次
     assert cfg.max_script_revisions == 1

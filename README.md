@@ -234,16 +234,25 @@ C 链的两个新语义：`voice_source`（**默认 `model`=保留模型原声**
 
 | 层 | 机制 | 生效档位 | 通电判据（盘上证据） |
 |---|---|---|---|
-| 源头 | 角色立绘确定性种子 + best-of-N 选优 + 写实风格闸门 | high(warn)/cinema(warn) | `char_best_of_n{scores,verified}`、`char_style_gate_failed`、`asset_registry.json` 的 `meta.seed/medium` |
-| 首帧 | 立绘作**参考图条件**（`wan2.7-image` 多图协议）+ 同角色跨场景同种子 | high/cinema | `keyframe_gen{ref_count,ref_ids,seed,seed_scope}`；台账 `meta.ref_count` |
-| 运动 | 角色动作镜头走 `wan2.7-r2v` 参考生视频 | cinema | `shot_gen{route:"r2v",ref_ids}`；台账 note `#r2v` |
+| 源头 | 角色立绘确定性种子 + best-of-N 选优 + 写实风格闸门 | 种子全档；抽卡选优仅 1080P | `char_best_of_n{scores,verified}`、`char_style_gate_failed`、`asset_registry.json` 的 `meta.seed/medium` |
+| 首帧 | 立绘作**参考图条件**（`wan2.7-image` 多图协议）+ 同角色跨场景同种子 | **全档**（480P 自 2026-10-17 起也开，见下） | `keyframe_gen{ref_count,ref_ids,seed,seed_scope}`；台账 `meta.ref_count` |
+| 场景片段 | 立绘 + 场景图作 `reference_image`、音色样本作 `reference_audio`，一次调用出一段戏 | 全档（与分辨率无关，一直是通的） | `clips/scene_<组>.json` 的 `mode` / `ref_images` / `dropped` |
+| 运动 | 角色动作镜头走 `wan2.7-r2v` 参考生视频 | 1080P | `shot_gen{route:"r2v",ref_ids}`；台账 note `#r2v` |
 | 文本 | `appearance` 逐字注入 + 外貌卡必留词蒸馏校验 + 全局风格锚/负向词 | 全档 | `distill_attr_lost{missing}`（理想 0 条） |
-| 度量 | VLM 结构化属性位（自校准锚/顺序互换/双人二选一）+ 纯 PIL 色相证伪 | high(sample)/cinema(full) | `consistency_report.json`、`metric_conflict`、`judge_unreliable` |
+| 度量 | VLM 结构化属性位（自校准锚/顺序互换/双人二选一）+ SFace 人脸余弦 + 纯 PIL 色相证伪 | 全档（480P/720P 抽样，1080P 全检） | `consistency_report.json`、`metric_conflict`、`judge_unreliable` |
+| 重拍 | 度量不达标就带参考图自动重做 ≤2 轮 | **仅 720P/1080P**（唯一与分辨率有关的一致性项：重拍要花钱） | `consistency_gate` 事件、`quality_verdict.rounds` |
+
+**「用同一张角色图出同一个角色」三档都成立**（2026-10-17 裁定）。480P 曾经关掉首帧锁脸，
+而且**开着也空转**：它的出厂文生图 `wanx2.1-t2i-turbo` 走异步 text2image 端点、
+结构上收不了参考图，于是每一镜只落一条 `ref_condition_dropped{reason:provider_no_capability}`，
+成片照常交付、看板全绿。现在三档的 t2i 主路由都是 `wan2.7-image`，代价 ¥0.06/张 × 约 21 张
+≈ **+¥1.3/片**（`consistency_gate: reshoot` 仍然只有 720P/1080P 开 —— 那是 ¥6–17/段的重拍费）。
 
 **降级一律响亮**：`ref_condition_dropped`、`fallback_used{dropped:[seed,ref_image]}`、
 `best_of_n_unscored`、`degradations.json`、`run_summary.review_unavailable` —— 只看
 `cost.json` + `events.jsonl` 就能重建"这次 API 实际发了什么"，杜绝"看起来通电、实际无效"。
-cinema 档另有 `require_reference_keyframes` 硬门控：t2i 主供应商不支持参考图时**在花钱前**报错。
+三档都有 `require_reference_keyframes` 硬门控：t2i 主供应商不支持参考图时**在花钱前**报错
+（新建任务与「模型选择」也会用同一条判据先拦，判据取自 `configs`，不在代码里抄分辨率清单）。
 
 ## 项目结构
 

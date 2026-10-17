@@ -2,7 +2,10 @@
 # 用法：复制为 configs/active.yaml 或在命令行指定
 providers:
   text: {default: dashscope_qwen, fallback: deepseek}
-  t2i: {default: dashscope_t2i, fallback: siliconflow_flux}
+  # 基础档（480P）现在承诺「参考图锁脸」并带 require 门控：本臂若还写着收不了
+  # 参考图的 wanx2.1 端点，m3 会在花钱**之前**直接报错（这是门控该有的行为）。
+  # 本臂比的从来不是锁脸，所以跟着基础档走，不在这里另立一份一致性口径。
+  t2i: {default: dashscope_wan27_image, fallback: dashscope_t2i}
   i2v: {default: dashscope_wan22_i2v, fallback: siliconflow_wan22}
   talk: {default: dashscope_wan22_s2v, fallback: kling_lipsync}
   tts: {default: edge_tts, fallback: dashscope_cosyvoice}

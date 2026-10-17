@@ -63,18 +63,19 @@ CHOICES: dict[str, list[ModelChoice]] = {
     # ── 文生图（角色立绘 / 场景图 / 分镜首帧）──
     # t2i 的 provider 键同时决定端点协议：qwen-image* 与 wan2.7-image* 走
     # multimodal-generation **同步** messages 协议（`dashscope_wan27_image`），这一族才支持
-    # 参考图（720P/1080P 的"硬锁脸"依赖它）；wanx2.1* 走异步 text2image 端点、不支持参考图，
-    # 选它 + 720P/1080P 会在建任务时就被 `ref_image_warning` 拦下（不会等到 m3 花钱前才报错）。
+    # 参考图（**三档**的"参考图锁脸"都依赖它，2026-10-17 起 480P 也开）；wanx2.1* 走异步
+    # text2image 端点、不支持参考图，选它会在建任务时就被 `ref_image_warning` 拦下
+    # （拦不拦由 configs 决定，见 `config.tier_locks_faces`，不在这里抄一份分辨率清单）。
     # ⚠ 清单必须**涵盖 configs 会默认用到的每一个模型**：面板去掉了"跟随默认"这个空选项，
-    # 于是"当前生效值"必须本身就是可选项，否则 480P（默认 wanx2.1-t2i-turbo）无值可选。
+    # 于是"当前生效值"必须本身就是可选项。
     "t2i": [
         ModelChoice("qwen-image-2.0", "qwen-image-2.0", "支持参考图；写实质感与提示词遵循度好"),
         ModelChoice("qwen-image-2.0-pro", "qwen-image-2.0-pro", "2.0 高配档"),
         ModelChoice("qwen-image-3.0", "qwen-image-3.0", "支持参考图；立绘/首帧主力"),
         ModelChoice("qwen-image-3.0-pro", "qwen-image-3.0-pro", "3.0 高配档：细节更足"),
-        ModelChoice("wan2.7-image", "wan2.7-image", "720P/1080P 出厂值：参考图锁脸 + 单边 1440 上限"),
+        ModelChoice("wan2.7-image", "wan2.7-image", "三档出厂值：参考图锁脸靠它 + 单边 1440 上限"),
         ModelChoice("wan2.7-image-pro", "wan2.7-image-pro", "2.7 高配档"),
-        ModelChoice("wanx2.1-t2i-turbo", "wanx2.1-t2i-turbo", "480P 出厂值：最省；**不支持参考图**（不锁脸）"),
+        ModelChoice("wanx2.1-t2i-turbo", "wanx2.1-t2i-turbo", "最省，但**不支持参考图** → 任何档选它都会丢掉锁脸"),
         ModelChoice("wanx2.1-t2i-plus", "wanx2.1-t2i-plus", "构图/质感优于 turbo；同样不支持参考图"),
     ],
     # ── 图生视频（动作镜头 / 空镜 / B 链的运动片段）──
@@ -232,20 +233,30 @@ def protocol_error(
 
 
 def ref_image_warning(capability: str, model: str, resolution: str) -> str:
-    """选了不支持参考图的 t2i，而该档位要求硬锁脸 → 花钱前就会报错，提前说出来。
+    """选了不支持参考图的 t2i，而该分辨率档要求锁脸 → 花钱前就会报错，提前说出来。
 
     判据用协议而不是模型名表：`multimodal_sync`（messages 端点）这一族才带 `ref_image`
     （`DashScopeWan27ImageProvider.supports_reference_image=True`），异步 text2image 端点
     不支持 —— 与 m3 的 `require_reference_keyframes` 硬门控是同一条事实，两处各写必然漂。
+
+    **"这一档锁不锁脸"问 configs，不问这里抄的一份分辨率清单**（`config.tier_locks_faces`）：
+    上一版把 `("720P", "1080P")` 写死在函数里，于是 480P 打开锁脸之后这条拦截会静默失效，
+    用户能在面板上挑一个收不了参考图的模型，而 480P 的锁脸就是这么悄悄空转了整档。
     """
-    if capability != "t2i" or not model or (resolution or "").upper() not in ("720P", "1080P"):
+    if capability != "t2i" or not model:
         return ""
+    from fastvideo3.core import config as config_mod
     from fastvideo3.providers import protocols
 
+    if not config_mod.tier_locks_faces(resolution):
+        return ""
     if protocols.infer_protocol(model, "t2i") != protocols.T2I_MULTIMODAL:
+        gate = config_mod.tier_hard_gates_faces(resolution)
         return (
-            f"{(resolution or '').upper()} 档强制「参考图锁脸」（require_reference_keyframes），"
-            f"而 {model} 不走 multimodal-generation 协议、不支持参考图 → m3 会在花钱前报错。"
+            f"{config_mod.normalize_resolution(resolution)} 档要求「参考图锁脸」"
+            f"（use_reference_keyframes），而 {model} 不走 multimodal-generation 协议、"
+            f"不支持参考图 → "
+            + ("m3 会在花钱前报错。" if gate else "m3 会静默丢掉参考图，同一角色跨镜头换脸。")
         )
     return ""
 

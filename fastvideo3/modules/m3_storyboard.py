@@ -91,13 +91,18 @@ async def build_storyboard(
     #  等于把别人的脸塞进被驳回的镜头）。
     gen_ctx: dict[str, dict] = {}
     if char_shots and not cfg.use_reference_keyframes:
-        # 整档未开锁脸：记一条 run 级事件（逐镜 spam 无意义），economy 教学档可见但不吵
+        # 锁脸整档关闭：记一条 run 级事件（逐镜 spam 无意义）。
+        # 三个分辨率档都已出厂开启（2026-10-17），会走到这条的只剩消融臂与人工覆盖 ——
+        # 而那正是必须看得见的场景：一致性机制被人关掉了，成片却照常交付。
         storage.log_event(
             "m3_storyboard",
             "ref_condition_dropped",
             reason="flag_off",
             shots=len(char_shots),
-            hint="该档首帧不带角色参考图，一致性仅靠文本复述+种子",
+            tier=cfg.i2v_resolution,
+            ablation=cfg.ablation or "",
+            hint="该档首帧不带角色参考图，一致性仅靠文本复述+种子"
+            "（三档出厂都是开的：关掉的多半是消融配置或人工覆盖）",
         )
 
     for shot in script.all_shots():

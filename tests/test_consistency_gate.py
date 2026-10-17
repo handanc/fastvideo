@@ -103,7 +103,11 @@ async def test_untrusted_anchor_does_not_burn_money(cfg, outdir):
 
 
 def test_gate_off_for_economy(cfg, outdir):
-    """economy 不做一致性要求：gate=off 时 gate_failures 恒空。"""
+    """`consistency_gate=off` 时 gate_failures 恒空 —— 量出问题也不自动花钱重拍。
+
+    这一档 480P 出厂就是 off（2026-10-17 起 480P 唯一保留的"不"就是它：锁脸与度量都开了；
+    按真实档位取配置的那半边测试在 `tests/test_480p_face_lock.py`）。
+    """
     from fastvideo3.modules.m9_metrics import gate_failures
 
     cfg.consistency_gate = "off"

@@ -2,7 +2,14 @@
 # 2026-08 起默认全百炼单 KEY 栈（性价比选型），文本走模型市场专属端点。
 providers:
   text: {default: dashscope_qwen, fallback: deepseek}
-  t2i: {default: dashscope_t2i, fallback: siliconflow_flux}
+  # 文生图主路由 = wan2.7-image（**支持参考图**）。2026-10-17 起三档统一：
+  # 「同一个角色用同一张角色图出片」是一致性承诺，与分辨率无关 —— 而旧出厂值
+  # wanx2.1-t2i-turbo 走异步 text2image 端点、**结构上就收不了参考图**，
+  # 于是 480P 的锁脸开关即使打开也只是空转（每个镜头落一条
+  # ref_condition_dropped{reason:provider_no_capability}，成片却照常交付）。
+  # 代价：¥0.20/张 vs ¥0.14/张，约 21 张 ≈ **+¥1.3/片**（见 generation 段注释）。
+  # 兜底仍是 turbo（无参考图能力 → 主路由失败时降级**可见**：fallback_used{dropped:[ref_image]}）。
+  t2i: {default: dashscope_wan27_image, fallback: dashscope_t2i}
   # 图生视频只有 wan3.0 一条路（场景级生成 = 一次调用出一段带口型的戏）。wan2.2 旧协议
   # 与 siliconflow 兜底都已删除：混进别的模型等于把同一秒画面切成互不连贯的短片。
   i2v: {default: dashscope_wan27_i2v}
@@ -92,7 +99,24 @@ generation:
   #    权重缺失时自动退回 Tier A/B 并在报告里写 faceid_available=false，绝不静默放行。
   # 注意"量"与"花钱重做"是两件事：度量三档全开；`consistency_gate: reshoot`（自动重拍，
   # 要花钱）仍只在 720P/1080P 打开 —— 480P 教学档量出问题只报告、不自动烧钱。
+  # 这里把 off **写出来**而不是靠代码默认值：三档唯一的差别就是这一条，藏着就没人看得见。
+  # ⚠ 必须加引号：YAML 1.1 把裸 `off/on/yes/no` 解析成布尔，`consistency_gate: off` 会变成
+  # False → pydantic 的 Literal["off","reshoot"] 直接拒绝启动（第一版就栽在这里）。
   consistency_metric: sample
+  consistency_gate: "off"
+  # ── 参考图锁脸：**三档都开**（2026-10-17 用户裁定）─────────────────────────
+  # 「480P 不锁脸」曾经是真故障，不是省钱取舍。它崩成两种样子：
+  #   1) 走「首尾帧」形态的场景组（单角色且无对白的组、界面人工覆盖、跨场景串联）
+  #      首帧只由文字描述生成 → 同一个角色跨镜头换脸；只有「参考生视频」形态的组
+  #      才把角色立绘发进 `reference_image`（那条与分辨率无关，一直是通的）。
+  #   2) 出厂 t2i = wanx2.1-t2i-turbo 不支持参考图 → 开关打开也拿不到任何参考图，
+  #      只在事件里落一条 ref_condition_dropped，成片照常交付、看板全绿。
+  # 所以配套改两处：本段开开关 + 上面的 providers.t2i 换成 wan2.7-image。
+  # 增量成本 ¥0.06/张 × 约 21 张 ≈ **¥1.3/片**（30 秒 480P 台账 ¥4.5–10.5 的量级里）。
+  # 仍然**只有** reshoot 不开：重拍一段场景片段 ¥6–17，教学档不该自动烧这笔钱。
+  use_reference_keyframes: true
+  require_reference_keyframes: true  # 路由撑不起锁脸就在花钱前报错，不要静默漂脸
+  keyframe_seed_scope: cast          # 同角色跨场景同种子（scene_cast 会换场景即换脸）
 
 limits:
   max_parallel_jobs: 4          # 全局异步任务并发上限; 与供应商配额取小
@@ -109,7 +133,11 @@ models:                        # 各能力实际调用的模型名(可热更新,
   # （可选清单与校验的唯一来源是 core/model_catalog.py，前端不抄第二份）。
   dashscope_text: qwen3.7-flash
   deepseek_text: deepseek-chat
-  # 图像: 万相最具性价比文生图
+  # 图像主路由（三档同一个键）：wan2.7-image = multimodal-generation 同步端点，
+  # **这一族才支持参考图** → 首帧锁脸依赖它。¥0.20/张。
+  dashscope_t2i27: wan2.7-image
+  # 兜底/可选：wanx2.1 系异步 text2image 端点，¥0.14/张，**不支持参考图**
+  # （480P 以前就是它当主路由，于是"锁脸"从未生效过一次）
   dashscope_t2i: wanx2.1-t2i-turbo
   siliconflow_t2i: black-forest-labs/FLUX.1-dev
   # 视频: flash 档 480P ¥0.11/秒（性价比之王）

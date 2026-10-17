@@ -444,6 +444,10 @@ def resolutions() -> dict:
     是否自动重拍都由它带出来，用户不必逐条记，也没有第二个旋钮能与之矛盾。
     三类闸门（结构性、技术 QC、身份客观层）**与分辨率无关，任何档都跑** ——
     这是 2026-10-12 的裁定，写死在 configs/default.yaml。
+    「参考图锁脸」同样与分辨率无关（2026-10-17 追加）：三档都用同一张角色图出同一个角色。
+    三档之间剩下的唯一一致性差别是**是否自动重拍**（那是要花钱的动作，只有 720P/1080P 开）。
+    每一行的 `face_lock` / `auto_reshoot` / `note` 都从该档的实际开关算出来，
+    前端不再自己写"480P 不锁脸"这种第二份事实。
     """
     from fastvideo3.core.cost import estimate_run_cost_cny
 
@@ -453,20 +457,29 @@ def resolutions() -> dict:
         # 这里不再二次覆盖 —— 否则又会出现"面板显示 720P、实际按 1080P 出片"
         cfg = load_config(resolution=res)
         est = estimate_run_cost_cny(cfg, 30)
+        # 说明文字**由这一档的实际开关算出来**，不按分辨率名写死两句话：上一版正是写死的，
+        # 于是 480P 打开锁脸之后，面板还在说"480P 不锁脸"，而它已经是锁脸的了。
+        lock = (
+            "参考图锁脸（同一角色始终用同一张角色图出片）"
+            if cfg.use_reference_keyframes
+            else "不锁脸（首帧只靠文字描述，跨镜头容易换脸）"
+        )
+        gate = (
+            "不达标自动重拍 ≤2 轮"
+            if cfg.consistency_gate == "reshoot"
+            else "只核对一致性、不自动重拍（重拍要花钱）"
+        )
         rows.append(
             {
                 "resolution": res,
                 "output_size": list(cfg.resolution),
                 "i2v_resolution": cfg.i2v_resolution,
                 "cost_30s": [est["lo"], est["hi"]],
+                "face_lock": bool(cfg.use_reference_keyframes),
                 "auto_reshoot": cfg.consistency_gate == "reshoot",
                 "candidates_per_shot": cfg.candidates_per_shot,
                 "consistency_metric": cfg.consistency_metric,
-                "note": (
-                    "教学/试跑：量一致性但不自动重拍（重拍要花钱）"
-                    if res == "480P"
-                    else "交付：参考图锁脸 + 度量 + 不达标自动重拍 ≤2 轮"
-                ),
+                "note": f"{lock}；{gate}",
             }
         )
     return {"resolutions": rows}

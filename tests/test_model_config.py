@@ -89,13 +89,19 @@ def test_talk_trial_model_routes_to_its_real_protocol(monkeypatch, tmp_path):
 
 
 def test_fallback_is_the_paid_yaml_model_not_the_trial_one(monkeypatch, tmp_path):
-    """主路径是未开通的试用模型时，兜底必须是 yaml 指向的付费模型（否则跑不动）。"""
-    from fastvideo3.providers.dashscope import DashScopeT2IProvider
+    """主路径是未开通的试用模型时，兜底必须是 yaml 指向的付费模型（否则跑不动）。
+
+    2026-10-17：480P 的 t2i 出厂主路由换成 `dashscope_wan27_image`（参考图锁脸需要它），
+    于是这里的"yaml 付费模型"从 wanx2.1-t2i-turbo 变成 wan2.7-image —— **判据没变**：
+    兜底不吃 .env 的试用模型名。多钉一位：兜底也得收得了参考图，否则锁脸在这条路径上又断一次。
+    """
+    from fastvideo3.providers.dashscope import DashScopeWan27ImageProvider
 
     cfg = _cfg(monkeypatch, tmp_path, FV3_T2I_MODEL="qwen-image-3.0")
     fb = make_fallback(Capability.T2I, cfg)
-    assert isinstance(fb, DashScopeT2IProvider)
-    assert fb.model == "wanx2.1-t2i-turbo"  # 不吃 .env 覆盖
+    assert isinstance(fb, DashScopeWan27ImageProvider)
+    assert fb.model == "wan2.7-image", "兜底必须用 yaml 里的付费模型名，不吃 .env 覆盖"
+    assert fb.supports_reference_image is True
 
 
 def test_third_party_fallback_never_eats_dashscope_override(monkeypatch, tmp_path):

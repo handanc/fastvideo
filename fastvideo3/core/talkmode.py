@@ -266,8 +266,9 @@ def tier_conflict(
         )
     if ch.mode == "scripted_talk":
         parts: list[str] = []
-        if res.startswith("48"):
-            parts.append("480P 不锁脸，人物长相只靠文字描述，跨镜头容易漂。")
+        # 这里以前有一条"480P 不锁脸，人物长相只靠文字描述" —— 已随 480P 开锁脸一起删除
+        # （2026-10-17）。留着它就等于对着一个不存在的前提劝用户加钱：文案也是判据，
+        # 判据改了要回来改文案。
         parts.append("口型与声音都由模型生成（默认用模型原声）；音色由模型定，同一角色跨镜头可能不同。")
         if (voice_source or DEFAULT_VOICE_SOURCE) == "master":
             parts.append(

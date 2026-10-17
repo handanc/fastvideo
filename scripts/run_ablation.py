@@ -59,10 +59,14 @@ async def _gen_script(cfg, topic: str, storage: RunStorage) -> dict:
 async def _run_arm(
     arm: str, run_id: str, topic: str, script_json: dict, fake: bool, with_shots: bool = False
 ) -> dict:
-    cfg = load_config(quality="cinema", ablation=arm)
+    # `quality=` 这个参数已经随档位层一起删除（2026-10-17 前后），现在唯一的旋钮是分辨率；
+    # 四臂各自 yaml 里就写着 `i2v_resolution: 480P`（"只比一致性，不比分辨率"），
+    # 所以这里**不传 resolution**，让臂自己说话。
+    cfg = load_config(ablation=arm)
     cfg.fake = fake
     storage = RunStorage(run_id)
-    storage.save_json("run_meta.json", {"run_id": run_id, "quality": cfg.quality,
+    storage.save_json("run_meta.json", {"run_id": run_id,
+                                        "resolution_tier": cfg.i2v_resolution,
                                         "fake": fake, "ablation": arm,
                                         "base_info": BaseInfo(topic=topic).model_dump()})
     storage.save_json("script.json", script_json)

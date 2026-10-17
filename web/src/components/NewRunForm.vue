@@ -24,11 +24,13 @@ const form = reactive({
   model_overrides: { text: '', t2i: '', i2v: '' },
 })
 
-// ── 分辨率选项（后端给：成片尺寸 / 30s 预估 / 是否自动重拍 / 抽卡数）──────
+// ── 分辨率选项（后端给：成片尺寸 / 30s 预估 / 是否锁脸 / 是否自动重拍 / 抽卡数）──────
+// 这三份兜底数据只在"问不到后端"时用于表单能开起来，文案一律按后端的位拼，
+// 不在 JS 里抄第二份"哪一档锁脸"的判断（抄了就会漂：曾经漂成对着已锁脸的 480P 喊不锁脸）。
 const FALLBACK_RES = [
-  { resolution: '480P', output_size: [540, 960], cost_30s: [5, 11], auto_reshoot: false, note: '' },
-  { resolution: '720P', output_size: [720, 1280], cost_30s: [12, 24], auto_reshoot: true, note: '' },
-  { resolution: '1080P', output_size: [1080, 1920], cost_30s: [36, 66], auto_reshoot: true, note: '' },
+  { resolution: '480P', output_size: [540, 960], cost_30s: [5, 11], face_lock: true, auto_reshoot: false, note: '' },
+  { resolution: '720P', output_size: [720, 1280], cost_30s: [12, 24], face_lock: true, auto_reshoot: true, note: '' },
+  { resolution: '1080P', output_size: [1080, 1920], cost_30s: [36, 66], face_lock: true, auto_reshoot: true, note: '' },
 ]
 const resolutions = ref(FALLBACK_RES)
 const currentRes = computed(
@@ -291,11 +293,17 @@ async function submit() {
       ⚠ 成本上限 <b>¥{{ fuseEff }}</b> 低于预估 <b>¥{{ costHint.lo }}</b>：
       钱用完时对白镜头会<b>没有口型</b>。请提到 ≥¥{{ costHint.fuse }}，或缩短时长。
     </div>
-    <div v-if="!form.fake && form.resolution === '480P'" class="alert err">
-      ⚠ 480P <b>不做人物一致性保证</b>（不锁脸、不自动重做），仅试跑用；交付请选 720P 或 1080P。
+    <!-- 这三句全按后端给的档位事实（face_lock / auto_reshoot）拼，不按分辨率名写死：
+         写死过一次，于是 480P 已经锁脸了面板却还在喊"480P 不锁脸" —— 用户据此多花的钱
+         和被劝退的试跑，都是文案与判据分家造成的。 -->
+    <div v-if="!form.fake && !currentRes.face_lock" class="alert err">
+      ⚠ {{ form.resolution }} <b>不做人物一致性保证</b>（首帧不带角色图，同一角色跨镜头会换脸），
+      仅试跑用。
     </div>
     <div v-else-if="!form.fake" class="alert ok">
-      ✔ {{ form.resolution }}：参考图锁脸；成片前自动核对人物一致性，不达标自动重做 ≤2 轮。
+      ✔ {{ form.resolution }}：参考图锁脸（同一角色始终用同一张角色图出片）；成片前自动核对人物一致性{{
+        currentRes.auto_reshoot ? '，不达标自动重做 ≤2 轮' : '，但不自动重做（重拍要花钱，量出问题只报告）'
+      }}。
     </div>
     <div v-if="task?.busy" class="alert warn">
       任务 <b>{{ task.run_id }}</b> 正在生成中（{{ task.kind }}）；新任务要等它完成才能开始生成。

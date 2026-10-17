@@ -303,6 +303,11 @@ def test_api_resolutions_endpoint_lists_three():
         assert by["1080P"]["auto_reshoot"] is True
         assert by["480P"]["auto_reshoot"] is False, "480P 量但不自动烧钱重拍"
         assert by["480P"]["cost_30s"][0] < by["1080P"]["cost_30s"][0]
+        # 锁脸与分辨率无关（2026-10-17）：三档都必须报告 face_lock=True，
+        # 且说明文字不许出现与该档实际配置相反的那句"不锁脸"
+        for res, row in by.items():
+            assert row["face_lock"] is True, res
+            assert "不锁脸" not in row["note"], f"{res}：{row['note']}"
 
 
 def test_resolution_label_actually_drives_output_size():
