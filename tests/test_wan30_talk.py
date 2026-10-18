@@ -251,7 +251,13 @@ def test_scripted_talk_mode_selects_its_own_channel_and_needs_no_clip(cfg):
     assert needs_clip_for_dialogue("s2v_direct") is False
     assert needs_clip_for_dialogue("audio_overlay") is True
     assert tier_conflict("v2v_overlay", "480P"), "480P 片段喂不进 videoretalk，要提前说"
-    assert tier_conflict("scripted_talk", "1080P"), "音色一致性取舍必须说明"
+    # 默认口径下面板不该挂任何泛泛的风险提示（2026-10-18 用户要求去掉"音色由模型定，
+    # 同一角色跨镜头可能不同"那句）：跨场景锁声正是 `core/voiceref.py` 把说话人音色样本
+    # 发进 `reference_audio` 的目的，天天复读"可能会飘"等于对着已生效的机制报警。
+    # 剩下的冲突只有两条，且都是具体的：人工把音轨换成 master、历史 run 的 B 链喂不进 480P。
+    assert tier_conflict("scripted_talk", "1080P") == ""
+    assert tier_conflict("scripted_talk", "480P") == ""
+    assert "0～2.2" in tier_conflict("scripted_talk", "720P", "master")
     assert tier_conflict("s2v_direct", "1080P") == ""
 
 
