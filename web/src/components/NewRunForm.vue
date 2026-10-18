@@ -89,6 +89,61 @@ async function loadModels() {
 onMounted(loadModels)
 watch(() => form.resolution, loadModels)
 
+// ── 阿里云百炼 API KEY：掩码输入，点别处（失焦）就存进 .env 的 DASHSCOPE_API_KEY ──────
+// 三条自律（前端这一侧的"绝不泄露"）：
+// 1. 值只活在这一个 ref 里：不写 localStorage、不进 URL/查询串、不进任何提示文案；
+// 2. 保存成功后**立刻清空输入框** —— 密钥留在 DOM 里就等于留在内存与崩溃转储里；
+// 3. 显示一律用后端的"有没有"（`GET /api/api-keys` 只回名字与布尔），永不回显值。
+// 留空＝不改动：不发请求，更不会把已存的 KEY 清掉（误触 blur 不该让用户下次跑不出片）。
+const keyRows = ref([])
+const keyDraft = ref('')
+const keyBusy = ref(false)
+const keyNote = ref('')
+const keyError = ref('')
+
+const dashKey = computed(
+  () => keyRows.value.find((k) => k.field === 'dashscope_api_key') || null
+)
+const keyState = computed(() => {
+  const k = dashKey.value
+  if (!k) return '状态未知'
+  if (!k.set) return '未配置'
+  return k.source === 'env' ? '已配置（来自环境变量）' : '已配置（来自 .env）'
+})
+const keyPlaceholder = computed(() =>
+  dashKey.value && dashKey.value.set ? '••••••••（已保存，粘贴新值可替换）' : 'sk-…'
+)
+
+async function loadKeys() {
+  try {
+    keyRows.value = (await api.apiKeys()).keys || []
+  } catch {
+    // 问不到就只显示"状态未知"；输入框照常能用，保存失败会红字说明原因
+    keyRows.value = []
+  }
+}
+onMounted(loadKeys)
+
+async function saveKey() {
+  const value = (keyDraft.value || '').trim()
+  keyNote.value = ''
+  keyError.value = ''
+  if (!value || keyBusy.value) return
+  keyBusy.value = true
+  try {
+    const r = await api.saveApiKey(value)
+    keyNote.value = r.changed
+      ? `✔ 已写入 .env 的 ${r.name}`
+      : `✔ ${r.name} 已是这个值，没有改动文件`
+    keyDraft.value = ''   // 成功后立刻清掉：密钥不该留在输入框里
+    await loadKeys()
+  } catch (e) {
+    keyError.value = `保存失败：${e.message}`
+  } finally {
+    keyBusy.value = false
+  }
+}
+
 const capTitle = (cap) => CAP_TITLE[cap] || cap
 const selectedNote = (cap) => {
   const model = form.model_overrides[cap.capability]
@@ -265,8 +320,10 @@ async function submit() {
 
     <!-- ── 模型选择：清单与"当前生效值"来自 GET /api/model-choices（唯一来源 core/model_catalog.py）
          留空 = 跟随分辨率档；选择落进 run_meta.json，每一步（含续跑）都按原样恢复 ── -->
-    <details v-if="modelCaps.length" class="models" :open="chosenModels.length > 0">
-      <summary>模型选择 — 文本 / 文生图 / 图生视频（wan3.0 自带台词口型）</summary>
+    <!-- 不再 `v-if="modelCaps.length"`：清单问不到时模型行会空，但**API KEY 那一行必须还在**
+         （那正是"跑不起来时用户最需要能填的地方"）。行循环自己带条件。 -->
+    <details class="models" :open="chosenModels.length > 0">
+      <summary>模型选择 — 文本 / 文生图 / 图生视频（wan3.0 自带台词口型）+ 百炼 API KEY</summary>
       <!-- 每行标题只说"默认 X"：X 由后端算出（.env 的 FV3_*_MODEL 优先，其次分辨率档位），
            改 .env 前端显示跟着变，不在 JS 里抄第二份默认值 -->
       <div v-for="cap in modelCaps" :key="cap.capability" class="modelRow">
@@ -291,6 +348,36 @@ async function submit() {
           ⚠ 该模型暂无单价数据 → 成本按默认价估算，可能与真实账单不符
         </div>
       </div>
+
+      <!-- ── 百炼 API KEY：掩码输入，点到别处就存进 .env 的 DASHSCOPE_API_KEY ──
+           放这里而不是单开一节：它与"模型选择"是同一件事（都是"这次用什么跑"的配置），
+           而且面板里只有 `.env` 里这把 KEY 齐了才真跑得起来。
+           输入框显示为 ••••，保存成功后清空；状态文字只说"有没有 / 从哪读到"，永不说值。 -->
+      <div class="modelRow keyRow">
+        <label class="field">
+          <span>
+            {{ dashKey ? dashKey.label : '阿里云百炼 API KEY' }}
+            <em class="muted">{{ keyState }}</em>
+          </span>
+          <input
+            v-model="keyDraft"
+            type="password"
+            :placeholder="keyPlaceholder"
+            autocomplete="off"
+            spellcheck="false"
+            data-lpignore="true"
+            @blur="saveKey"
+            @keyup.enter="saveKey"
+          />
+        </label>
+        <div v-if="keyBusy" class="modelNote muted">保存中…</div>
+        <div v-else-if="keyNote" class="modelNote">{{ keyNote }}</div>
+        <div v-if="keyError" class="modelNote warnText">⚠ {{ keyError }}</div>
+        <div class="modelNote muted">
+          点输入框外面即保存。留空不会改动已存的 KEY；这把 KEY 只写进项目根目录的
+          <code>.env</code>（该文件不入 git），面板不会显示它的值。
+        </div>
+      </div>
     </details>
 
     <label class="check">
@@ -313,7 +400,7 @@ async function submit() {
       请提到 ≥¥{{ costHint.fuse }}，或缩短时长。
       <!-- 这句以前写的是"钱用完时对白镜头会没有口型"：那是闸门改造前的旧行为（到线后静默
            跳过剩余付费提交、步骤照样报完成）。`core/pause.py` 之后停的是"新的付费提交"并
-           开人工审核窗；照旧说"没口型"就是拿一张过期的恐惧图劝人加钱。 -->
+           开人工审核窗，照旧说"没口型"就是拿一张过期的恐惧图劝人加钱。 -->
     </div>
     <!-- 这三句全按后端给的档位事实（face_lock / auto_reshoot）拼，不按分辨率名写死：
          写死过一次，于是 480P 已经锁脸了面板却还在喊"480P 不锁脸" —— 用户据此多花的钱

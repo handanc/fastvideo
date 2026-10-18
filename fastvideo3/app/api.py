@@ -436,6 +436,131 @@ def model_choices(resolution: str = "1080P", run_id: str = "") -> dict:
     }
 
 
+# ───────────────────────── 本地 KEY 的读写（面板里那一个输入框） ─────────────────────────
+#: 面板可以改的密钥 → `.env` 里的变量名。**只有这几个名字**，其余一律拒绝：这不是一个
+#: "通用 .env 编辑器"，它是"把跑通全系统需要的那把 KEY 放进该放的地方"。
+#:
+#: 为什么允许从面板写：多数用户只用 Web 面板、不动 `.env`，而 `load_config` 的优先级是
+#: 环境变量 > `.env` > yaml —— 只能选模型却不能放 KEY，等于"面板配好一切，唯独跑不通"。
+#:
+#: 三条硬规矩（都是这个模块里别处已经付过学费的地方）：
+#: 1. **值绝不回显、绝不写日志、绝不进 run_meta/events/台账** —— 只回名字与布尔；
+#: 2. 只按名字定点改那一行（`core/envfile.py`），注释、空行、排版、别的变量原样保留；
+#: 3. 留空＝不改动，**永远不清空**已有的 KEY（把"没填"当成"想删掉"是最贵的一种误触）。
+_KEY_FIELD_TO_ENV: dict[str, str] = {"dashscope_api_key": "DASHSCOPE_API_KEY"}
+_KEY_LABELS: dict[str, str] = {"DASHSCOPE_API_KEY": "阿里云百炼 API KEY"}
+
+
+def _read_secret(name: str) -> tuple[str, str]:
+    """读一把 KEY：返回 `(值, 来源)`，来源是 `"env"` / `".env"` / `""`。
+
+    判据与 `config.load_config` 一致：进程环境变量优先，其次 `.env` 文件（不一致就会出现
+    "面板显示未配置、实际却配着"或反过来 —— 优先级抄错一份就是这种对不上）。
+    ⚠ **值只供本机内部比较**：`GET` 端点把它折算成 `bool` 才出门，`PUT` 只用它判断
+    "要不要重写"，任何响应、日志、异常文本都不许带上它。
+    """
+    import os
+
+    from dotenv import dotenv_values
+
+    from fastvideo3.core.envfile import env_path
+
+    env_val = str(os.getenv(name) or "")
+    if env_val:
+        return env_val, "env"
+    try:
+        file_val = str((dotenv_values(env_path()) or {}).get(name) or "")
+    except OSError:
+        return "", ""
+    return (file_val, ".env") if file_val else ("", "")
+
+
+def _require_same_site(request: Request) -> None:
+    """改本地文件的接口必须拒绝"别的网页打到本机服务"。
+
+    `allow_origins=["*"]` 对读类接口无所谓（本工具本来就只在本地跑），但写 KEY 不一样：
+    没有这道检查，用户访问的任何一个页面都能向 `127.0.0.1:8765/api/api-keys` 发一个 POST，
+    把本机这把 KEY 换掉。浏览器发跨站请求一定会带 `Origin`/`Referer`，主机名对不上就拒；
+    本机 curl / 无 Origin 的命令行调用照常放行。
+    """
+    origin = str(request.headers.get("origin") or request.headers.get("referer") or "").strip()
+    if not origin:
+        return
+    from urllib.parse import urlparse
+
+    host = urlparse(origin).netloc
+    if host and host != str(request.headers.get("host") or ""):
+        raise HTTPException(
+            status_code=403,
+            detail="只能在打开本机面板的那个页面里改 KEY（检测到来自其它站点的请求）",
+        )
+
+
+class ApiKeyBody(BaseModel):
+    """面板提交来的密钥。字段名是固定的白名单，**不是**任意 `{变量名: 值}` ——
+    后者会把这里变成一个"往 .env 写任意内容"的口子。"""
+
+    dashscope_api_key: str = ""
+
+
+@app.get("/api/api-keys")
+def api_keys() -> dict:
+    """KEY 配置状态（只有名字、有没有、从哪读到 —— 没有值，也没有长度/前缀之类可拼回的东西）。"""
+    rows = []
+    for name in _KEY_FIELD_TO_ENV.values():
+        value, source = _read_secret(name)
+        present = bool(value)
+        rows.append(
+            {
+                "field": next(k for k, v in _KEY_FIELD_TO_ENV.items() if v == name),
+                "name": name,
+                "label": _KEY_LABELS.get(name, name),
+                "set": present,
+                "source": source,
+            }
+        )
+    return {"keys": rows}
+
+
+@app.put("/api/api-keys")
+async def put_api_keys(request: Request, body: ApiKeyBody) -> dict:
+    """把手动输入的百炼 KEY 存进 `.env` 的 `DASHSCOPE_API_KEY`（前端"点别处即保存"）。
+
+    返回体里**没有任何密钥信息**：只有名字、改没改、以及错误说明（异常文本只含路径不含值）。
+    """
+    _require_same_site(request)
+    # 生成中不许换 KEY：换 KEY 就是换账号，跑到一半换过去会让"已花 ¥X / 成本上限"这套账
+    # 与真实账单对不上（前半段扣 A 账户、后半段扣 B 账户），而且用户会以为暂停是自己设的
+    # 上限生效了。与「改模型」同一类判据，复用同一把锁。
+    _require_idle("换 API KEY")
+    name = _KEY_FIELD_TO_ENV["dashscope_api_key"]
+    value = (body.dashscope_api_key or "").strip()
+    if not value:
+        # 留空＝没改动：既不写盘，也不清空已有的 KEY（误触 blur 不该让用户下次跑不出片）
+        return {"name": name, "saved": False, "changed": False, "note": "留空不改动"}
+    if len(value) < 8 or any(c.isspace() or c == "#" for c in value):
+        raise HTTPException(
+            status_code=400,
+            detail="这串内容看起来不像完整的 API KEY（太短，或含空格/换行）—— 请整段重新粘贴",
+        )
+    current, _src = _read_secret(name)
+    if current == value:
+        # 同值不写盘：少一次改写就少一次把 .env 写坏的机会（也是"我明明没改却动了文件"的源头）
+        return {"name": name, "saved": True, "changed": False, "note": "与当前配置相同，未写盘"}
+    from fastvideo3.core.envfile import update_env_vars
+
+    changed, err = update_env_vars({name: value})
+    if err:
+        raise HTTPException(
+            status_code=500,
+            detail=f"写入 .env 失败：{err}。可以手动把 {name}=sk-… 写进项目根目录的 .env 文件。",
+        )
+    # 让进程内缓存的配置实例失效：`get_config()` 是 lru_cache，不重取的话"存了 KEY 但
+    # 面板仍显示未配置"（而用户刚刚才按下保存，这种不一致最让人怀疑没保存成功）。
+    config_mod.get_config.cache_clear()
+    return {"name": name, "saved": True, "changed": bool(changed), "note": "已保存"}
+
+
 @app.get("/api/resolutions")
 def resolutions() -> dict:
     """面板的分辨率选项（480P/720P/1080P）与每一档实际会怎么跑。

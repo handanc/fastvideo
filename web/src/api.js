@@ -75,6 +75,16 @@ export const api = {
     }).then(unwrap),
   // 分辨率选项（480P/720P/1080P → 内部档位 + 30s 预估），映射只在后端一份
   resolutions: () => fetch('/api/resolutions').then(unwrap),
+  // 本地 KEY 的配置状态：后端只回「有没有 + 从哪读到」，**永远不回值**
+  apiKeys: () => fetch('/api/api-keys').then(unwrap),
+  // 把百炼 KEY 存进项目根目录 .env 的 DASHSCOPE_API_KEY（输入框失焦即保存）。
+  // ⚠ 这条请求带着密钥：不写 localStorage、不写日志，前端在成功后立刻清空输入框。
+  saveApiKey: (dashscopeApiKey) =>
+    fetch('/api/api-keys', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dashscope_api_key: dashscopeApiKey }),
+    }).then(unwrap),
   // 删成片：删掉后「拼接成片」回到缺口，重点一次即可零 API 费用重合成
   deleteFinal: (id) =>
     fetch(`/api/runs/${encodeURIComponent(id)}/final`, { method: 'DELETE' }).then(unwrap),

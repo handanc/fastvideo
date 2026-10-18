@@ -170,6 +170,9 @@ video.final { width: 100%; max-width: 420px; border-radius: var(--radius); backg
 .modelsIntro { margin: 8px 0 10px; font-size: 12px; }
 .modelRow { margin-bottom: 12px; }
 .modelRow select { width: 100%; }
+/* 百炼 API KEY 那一行：与模型行分开一点，输入框里的掩码点拉开间距更好确认"贴全了没有" */
+.keyRow { margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--line, #333); }
+.keyRow input { width: 100%; letter-spacing: .14em; }
 .modelNote { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .modelNote.warnText { color: var(--warn); }
 

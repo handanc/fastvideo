@@ -66,17 +66,28 @@ def _split_inline_comment(indented: str) -> str:
     return m.group(1) if m else ""
 
 
-def update_env_models(models: dict[str, str], path: Path | None = None) -> tuple[list[str], str | None]:
-    """把 `models`（能力→模型名）写进 `.env` 对应行，返回 `(改动的变量名, 错误说明或 None)`。
+def update_env_vars(values: dict[str, str], path: Path | None = None) -> tuple[list[str], str | None]:
+    """把 `{环境变量名: 值}` 逐行写进 `.env`，返回 `(改动的变量名, 错误说明或 None)`。
+
+    这是底层的**按名写回**入口（`update_env_models` 只是把"能力→模型名"翻译成变量名再进来）。
+    单独开这一层是为了让 API KEY 这类**不是模型**的值走同一份行编辑代码 —— 两条"改 .env"的
+    实现必然一条干净一条粗糙，而这个文件里躺着密钥，粗糙的那条最容易把别的行改坏。
 
     规则（都是为了不碰用户的其它配置）：
     - 只改值、只追加缺失行，**从不删除**任何行；
-    - 注释掉的行（`# FV3_T2I_MODEL=…`）**不替他打开** —— 那是用户主动关掉的开关；
+    - 注释掉的行（`# DASHSCOPE_API_KEY=…`）**不替他打开** —— 那是用户主动关掉的开关；
       需要生效时在文件末尾追加一条未注释的行（dotenv 里后定义覆盖前定义，语义一致）；
-    - 空值＝"跟随画质档位"，不写回（否则会把用户的 `.env` 清成未知状态）。
+    - **空值不写回**：留空＝"不改/跟随现状"，把它当"清空"会把用户的 `.env` 变成未知状态；
+    - 值里含空白或 `#` 的直接拒绝（不是剪掉）：dotenv 不加引号时这些字符会让值被截断，
+      写进去就是个静默失效的 KEY —— 与其存坏值，不如当场说清楚。
     """
-    if not models:
+    writes = {k: (v or "").strip() for k, v in (values or {}).items()}
+    writes = {k: v for k, v in writes.items() if k and v}
+    if not writes:
         return [], None
+    bad = [k for k, v in writes.items() if any(c.isspace() or c == "#" for c in v)]
+    if bad:
+        return [], f"这些变量含空格或 #，写进 .env 会被截断（不写回）：{'、'.join(bad)}"
     target = path or env_path()
     tmp = target.with_name(target.name + ".fv3tmp")
     changed: list[str] = []
@@ -88,11 +99,7 @@ def update_env_models(models: dict[str, str], path: Path | None = None) -> tuple
         lines = raw.split(nl) if raw else []
         ends_with_newline = raw.endswith("\n")  # 原本没有尾换行就不强行加
 
-        for cap, model in models.items():
-            key = ENV_KEY_FOR_CAP.get(cap)
-            name = (model or "").strip()
-            if not key or not name:
-                continue
+        for key, name in writes.items():
             prefix = f"{key}="
             hit = False
             for i, line in enumerate(lines):
@@ -114,10 +121,25 @@ def update_env_models(models: dict[str, str], path: Path | None = None) -> tuple
         tmp.write_bytes(out.encode("utf-8"))  # 与读取对称：不重编码、不翻译行尾
         os.replace(tmp, target)
         return changed, None
-    except Exception as e:  # noqa: BLE001  # 写不回不能影响建任务（run_meta 里已有精确选择）
+    except Exception as e:  # noqa: BLE001  # 写不回不能影响主流程（调用方自己去提示）
         try:
             if tmp.exists():
                 tmp.unlink()
         except OSError:
             pass
+        # 异常文本可能带路径，但**绝不带值**：值只出现在 `writes` 里，不参与消息拼装。
         return changed, f"{type(e).__name__}: {e}"
+
+
+def update_env_models(models: dict[str, str], path: Path | None = None) -> tuple[list[str], str | None]:
+    """把 `models`（能力→模型名）写进 `.env` 对应行，返回 `(改动的变量名, 错误说明或 None)`。
+
+    行编辑规则见 `update_env_models` → `update_env_vars`（唯一一份实现）；这里只负责
+    "能力名 → 环境变量名"的翻译，以及把空值（＝跟随画质档位）挑掉不写回。
+    """
+    mapped = {
+        ENV_KEY_FOR_CAP[cap]: name
+        for cap, name in (models or {}).items()
+        if cap in ENV_KEY_FOR_CAP
+    }
+    return update_env_vars(mapped, path)
