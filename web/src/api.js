@@ -85,6 +85,8 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ dashscope_api_key: dashscopeApiKey }),
     }).then(unwrap),
+  // 真探一次（≈¥0.001）：只有用户点「测一下」时才发，前端绝不自动调它
+  probeApiKey: () => fetch('/api/api-keys/probe', { method: 'POST' }).then(unwrap),
   // 删成片：删掉后「拼接成片」回到缺口，重点一次即可零 API 费用重合成
   deleteFinal: (id) =>
     fetch(`/api/runs/${encodeURIComponent(id)}/final`, { method: 'DELETE' }).then(unwrap),

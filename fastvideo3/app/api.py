@@ -64,6 +64,29 @@ from fastvideo3.core.storage import (
 app = FastAPI(title="FastVideo3 API", description="多智能体短剧视频生成 Web 服务", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+
+@app.middleware("http")
+async def no_cache_html_shell(request: Request, call_next):
+    """`index.html` 必须每次回头问服务器"还是这份吗"，哈希过的 /assets 才许长期缓存。
+
+    真实故障（2026-10-18 用户报"面板里找不到新加的输入框"）：`StaticFiles` 默认**不给任何
+    Cache-Control**，只给 ETag。没有 Cache-Control 时浏览器按"启发式缓存"自己决定留多久
+    （常见是几天），于是 `npm run build` 出了新哈希、`index.html` 也指向新文件，用户刷新
+    读到的却还是**缓存里的旧 `index.html`** → 继续加载旧 bundle。表现就是"后端重启了、
+    代码是对的，界面上却没有那个功能"，而且只能靠 Ctrl+F5 撞运气 —— 让人怀疑功能没做。
+
+    `no-cache` 不是"不缓存"：浏览器仍然存，但每次都要带 `If-None-Match` 问一次，未变就 304
+    （几百字节），变了才回新文件。`/assets/index-<hash>.js` 是内容寻址的，改一个字节就换名，
+    所以那边给 `immutable` 反而更快也更准。
+    """
+    response = await call_next(request)
+    path = (request.url.path or "").lower()
+    if path in ("/", "/index.html") or path.endswith("/index.html"):
+        response.headers["Cache-Control"] = "no-cache"
+    elif path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
+
 _NAME_RE = re.compile(r"^[\w.-]+$")  # run_id / 文件名白名单（拒绝路径分隔符）
 _ALLOWED_STAGES = frozenset(STAGES)
 _RECENT_SEC = 120  # 目录最近 2 分钟有写入 → 视为运行中
@@ -559,6 +582,58 @@ async def put_api_keys(request: Request, body: ApiKeyBody) -> dict:
     # 面板仍显示未配置"（而用户刚刚才按下保存，这种不一致最让人怀疑没保存成功）。
     config_mod.get_config.cache_clear()
     return {"name": name, "saved": True, "changed": bool(changed), "note": "已保存"}
+
+
+@app.post("/api/api-keys/probe")
+async def probe_api_keys(request: Request) -> dict:
+    """**用户点了才算**的一次真探活：这把 KEY 到底能不能用（成本 ≈¥0.001）。
+
+    为什么需要它：`set=True` 只说明"字符串存在"。真实失败长这样 —— 保存成功、绿勾出现，
+    第一步就报 `Arrearage` / `InvalidApiKey` / 连不上。没有探活，用户只能一路点下去才知道
+    跑不通（"明明保存了却跑不动"是同一件事）。
+
+    三条判据上的自律：
+    1. **探的是文本能力的模型**（`qwen3.7-*` 这一族走 chat 端点）。拿 `wan2.7-image` 这类
+       非 chat 模型去探，端点会回"content 应为列表"这种**请求形状**错误，旧实现把它当 401
+       判成"KEY 无效" → 指着用户的好 KEY 喊错，比不探更坏（实测）；
+    2. 探活要花钱，所以绝不自动跑：`/api/api-keys` 与建任务流程都不调用它，只有这个按钮调；
+    3. 响应里**没有任何密钥**：`detail` 用当前配置里的 KEY 字符串反查并打码后才出门
+       （上游异常文本理论上可能回显请求内容，这一道是兜底）。
+    """
+    _require_same_site(request)
+    _require_idle("做账户探活")
+    # 明确按 `envfile.env_path()` 读（生产里就是项目根目录的 .env，与 `load_config()` 同一路径）：
+    # 这样"探的是不是刚存进去的那把 KEY"在测试里可控，也不会因为测试改了别处的 .env 而探错账户。
+    from fastvideo3.core.envfile import env_path
+    from fastvideo3.providers.dashscope import probe_account
+    from fastvideo3.providers.factory import model_in_effect
+
+    cfg = load_config(dotenv_path=env_path())
+    key = cfg.dashscope_api_key
+    if not key:
+        raise HTTPException(status_code=400, detail="还没配置 KEY：先在面板里填一次并保存")
+
+    # 只探 chat 族：`probe_account` 打的是 OpenAI 兼容的 chat/completions 端点
+    probe_model = model_in_effect(cfg, "text") or "qwen3.7-flash"
+    status, detail = await probe_account(key, probe_model)
+
+    def scrub(text: str) -> str:
+        """把可能出现在任何文本里的密钥本体打码 —— 出门前的最后一道。"""
+        return str(text or "").replace(key, "***已隐藏***")
+
+    advice = {
+        "ok": "✔ KEY 有效、账户正常，可以开始生成",
+        "arrears": "账户欠费或未开通模型：去百炼控制台充值/开通后再试（KEY 本身没问题）",
+        "invalid_key": "这把 KEY 被账户拒绝：确认是否复制完整、是否属于中国内地（北京）地域",
+        "unreachable": "连不上百炼端点：检查网络/代理，或服务暂时不可用（稍后再试）",
+    }.get(status, detail or "探活完成")
+    return {
+        "status": status,
+        "usable": status == "ok",
+        "model": probe_model,
+        "detail": scrub(detail),
+        "advice": advice,
+    }
 
 
 @app.get("/api/resolutions")

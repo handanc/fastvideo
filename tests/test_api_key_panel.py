@@ -187,6 +187,124 @@ def test_cannot_swap_key_mid_generation(client, dotenv, outdir):
     assert _put(client, NEW_KEY).status_code == 200
 
 
+# ───────────────────────── 探活：用户自己按的那一颗 ─────────────────────────
+@pytest.fixture
+def stub_probe(monkeypatch):
+    """把真请求换成可编程的桩 —— 测试**绝不**打百炼端点（那会花真钱，也不该依赖网络）。"""
+    calls: list[tuple[str, str]] = []
+
+    async def fake_probe(api_key: str, model: str = "qwen3.7-plus") -> tuple[str, str]:
+        calls.append((api_key, model))
+        return stub_probe.result  # type: ignore[attr-defined]
+
+    stub_probe.result = ("ok", "KEY 有效，账户正常")
+    stub_probe.calls = calls
+    import fastvideo3.providers.dashscope as ds
+
+    monkeypatch.setattr(ds, "probe_account", fake_probe)
+    return stub_probe
+
+
+def test_probe_reports_ok_without_the_key(client, dotenv, stub_probe):
+    r = client.post("/api/api-keys/probe")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["usable"] is True and body["status"] == "ok"
+    assert SECRET not in r.text and NEW_KEY not in r.text
+    # 探的是 chat 族（文本模型）：拿 wan2.7-image 去探会收到"content 应为列表"这种
+    # 请求形状错误，被判成"KEY 无效"就是指着好 KEY 喊错
+    assert stub_probe.calls and stub_probe.calls[0][1].startswith("qwen"), stub_probe.calls
+
+
+def test_probe_detail_is_scrubbed_of_the_key(client, dotenv, stub_probe):
+    """上游异常文本理论上可能回显请求内容 —— 出门前那一道打码不许省。"""
+    stub_probe.result = ("invalid_key", f"Bad key: {SECRET} for model x")
+    r = client.post("/api/api-keys/probe")
+    assert r.status_code == 200 and r.json()["usable"] is False
+    assert SECRET not in r.text
+    assert "***已隐藏***" in r.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "status,expect_usable",
+    [("ok", True), ("arrears", False), ("invalid_key", False), ("unreachable", False)],
+)
+def test_probe_status_maps_to_advice(client, dotenv, stub_probe, status, expect_usable):
+    stub_probe.result = (status, "上游原文")
+    body = client.post("/api/api-keys/probe").json()
+    assert body["usable"] is expect_usable
+    assert body["advice"] and body["status"] == status
+
+
+def test_probe_refuses_without_a_key(client, dotenv, tmp_path, monkeypatch, stub_probe):
+    # 借 dotenv 这条 fixture 是为了清掉这台机器 shell 里可能存在的 KEY 环境变量
+    # （env 优先于 .env，不清掉的话"没配 KEY"这个前提根本不成立）
+    empty = tmp_path / "empty.env"
+    empty.write_text("FV3_TEXT_MODEL=qwen3.7-flash\n", encoding="utf-8")
+    monkeypatch.setattr(envfile, "env_path", lambda: empty)
+    r = client.post("/api/api-keys/probe")
+    assert r.status_code == 400 and "还没配置 KEY" in r.json()["detail"]
+    assert not stub_probe.calls, "没 KEY 时一次真请求都不该发出"
+
+
+def test_probe_is_blocked_cross_site_and_while_generating(client, dotenv, stub_probe, outdir):
+    assert client.post("/api/api-keys/probe", headers={"Origin": "http://evil.example"}
+                       ).status_code == 403
+    from fastvideo3.core import tasklock
+
+    ok, _st = tasklock.acquire(outdir, "run_locked", "scene")
+    assert ok
+    try:
+        r = client.post("/api/api-keys/probe")
+        assert r.status_code == 409, r.text
+        assert not stub_probe.calls, "被挡住就不该已经花钱发出请求"
+    finally:
+        tasklock.release(outdir, "run_locked")
+
+
+def test_status_endpoint_never_probes(client, dotenv, stub_probe):
+    """`GET /api/api-keys` 与保存 KEY 的 PUT 都**不许**顺手发一次真请求：
+    探活要花钱，自动化就等于每次打开面板都扣一点。"""
+    client.get("/api/api-keys")
+    _put(client, NEW_KEY)
+    assert not stub_probe.calls
+
+
+# ───────────────── 前端改动看得见：HTML 外壳不许被启发式缓存 ─────────
+def test_html_shell_is_no_cache_so_rebuilds_show_up(client):
+    """真实故障：`StaticFiles` 不给 Cache-Control → 浏览器自己决定缓存 `index.html` 多久，
+    于是 `npm run build` 出了新哈希、用户刷新却还拿到旧外壳（指向旧 bundle）。
+    表现就是"后端重启了、代码是对的，界面上没有那个功能"，只能靠 Ctrl+F5 撞运气。"""
+    from fastvideo3.app.api import _web_dist
+
+    if not _web_dist().is_dir():      # 没构建前端时这条无从可测
+        pytest.skip("web/dist 未构建")
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "no-cache", dict(r.headers)
+
+
+def test_hashed_assets_stay_immutable(client):
+    """与上一条配对：`/assets/index-<hash>.js` 是内容寻址的，改一个字节就换名字，
+    所以那边给长期缓存 —— 外壳每次问、资源不重复下载，刷新才既准又快。"""
+    from fastvideo3.app.api import _web_dist
+
+    dist = _web_dist()
+    if not dist.is_dir():
+        pytest.skip("web/dist 未构建")
+    files = sorted((dist / "assets").glob("index-*.js"))
+    if not files:
+        pytest.skip("没有 assets")
+    r = client.get(f"/assets/{files[0].name}")
+    assert "immutable" in r.headers.get("cache-control", ""), dict(r.headers)
+
+
+def test_api_json_is_not_marked_immutable(client):
+    """`/api/*` 不能沾上 assets 那条长期缓存 —— 成本、进度这类数据缓存一分钟就是"看板骗人"。"""
+    r = client.get("/api/api-keys")
+    assert "max-age=31536000" not in r.headers.get("cache-control", "")
+
+
 def test_dotenv_is_git_ignored():
     """这把 KEY 落进 `.env`，所以"`.env` 不入库"是这个功能的**前提**，不是一个习惯。"""
     from fastvideo3.core.config import PROJECT_ROOT

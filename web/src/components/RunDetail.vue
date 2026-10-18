@@ -4,6 +4,7 @@ import { api } from '../api'
 import { statusOf } from '../status'
 import ProductionBoard from './ProductionBoard.vue'
 import StepBar from './StepBar.vue'
+import ApiKeyField from './ApiKeyField.vue'
 
 const props = defineProps({ runId: { type: String, required: true } })
 const emit = defineEmits(['back'])
@@ -314,6 +315,14 @@ onUnmounted(() => clearInterval(timer))
           </label>
         </div>
         <p v-if="modelMsg" class="muted small">{{ modelMsg }}</p>
+      </div>
+
+      <!-- KEY 单独一张卡，**不挂在"模型清单问到了没有"之后**：跑不动的时候用户第一个打开的
+           就是这条 run 的详情页，这里必须能当场看到"配没配 / 这把能不能用"并直接改。
+           与新建任务页共用同一个组件（密钥不外泄的三条自律只写一份）。 -->
+      <div class="card">
+        <div class="cardHead"><h2>API KEY</h2></div>
+        <ApiKeyField context="改的是之后每一步用的 KEY；已生成的产物不受影响。" />
       </div>
 
       <!-- 上一步为什么没出东西：失败原因顶格显示，别让用户猜 -->
