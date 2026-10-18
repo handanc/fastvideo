@@ -37,10 +37,19 @@ const stateText = computed(() => {
   if (!row.value.set) return '未配置'
   return row.value.source === 'env' ? '已配置（来自环境变量）' : '已配置（来自 .env）'
 })
-const placeholder = computed(() =>
-  isSet.value ? '••••••••（已保存，粘贴新值可替换）' : 'sk-…（粘贴后点输入框外面即保存）'
-)
+const placeholder = computed(() => (isSet.value ? '••••••••' : 'sk-…'))
 const trimmed = computed(() => (draft.value || '').trim())
+// 探活结果的状态位翻成人话：芯片上显示 `invalid_key` 这种内部名字，用户只能去猜
+const probeChipText = computed(() => {
+  const map = {
+    ok: '可用',
+    arrears: '账户欠费/未开通',
+    invalid_key: 'KEY 被拒',
+    unreachable: '连不上',
+  }
+  const st = probeResult.value && probeResult.value.status
+  return map[st] || st || ''
+})
 
 async function load() {
   try {
@@ -82,9 +91,7 @@ async function save() {
   probeError.value = ''
   try {
     const r = await api.saveApiKey(value)
-    note.value = (r.changed
-      ? `✔ 已写入 .env 的 ${r.name}`
-      : `✔ ${r.name} 已是这个值，没有改动文件`) + '，下面「测一下」可确认这把 KEY 真能用'
+    note.value = r.changed ? `✔ 已写入 .env 的 ${r.name}` : `✔ ${r.name} 已是当前值`
     draft.value = ''
     await load()
   } catch (e) {
@@ -125,17 +132,25 @@ async function save() {
     </div>
     <div v-else-if="error" class="keyNote keyWarn">⚠ {{ error }}</div>
     <div v-else-if="note" class="keyNote keyOk">
-      {{ note }} —— 按右边「测一下」确认这把 KEY 真能用（会发一次最小请求，≈¥0.001）
+      {{ note }}
     </div>
 
     <!-- 探活：用户自己按的按钮。"存下了"与"账户能用"是两件事：欠费/未开通/复制截断都只有
          真打一次才知道，而让人一路点到第一步报错才知道是最费时间的那一种。 -->
     <div class="keyLine">
-      <button class="btn sm" type="button" :disabled="probing || !isSet || !!noBackend" @click="probe">
-        {{ probing ? '探测中…' : '🔍 测一下这把 KEY 能不能用' }}
+      <!-- 成本披露放进 tooltip 而不是正文：用户刚要求把说明文字去掉，但"这一按会发一次真请求"
+           属于点下去之前该知道的事 —— 藏起来省了版面，也省掉了知情。 -->
+      <button
+        class="btn sm"
+        type="button"
+        title="发一次最小请求确认账户可用（约 ¥0.001）"
+        :disabled="probing || !isSet || !!noBackend"
+        @click="probe"
+      >
+        {{ probing ? '测试中…' : '测试KEY' }}
       </button>
       <span v-if="probeResult" class="keyChip" :class="probeResult.usable ? 'keyChipOk' : 'keyChipWarn'">
-        {{ probeResult.status }}
+        {{ probeChipText }}
       </span>
     </div>
     <div v-if="probeResult" :class="['keyNote', probeResult.usable ? 'keyOk' : 'keyWarn']">
@@ -144,13 +159,9 @@ async function save() {
         （{{ probeResult.detail }}）
       </span>
     </div>
-    <div v-if="probeError" class="keyNote keyWarn">⚠ 探活失败：{{ probeError }}</div>
+    <div v-if="probeError" class="keyNote keyWarn">⚠ 测试失败：{{ probeError }}</div>
 
     <div v-if="context" class="keyNote muted">{{ context }}</div>
-    <div class="keyNote muted">
-      点输入框外面、按回车或按「保存」都可以。留空不会改动已存的 KEY；KEY 只写进项目根目录的
-      <code>.env</code>（该文件不入 git），面板不会显示它的值。
-    </div>
   </div>
 </template>
 
