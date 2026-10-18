@@ -39,24 +39,18 @@ pip install -e ".[web]" && fastvideo3 serve           # Web 面板 http://127.0.
 同一个 run 有**两种编排、一份执行器**：分步模式（面板「开始生成」/ `fastvideo3 step`）与图模式（`fastvideo3 graph`）。缺口由 `core/progress.py` 从盘上算，执行只走 `core/stages.py` 这一份装配。
 
 ```mermaid
-flowchart TD
-    T["建任务（只写 run_meta.json，不花钱）"] --> P
-    P["分步：progress 算缺口 → stages 装配（面板 / CLI step）"] -.-> S
-
-    subgraph G["LangGraph 图：checkpointer 持久化，interrupt 停人审门"]
-        S["script 剧本<br/>qwen3.7-flash"] --> A["assets 角色图 ‖ 场景图<br/>节点内并发 · wan2.7-image"]
-        A --> V["scene_videos 场景视频<br/>首尾帧 → 配音 → 一组一次 wan3.0"]
-        V --> C["compose 成片<br/>m7 剪辑 → m9 度量 → 闸门 → m8 终审"]
-        C --> FG{"final_gate 人审门"}
-        FG -- 点名重出某几组 --> V
-    end
-
-    FG -- 收片 --> E(["final/final.mp4 + run_summary.json"])
-    PAUSE["成本闸门 pause.py：到线停新付费提交，等人工确认"] -.-> V
-    LIN["血缘 lineage.json：上游一变，下游精确标 stale"] -.-> A
+flowchart LR
+    S["剧本"] --> A["角色图 ‖ 场景图"]
+    A --> V["场景视频<br/>立绘+场景图+音色样本+提示词<br/>→ 一次调用出画面·语音·口型"]
+    V --> C["成片<br/>剪辑 → 一致性度量 → 闸门 → 终审"]
+    C --> G{"人审"}
+    G -- 点名重出某几组 --> V
+    G -- 收片 --> F(["final.mp4"])
 ```
 
-图只管**顺序、并行、中断、恢复**，业务判断一份都不复制 —— 同一事实写两份实现，是本项目历史上所有"看起来通电、实际无效"退化的共同根源。自动重做 ≤2 轮只在 `compose` 里，**图上的回边只承载人的决定**。
+链上任何一步之前，**实时花费到上限就停下问人**（`core/pause.py`）：停止提交新的付费任务、已出产物一个不动，确认后从停下处接着跑。上游产物一变，下游按血缘精确标 stale（`lineage.json`）；在盘且未标 stale 的一律复用，在途异步任务接着轮询而不是重新提交（重新提交就是为同一秒画面付第二次钱）。
+
+自动重做 ≤2 轮只在 `compose` 那一步里，**图上的回边只承载"人"的决定**；节点内部不复制任何业务判断（同一事实写两份实现，是本项目历史上所有"看起来通电、实际无效"退化的共同根源）。
 
 | 步骤 | 产出 | 模型 | 人能做什么 |
 | --- | --- | --- | --- |
