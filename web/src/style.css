@@ -39,15 +39,13 @@
   --line: #e5e7eb;
   --accent: #4f46e5;
   --accent-soft: #eef2ff;
-  --ok: #16a34a;
-  --warn: #d97706;
+  --ok: #15803d;      /* 比深色主题的同名色再深一档：这两个色既当徽章底色、 */
+  --warn: #b45309;   /* 又当文字色（.badge.ok / .alert.ok），只调一边必有一边不合格 */
   --err: #dc2626;
   --run: #2563eb;
   --on-accent: #ffffff;
-  /* 亮色主题里绿/黄这两块底色太浅，白字只有 3.2~3.3 的对比度（AA 要 4.5）：
-     改压深字，徽章上的数字才不是"看着有颜色其实读不清"。蓝/红底够深，继续用白字。 */
-  --on-ok: #1f2330;
-  --on-warn: #1f2330;
+  --on-ok: #ffffff;
+  --on-warn: #ffffff;
   --on-run: #ffffff;
   --on-err: #ffffff;
   --matte: #000;
