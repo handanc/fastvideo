@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FastVideo3-AI短剧生成系统</title>
+    <!-- 主题在首屏绘制前定下来：默认深黑，只有用户点过右上角按钮才变亮。
+         放在这里而不是 App.vue 的 onMounted 里，是为了避免"先黑一帧再变白"的闪烁；
+         localStorage 读不到（隐私模式/被禁用）就静默按默认值 —— 主题不该让页面起不来。 -->
+    <script>
+      try {
+        if (localStorage.getItem('fv3.theme') === 'light') {
+          document.documentElement.dataset.theme = 'light'
+        }
+      } catch (e) { /* 读不到就用默认深黑 */ }
+    </script>
   </head>
   <body>
     <div id="app"></div>

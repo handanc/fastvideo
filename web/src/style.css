@@ -1,5 +1,37 @@
-/* ── 设计令牌：亮色为主，深色自动适配 ── */
+/* ── 设计令牌 ─────────────────────────────────────────────────────────────────
+   **默认深黑**；右上角那颗太阳/月亮按钮把 `<html data-theme="light">` 加上/去掉来切亮色。
+   这里刻意不再用 `prefers-color-scheme`：跟随系统 = 同一个人打开两个机器看到两套配色，
+   而讲义里的截图、成本看板的红字位置都对不上号；而且"默认深黑"本身就是产品要求。
+   只写变量、不写具体颜色 —— 所有组件只用 var(--*)，所以换这一份令牌整站跟着变。
+   `color-scheme` 那两行不是装饰：它决定原生控件（下拉列表、滚动条、日期控件、输入框
+   自动填充底色）跟着哪套配色走，缺了它就会出现"白底页面上一个黑下拉列表"。 */
 :root {
+  color-scheme: dark;
+  --bg: #0b0d13;          /* 深黑底 */
+  --card: #161a24;
+  --text: #e7e9f0;
+  --muted: #9aa1b0;
+  --line: #2a2e3d;
+  --accent: #818cf8;
+  --accent-soft: #262a3d;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --err: #f87171;
+  --run: #60a5fa;
+  /* 压在强调色/状态色上的字：深色主题里这些底色是浅色调，字必须用深黑；
+     亮色主题反过来。写死 #fff 就会出现"深底浅字、浅底也浅字"里的那一半看不清。 */
+  --on-accent: #0b0d13;
+  --on-ok: #0b0d13;
+  --on-warn: #0b0d13;
+  --on-run: #0b0d13;
+  --on-err: #0b0d13;
+  --matte: #000;                      /* 视频/图片衬底：两种主题都保持黑 */
+  --scrim: rgba(0, 0, 0, 0.55);       /* 弹窗遮罩 */
+  --shadow: rgba(0, 0, 0, 0.45);
+  --radius: 10px;
+}
+:root[data-theme='light'] {
+  color-scheme: light;
   --bg: #f6f7fb;
   --card: #ffffff;
   --text: #1f2330;
@@ -11,22 +43,16 @@
   --warn: #d97706;
   --err: #dc2626;
   --run: #2563eb;
-  --radius: 10px;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #12141c;
-    --card: #1b1e29;
-    --text: #e7e9f0;
-    --muted: #9aa1b0;
-    --line: #2a2e3d;
-    --accent: #818cf8;
-    --accent-soft: #262a3d;
-    --ok: #4ade80;
-    --warn: #fbbf24;
-    --err: #f87171;
-    --run: #60a5fa;
-  }
+  --on-accent: #ffffff;
+  /* 亮色主题里绿/黄这两块底色太浅，白字只有 3.2~3.3 的对比度（AA 要 4.5）：
+     改压深字，徽章上的数字才不是"看着有颜色其实读不清"。蓝/红底够深，继续用白字。 */
+  --on-ok: #1f2330;
+  --on-warn: #1f2330;
+  --on-run: #ffffff;
+  --on-err: #ffffff;
+  --matte: #000;
+  --scrim: rgba(15, 18, 28, 0.35);
+  --shadow: rgba(15, 18, 28, 0.18);
 }
 
 * { box-sizing: border-box; }
@@ -56,6 +82,16 @@ body {
   color: var(--accent); background: var(--accent-soft);
   border-color: var(--accent); font-weight: 600;
 }
+.topbarRight { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* 主题开关：图标就是"点下去会变成什么"—— 深黑时是太阳，亮色时是月亮。
+   标题栏最右侧，与视图导航同一行；窄屏靠 flex-wrap 换行，不挤掉导航。 */
+.themeBtn {
+  width: 34px; height: 34px; padding: 0; border-radius: 50%;
+  border: 1px solid var(--line); background: var(--card); color: var(--text);
+  font-size: 16px; line-height: 1; cursor: pointer;
+}
+.themeBtn:hover { border-color: var(--accent); background: var(--accent-soft); }
 
 /* ── 卡片与布局 ── */
 .card {
@@ -92,9 +128,10 @@ button.btn {
 }
 button.btn:hover { border-color: var(--accent); color: var(--accent); }
 button.btn.primary {
-  background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+  background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+  font-weight: 600;
 }
-button.btn.primary:hover { filter: brightness(1.1); color: #fff; }
+button.btn.primary:hover { filter: brightness(1.1); color: var(--on-accent); }
 button.btn.danger { color: var(--err); }
 button.btn.danger:hover { border-color: var(--err); }
 button.btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -146,9 +183,9 @@ table.tbl tr.clickable:hover td { background: var(--accent-soft); }
   font-size: 11px; color: var(--muted); margin-top: 4px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-video.final { width: 100%; max-width: 420px; border-radius: var(--radius); background: #000; }
+video.final { width: 100%; max-width: 420px; border-radius: var(--radius); background: var(--matte); }
 .vgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-.vgrid video { width: 100%; border-radius: 8px; background: #000; }
+.vgrid video { width: 100%; border-radius: 8px; background: var(--matte); }
 
 /* ── 卡片标题行（标题 + 右侧动作按钮，如"删除成片"）── */
 .cardHead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -187,12 +224,12 @@ video.final { width: 100%; max-width: 420px; border-radius: var(--radius); backg
 .modal-mask {
   position: fixed; inset: 0; z-index: 50; padding: 16px;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--scrim);
 }
 .modal {
   width: min(480px, 100%);
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 18px 20px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+  padding: 18px 20px; box-shadow: 0 16px 40px var(--shadow);
 }
 .modal h3 { margin: 0 0 10px; font-size: 15px; color: var(--warn); }
 .modal p { margin: 0 0 10px; font-size: 13px; }
@@ -241,7 +278,7 @@ video.final { width: 100%; max-width: 420px; border-radius: var(--radius); backg
   padding: 14px 0; border-top: 1px solid var(--line);
 }
 .char-card:first-of-type { border-top: 0; }
-.char-main img { width: 100%; border-radius: 8px; background: #000; }
+.char-main img { width: 100%; border-radius: 8px; background: var(--matte); }
 .char-body h3 { margin: 0 0 6px; font-size: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .appearance { margin: 0 0 8px; }
 .tokens { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
@@ -272,7 +309,7 @@ video.final { width: 100%; max-width: 420px; border-radius: var(--radius); backg
 .scene-grid figcaption { font-size: 12px; margin-top: 4px; line-height: 1.5; }
 .shot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
 .shot-card { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--bg); }
-.shot-media img, .shot-media video { width: 100%; display: block; background: #000; }
+.shot-media img, .shot-media video { width: 100%; display: block; background: var(--matte); }
 .shot-media .no-video { padding: 10px; font-size: 12px; text-align: center; }
 .shot-info { padding: 10px 12px; }
 .shot-info .head { margin: 0 0 6px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; }
@@ -315,16 +352,16 @@ video.final { width: 100%; max-width: 420px; border-radius: var(--radius); backg
 .step .st { font-size: 11px; color: var(--muted); }
 .step .gapnote { font-size: 11px; color: var(--warn); }
 .step.done { border-color: var(--ok); }
-.step.done .idx { background: var(--ok); color: #fff; }
+.step.done .idx { background: var(--ok); color: var(--on-ok); }
 .step.done .st { color: var(--ok); }
 .step.gap { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 6%, var(--bg)); }
-.step.gap .idx { background: var(--warn); color: #fff; }
+.step.gap .idx { background: var(--warn); color: var(--on-warn); }
 .step.gap .st { color: var(--warn); }
 .step.active { border-color: var(--run); animation: pulse 1.2s ease-in-out infinite; }
-.step.active .idx { background: var(--run); color: #fff; }
+.step.active .idx { background: var(--run); color: var(--on-run); }
 .step.active .st { color: var(--run); }
 .step.failed { border-color: var(--err); background: color-mix(in srgb, var(--err) 7%, var(--bg)); }
-.step.failed .idx { background: var(--err); color: #fff; }
+.step.failed .idx { background: var(--err); color: var(--on-err); }
 .step.failed .st { color: var(--err); }
 @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--run) 35%, transparent); } 50% { box-shadow: 0 0 0 5px transparent; } }
 .step-connector { width: 14px; align-self: center; height: 2px; background: var(--line); }
