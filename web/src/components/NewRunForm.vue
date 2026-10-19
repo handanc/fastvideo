@@ -114,9 +114,6 @@ const selectedUnpriced = (cap) => {
   const row = (cap.choices || []).find((c) => c.model === model)
   return !!row && row.priced === false
 }
-const chosenModels = computed(() =>
-  Object.entries(form.model_overrides).filter(([, v]) => v).map(([k, v]) => `${CAP_TITLE[k] || k} = ${v}`)
-)
 
 // 成本预估：**单价的权威来源是后端**（GET /api/cost-estimate → pricing.yaml + 供应商路由）。
 // 下面这张表只在后端问不到时兜底，所以必须与 core/cost.py 的
@@ -266,18 +263,20 @@ async function submit() {
       ⚠ {{ costHint.warning }}
     </div>
 
-    <!-- ── 百炼 API KEY：放在表单主体里，**不藏进"模型选择"那个折叠区** ──────────────
-         上一版把它写在 `<details>` 里面，于是它默认是收起来的：用户按名字去找"模型选择"，
-         点开看到的是一排下拉框，就得出"没有这个功能"的结论（本轮实测就是这么被报上来的）。
-         KEY 是"能不能跑起来"的前提，不是高级选项，必须一眼看得见。 -->
-    <ApiKeyField />
+    <!-- ── 模型选择：第一行是百炼 API KEY，其后是三类模型 ─────────────────────────────
+         两个容易踩坑的地方，都写在属性上而不是靠人记：
+         ① `<details>` 常态**展开**（`open`）—— KEY 放第一节却又默认收起，等于没放：
+            用户按名字点开看到的是一排下拉框，就得出"没有这个功能"的结论（实测报过一次）；
+         ② 不再 `v-if="modelCaps.length"` —— 模型清单问不到时 KEY 那一行必须还在，
+            那正是"跑不起来时最需要能填 KEY"的时刻。模型行自己带条件。
+         清单与"当前生效值"来自 GET /api/model-choices（唯一来源 core/model_catalog.py）；
+         点名的模型落进 run_meta.json（每步含续跑原样恢复）并写回 .env 成为之后的默认。 -->
+    <details class="models" open>
+      <summary>模型选择 — 百炼 API KEY + 文本 / 文生图 / 图生视频（wan3.0 自带台词口型）</summary>
 
-    <!-- ── 模型选择：清单与"当前生效值"来自 GET /api/model-choices（唯一来源 core/model_catalog.py）
-         留空 = 跟随分辨率档；选择落进 run_meta.json，每一步（含续跑）都按原样恢复 ── -->
-    <details v-if="modelCaps.length" class="models" :open="chosenModels.length > 0">
-      <summary>模型选择 — 文本 / 文生图 / 图生视频（wan3.0 自带台词口型）</summary>
-      <!-- 每行标题只说"默认 X"：X 由后端算出（.env 的 FV3_*_MODEL 优先，其次分辨率档位），
-           改 .env 前端显示跟着变，不在 JS 里抄第二份默认值 -->
+      <ApiKeyField />
+
+      <template v-if="modelCaps.length">
       <div v-for="cap in modelCaps" :key="cap.capability" class="modelRow">
         <label class="field">
           <span>{{ capTitle(cap.capability) }} <em class="muted">默认 {{ cap.effective_model || '—' }}</em></span>
@@ -300,6 +299,7 @@ async function submit() {
           ⚠ 该模型暂无单价数据 → 成本按默认价估算，可能与真实账单不符
         </div>
       </div>
+      </template>
 
     </details>
 

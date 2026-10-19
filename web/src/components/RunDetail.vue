@@ -297,14 +297,23 @@ onUnmounted(() => clearInterval(timer))
       <!-- ── 模型选择（title 下方）：允许中途改，改完继续跑后续步骤 ──────────────
            只对**之后**的步骤生效；已落盘的产物不动（要重出就在看板里删掉它再点开始生成）。
            正在生成时后端会拒绝（持锁期间改配置会让同一步的前后两个镜头用不同模型）。 -->
-      <div v-if="modelCaps.length" class="card">
+      <!-- 卡片本身不再挂在"模型清单问到了没有"之后：清单问不到时 KEY 那一行必须还在，
+           而这正是跑不动的时候。模型行自己带条件。 -->
+      <div class="card">
         <div class="cardHead">
-          <h2>模型</h2>
-          <button class="btn sm primary" :disabled="modelBusy" @click="saveModels">
+          <h2>模型与 API KEY</h2>
+          <button
+            class="btn sm primary"
+            :disabled="modelBusy"
+            title="只保存下面的模型选择；API KEY 在输入框失焦时已经写进 .env"
+            @click="saveModels"
+          >
             {{ modelBusy ? '保存中…' : '保存' }}
           </button>
         </div>
-        <div class="modelBar">
+        <!-- KEY 放这一节**第一行**：先回答"能不能跑"，再谈"用哪个模型跑" -->
+        <ApiKeyField context="改的是之后每一步用的 KEY；已生成的产物不受影响。" />
+        <div v-if="modelCaps.length" class="modelBar">
           <label v-for="cap in modelCaps" :key="cap.capability" class="field">
             <span>{{ capTitle(cap.capability) }} <em class="muted">默认 {{ cap.effective_model || '—' }}</em></span>
             <select v-model="modelPick[cap.capability]">
@@ -315,14 +324,6 @@ onUnmounted(() => clearInterval(timer))
           </label>
         </div>
         <p v-if="modelMsg" class="muted small">{{ modelMsg }}</p>
-      </div>
-
-      <!-- KEY 单独一张卡，**不挂在"模型清单问到了没有"之后**：跑不动的时候用户第一个打开的
-           就是这条 run 的详情页，这里必须能当场看到"配没配 / 这把能不能用"并直接改。
-           与新建任务页共用同一个组件（密钥不外泄的三条自律只写一份）。 -->
-      <div class="card">
-        <div class="cardHead"><h2>API KEY</h2></div>
-        <ApiKeyField context="改的是之后每一步用的 KEY；已生成的产物不受影响。" />
       </div>
 
       <!-- 上一步为什么没出东西：失败原因顶格显示，别让用户猜 -->
