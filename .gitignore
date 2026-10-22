@@ -19,3 +19,6 @@ bin/*
 !bin/README.md
 models/*.onnx
 models/*.part
+
+# ── 一次性打包归档（内容与 .claude/skills/ 重复，且带 __MACOSX/.DS_Store 冗余）──
+/*.zip
