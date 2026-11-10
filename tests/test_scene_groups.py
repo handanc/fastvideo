@@ -302,7 +302,7 @@ def _mixed_script():
 
 
 def test_servable_groups_by_talk_mode_and_i2v_model():
-    """环里得有 wan3.0，且不能和口型链路抢活。"""
+    """环里得有 wan3.0，且不能和叠音链路抢活。"""
     from fastvideo3.core.scenegroup import group_scenes, servable_groups
 
     script = _mixed_script()
@@ -311,29 +311,33 @@ def test_servable_groups_by_talk_mode_and_i2v_model():
     # C 链：整组都归场景路径（片段自带台词口型）
     assert ids(servable_groups(script, groups, talk_mode="scripted_talk",
                                i2v_model="wan3.0-video")) == ids(groups)
-    # A 链 + wan3.0 i2v：只服务整组无对白的（对白镜头的画面归 m6 用我们的 TTS 驱动）
-    got = ids(servable_groups(script, groups, talk_mode="s2v_direct", i2v_model="wan3.0-video"))
+    # audio_overlay（不做口型，对白镜头靠运动片段 + m7 叠音）：只服务整组无对白的
+    got = ids(servable_groups(script, groups, talk_mode="audio_overlay", i2v_model="wan3.0-video"))
     assert got == ["scene_2"], got
-    # A 链 + 非 wan3.0 i2v：一组都不服务（场景级生成对 wan2.2 没有意义）
-    assert servable_groups(script, groups, talk_mode="s2v_direct",
+    # audio_overlay + 非 wan3.0 i2v：一组都不服务（场景级生成对 wan2.2 没有意义）
+    assert servable_groups(script, groups, talk_mode="audio_overlay",
                            i2v_model="wan2.2-i2v-flash") == []
+    # 旧 A/B 链的模式串（2026-11-04 已随通道删除）→ 由 talkmode.channel() 规范成 C 链，
+    # 含对白的组照样归场景路径：读旧 run 不该因此少出片，也不该多花钱
+    assert ids(servable_groups(script, groups, talk_mode="s2v_direct",
+                               i2v_model="wan3.0-video")) == ids(groups)
     # 显式关掉
     assert servable_groups(script, groups, talk_mode="scripted_talk",
                            i2v_model="wan3.0-video", scene_mode="off") == []
 
 
-def test_coverage_never_swallows_lipsync_in_ab_chains(storage):
-    """A 链下即使盘上躺着一个含对白镜头的场景片段，也不能把对白镜头算成"已覆盖"。
+def test_coverage_never_swallows_lipsync(storage):
+    """`audio_overlay` 下即使盘上躺着一个含对白镜头的场景片段，也不能把对白镜头算成"已覆盖"。
 
-    否则 m6 被跳过 → 成片没有口型 —— 本项目踩过多次的"静默交付坏片"形状。
-    判据必须与 stages 的 servable_groups 同一份。
+    否则叠音路径被跳过 → 成片没有口型也没有配音 —— 本项目踩过多次的"静默交付坏片"形状。
+    判据必须与 `servable_groups` 同一份（progress 就是直接调它，不抄第二份）。
     """
     import json as _json
 
     from fastvideo3.core.progress import scene_covered_shots
 
     script = _mixed_script()
-    cfg = AppConfig(fake=True, talk_mode="s2v_direct")
+    cfg = AppConfig(fake=True, talk_mode="audio_overlay")
     cfg.model_overrides = {"i2v": "wan3.0-video"}
     # 伪造一个覆盖整组（含对白镜头）的场景片段
     (storage.root / "clips").mkdir(parents=True, exist_ok=True)
@@ -342,7 +346,7 @@ def test_coverage_never_swallows_lipsync_in_ab_chains(storage):
         _json.dumps({"group_id": "scene_1", "shot_ids": ["shot_1_1", "shot_1_2"],
                      "windows": {}}), encoding="utf-8")
     covered = scene_covered_shots(storage, script, cfg)
-    assert "shot_1_2" not in covered, "A 链下对白镜头的口型不能被场景片段顶掉"
+    assert "shot_1_2" not in covered, "对白镜头的口型/配音不能被场景片段顶掉"
     # C 链下同一份产物就该算覆盖（片段自带口型）
     cfg2 = AppConfig(fake=True, talk_mode="scripted_talk")
     cfg2.model_overrides = {"i2v": "wan3.0-video"}

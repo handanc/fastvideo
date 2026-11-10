@@ -106,17 +106,21 @@ def test_edge_tts_emotion_maps_to_prosody(tmp_path, monkeypatch):
 
 
 def test_fallback_provider_ignores_env_override(cfg):
-    """.env 的 FV3_TALK_MODEL 不能污染兜底通道：否则主备同一个坏模型，换道无效。"""
+    """.env/run 的能力级模型覆盖不能污染兜底通道：否则主备同一个模型，换道等于原地重试。
+
+    原先这条挂在口型上（主 = wan2.7 driving_audio、备 = wan2.2-s2v，两条链 2026-11-04 已删，
+    口型现在根本没有兜底通道）；性质本身与通道无关，所以搬到仍在用的 t2i 兜底上继续守：
+    `make_fallback` 走的是 `overrides={}`，兜底只能拿 yaml 里它自己那个模型名。
+    """
     from fastvideo3.core.config import ProviderRouting
 
     cfg.fake = False  # make_fallback 在 fake 模式下恒返回 None（Fake 全家桶不需要兜底）
-    cfg.routing["talk"] = ProviderRouting(default="dashscope_wan27_audio",
-                                           fallback="dashscope_wan22_s2v")
-    cfg.model_overrides["talk"] = "wan3.0-video"
+    cfg.routing["t2i"] = ProviderRouting(default="dashscope_wan27_image", fallback="dashscope_t2i")
+    cfg.model_overrides["t2i"] = "qwen-image-3.0"
     cfg.dashscope_api_key = "sk-test"
-    fb = make_fallback(Capability.TALK, cfg)
+    fb = make_fallback(Capability.T2I, cfg)
     assert fb is not None
-    # 关键性质：兜底模型 ≠ .env 覆盖值（否则主备同一个坏模型，换道等于原地重试）。
-    # 有覆盖时第一兜底 = 路由默认 provider 的 yaml 模型（wan2.7-i2v，支持 driving_audio）
-    assert fb.model != "wan3.0-video", f"兜底被 .env 污染: {fb.model}"
-    assert cfg.model_for("talk", "dashscope_i2v27", "wan2.7-i2v") == "wan3.0-video"  # 主通道仍尊重 .env
+    # 关键性质：兜底模型 ≠ .env 覆盖值（否则主备同一个未开通的模型，换道等于原地重试）
+    assert fb.model != "qwen-image-3.0", f"兜底被 .env 污染: {fb.model}"
+    # 主通道那边则**必须**尊重 .env 覆盖 —— 两边不是一条规则，别改成一个一个不改
+    assert cfg.model_for("t2i", "dashscope_t2i27", "wan2.7-image") == "qwen-image-3.0"

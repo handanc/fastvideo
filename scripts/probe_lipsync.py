@@ -6,7 +6,9 @@
 本脚本用修好的两把尺子测量，并把**不可信的情形明说为不可信**：
 
 1. `scan`（免费，本地）：对已有 talk/clip 片段做滑窗定位 + 乱序零分布对照；
-2. `probe`（花钱，需 --spend）：同一定妆照 + 同一段混音，逐通道各出 1 条短片再测。
+2. `sheet`（免费，本地）：出"嘴部接片 + 逐帧响度条"，交人眼定案。
+（第三条 `probe`——花钱逐通道探单——已于 2026-11-04 随 A/B 独立口型链一起删除：
+  现行口型只有 wan3.0 场景片段一条链，"逐通道比谁真的对口型"这个问题本身没了。）
 
 用法：
     python scripts/probe_lipsync.py scan output/run_20260830_211509
@@ -16,7 +18,7 @@
 判读规则（重要）：
 - `synced` 且 corr 明显高于 null → 该通道确实按语音动嘴；
 - `inconclusive` → **不能**据此判通道好坏（素材/度量不支持），要换素材或用 VLM 定位；
-- 三条通道全 `unsynced` 而对照能测出真口型 → 才可以说"这些通道不做口型"。
+- 镜头全 `unsynced` 而对照能测出真口型 → 才可以说"这条链没对口型"。
 """
 
 from __future__ import annotations
@@ -57,7 +59,7 @@ def _clip_audio(clip: Path, workdir: Path) -> Path | None:
 
 
 def _find_mix(run_dir: Path, shot_id: str) -> Path | None:
-    for name in (f"shot_{shot_id}_mix.wav", f"shot_{shot_id}_duo_mix.wav"):
+    for name in (f"shot_{shot_id}_mix.wav",):  # _duo（A 链双人合并音轨）已随通道删除
         p = run_dir / "audio" / name
         if p.exists():
             return p
@@ -83,7 +85,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         from fastvideo3.providers.factory import make_provider
 
         try:
-            vlm = make_provider(Capability.VLM, load_config(quality=args.quality))
+            vlm = make_provider(Capability.VLM, load_config(resolution=args.resolution))
         except Exception as e:  # noqa: BLE001
             print(f"! VLM 不可用（跳过精确定位）: {e}")
     for clip in clips:
@@ -109,85 +111,6 @@ def cmd_scan(args: argparse.Namespace) -> int:
         "\n判读：synced=确有随语音运动的区域；inconclusive=证据不足（画面运动/压缩噪声"
         "即可产生同等相关），**不得**据此判通道优劣；unsynced=定位到动嘴区但耦合弱。"
     )
-    return 0
-
-
-def cmd_probe(args: argparse.Namespace) -> int:
-    """同素材逐通道各出 1 条短片并测量 —— 花真钱，必须 --spend 显式确认。"""
-    if not args.spend:
-        print("probe 会产生真实计费（每条 5 秒 × 通道单价）。确认后再加 --spend。")
-        for ch in args.channels.split(","):
-            print(f"  拟探测通道: {ch.strip()}")
-        return 2
-    import asyncio
-
-    from fastvideo3.core.cost import price_of
-    from fastvideo3.providers.base import Capability, poll_until_done
-    cfg = load_config(quality=args.quality)
-    cfg.max_video_cost_per_sec = args.cap  # 用户红线：超过就不该考虑这条通道
-    frame, wav = Path(args.frame), Path(args.wav)
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    work = out_dir / "_work"
-    work.mkdir(exist_ok=True)
-    budget_left = args.budget
-
-    async def one(model: str) -> dict:
-        from fastvideo3.providers.base import price_key_for
-        from fastvideo3.providers.factory import _make_real
-        from fastvideo3.providers.protocols import infer_protocol, provider_for
-
-        # 按模型名推断协议再装配：绕开 .env 覆盖，探的就是"这个模型本身"行不行
-        route = provider_for("talk", infer_protocol(model, "talk")) or "dashscope_wan27_audio"
-        provider = _make_real(route, Capability.TALK, cfg, overrides={"talk": model})
-        print(f"   协议路由：{route} / {type(provider).__name__}")
-        dest = out_dir / f"probe_{model}.mp4"
-        dur = max(2, int(round(args.seconds)))
-        # 计价走 provider 的计价键：分档模型（fal `端点@480p/@720p`）的模型名不在
-        # pricing.models 里，直接 price_of(model) 会静默回落到能力默认价 ¥0.5，
-        # 于是红线检查形同虚设、探单前看到的"便宜"是假的。
-        price = price_of(price_key_for(provider, cfg.i2v_resolution), "talk", 1.0)
-        if price > cfg.max_video_cost_per_sec:
-            return {"model": model, "price_cny_per_sec": price,
-                    "error": f"单价 ¥{price:.2f}/s 超红线 ¥{args.cap}/s"}
-        if price * dur > budget_left:
-            return {"model": model, "price_cny_per_sec": price,
-                    "error": f"剩余预算 ¥{budget_left:.2f} 不够 ¥{price*dur:.2f}"}
-        from fastvideo3.providers.base import TalkProvider
-
-        assert isinstance(provider, TalkProvider), f"{model} 装配到的不是口型通道"
-        print(f"→ {model}（¥{price:.2f}/s × {dur}s ≈ ¥{price * dur:.2f}）")
-        ext = await provider.submit(
-            dest=dest, image=frame, audio=wav, video=None, prompt="",
-            resolution=cfg.i2v_resolution, duration=dur,
-        )
-        st = await poll_until_done(provider.poll, ext, timeout_sec=args.timeout * 60,
-                                   fast_interval=5, slow_interval=15)
-        if st.status != "succeeded" or not dest.exists():
-            return {"model": model, "error": str(st.error or "失败")[:160]}
-        s = scan_lipsync(dest, wav, work / model, min_corr=args.min_corr)
-        return {"model": model, "price_cny_per_sec": round(price, 4),
-                "cost": round(price * dur, 2), **s}
-
-    results = []
-    for model in [c.strip() for c in args.channels.split(",") if c.strip()]:
-        try:
-            results.append(asyncio.run(one(model)))
-        except Exception as e:  # noqa: BLE001
-            results.append({"model": model, "error": f"{type(e).__name__}: {str(e)[:160]}"})
-
-    print("\n| 通道 | 单价 | 花费 | corr | null | 判定 | 备注 |")
-    print("|---|---|---|---|---|---|---|")
-    for r in results:
-        print(
-            f"| {r.get('model')} | {price_of(r.get('model', ''), 'talk', 1.0)} "
-            f"| {r.get('cost', '-')} | {r.get('corr', '-')} | {r.get('null_corr', '-')} "
-            f"| **{r.get('verdict') or r.get('error') or '-'}** "
-            f"| {str(r.get('reason') or r.get('error') or '')[:70]} |"
-        )
-    spent = sum(r.get("cost") or 0 for r in results)
-    print(f"\n本次探单实际计费约 ¥{spent:.2f}（正式台账仍由各 run 的 cost.json 记录）")
-    print("把这张表贴回对话即可定档；全 inconclusive 时先换素材（特写正脸镜头）再判。")
     return 0
 
 
@@ -224,7 +147,7 @@ def cmd_sheet(args: argparse.Namespace) -> int:
         from fastvideo3.providers.factory import make_provider
 
         try:
-            vlm = make_provider(Capability.VLM, load_config(quality=args.quality))
+            vlm = make_provider(Capability.VLM, load_config(resolution=args.resolution))
             boxes = asyncio.run(locate_boxes(clip, vlm, work / f"_loc_{clip.stem}"))
         except Exception as e:  # noqa: BLE001
             print(f"! 视觉模型不可用，退回经验框（画面可能框不住嘴）：{e}")
@@ -278,28 +201,13 @@ def cmd_sheet(args: argparse.Namespace) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--min-corr", type=float, default=0.25)
-    ap.add_argument("--quality", default="cinema")
+    ap.add_argument("--resolution", default="1080P")
     ap.add_argument("-v", "--verbose", action="store_true")
     sub = ap.add_subparsers(dest="cmd", required=True)
     a1 = sub.add_parser("scan", help="免费：测已有片段（离线，不调 API）")
     a1.add_argument("run_dir")
     a1.add_argument("--with-vlm", action="store_true", help="再用视觉模型定位精测（每片段一次 VLM 调用）")
     a1.set_defaults(func=cmd_scan)
-    a2 = sub.add_parser("probe", help="花钱：逐通道出 1 条短片再测")
-    a2.add_argument("--frame", required=True, help="首帧/定妆照 png")
-    a2.add_argument("--wav", required=True, help="驱动音频 wav（对白混音）")
-    a2.add_argument(
-        "--channels",
-        default="wan2.2-s2v,fal-ai/infinitalk,videoretalk",
-        help="按模型名/端点ID 逐个探；协议由 protocols.py 推断",
-    )
-    a2.add_argument("--seconds", type=float, default=5.0)
-    a2.add_argument("--cap", type=float, default=5.0, help="单价红线 元/秒")
-    a2.add_argument("--budget", type=float, default=20.0)
-    a2.add_argument("--out", default="output/_lipsync_probe")
-    a2.add_argument("--timeout", type=int, default=25)
-    a2.add_argument("--spend", action="store_true")
-    a2.set_defaults(func=cmd_probe)
     a3 = sub.add_parser("sheet", help="出带响度条的嘴部接片，交人眼定案（免费）")
     a3.add_argument("run_dir")
     a3.add_argument("--shot", required=True, help="镜头 id，如 shot_1_2")

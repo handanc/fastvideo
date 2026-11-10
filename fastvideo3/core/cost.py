@@ -71,8 +71,9 @@ def price_info(model: str, capability: str):
 def price_of_provider(route_name: str, capability: str, quantity: float = 1.0) -> float:
     """按**路由名**查"该供应商可能发出的最高单价"（红线一致性用，无需 KEY）。
 
-    为什么不能只查模型名：fal InfiniteTalk 同一个模型 480p/720p、i2v/v2v 差到 3 倍，
-    按低档预估会让熔断线看着够用、实际中途跳闸 —— 而跳闸的后果正是"成片没口型"
+    为什么不能只查模型名：同一个口型模型分档差到 3 倍（百炼 wan 系按分辨率分档，
+    旧 fal 通道的 i2v/v2v 也同理），按低档预估会让熔断线看着够用、实际中途跳闸
+    —— 而跳闸的后果正是"成片没口型"
     （2026-10-04 那次 run 就是这么把 ¥50 熔断打在运动片段上、口型一条没花成）。
     查不到 worst_case 键时按路由名本身查（等于不放大），绝不返回 0。
     """
@@ -88,7 +89,7 @@ def price_of_route(
 
     与 `price_of_provider`（最高档、用于红线）的分工：预估要贴近真实账单，红线要宁紧
     勿松。分档键（`模型@480p` / `@720p` / `@1080p`）不存在时自动回落到不分档的键 ——
-    所以 videoretalk(¥0.08/秒，输出分辨率=输入) 这类"不分档模型"不会被虚高。
+    所以"不分档模型"（旧 B 链 videoretalk 就是这类：输出分辨率=输入）不会被虚高。
     档位名一律走 `providers.base.resolution_tier()`：计价键的分辨率后缀全项目只有一种
     写法（小写 480p/720p/1080p/2k/4k）。这里原先是硬编码 480p/720p 两档，1080P 会被
     误算成 720p —— wan3.0 系列 720p 与 1080p 差一倍，预估直接少一半。
@@ -125,7 +126,7 @@ def estimate_run_cost_cny(
     """花钱前的成本预估（CLI 预飞 / 新建任务用）。**不构造 provider、不需要 KEY**。
 
     口径：非口型按档位量级 × 成片秒数；口型按"该路由可能发出的最高单价"× 对白秒数。
-    最高单价而不是默认单价是刻意的 —— fal InfiniteTalk 的 480p/720p 与 i2v/v2v 差 3 倍，
+    最高单价而不是默认单价是刻意的 —— 口型类模型分档（480P/720P/1080P、i2v/v2v）差 3 倍，
     按低档预估得到的"够用熔断"实际会在跑到口型步骤前跳闸，而跳闸的表现形式恰好是
     用户最不能接受的那一种：成片没有对口型，且钱已经花在运动片段上了。
     """
@@ -135,16 +136,16 @@ def estimate_run_cost_cny(
     )
     talk_rate = 0.0
     # 通道由**口型模式**决定（映射表 `core/talkmode.py`），不是由 yaml 路由决定 ——
-    # 抄路由会估错：cinema 的 yaml 路由写着 videoretalk(¥0.08/秒)，而用户选的可能是
-    # wan2.2-s2v(¥0.9/秒)，两者差 11 倍，预估虚低就直接导致口型步骤中途跳闸。
+    # 抄路由会估错：旧配置里 yaml 路由写着 videoretalk(¥0.08/秒)而实际通道可能是
+    # wan2.2-s2v(¥0.9/秒)，差 11 倍 → 预估虚低、口型步骤中途跳闸（两条链均已删除，
+    # 现在 talk 只由 talkmode 表决定，但这条判据的来源要留着）。
     from fastvideo3.core.talkmode import provider_name
 
     provider = provider_name(cfg, getattr(cfg, "talk_mode", "")) if not cfg.fake else None
     if provider:
-        # 按**实际会发的那一档**取价：A 链 economy 480P ¥0.5/秒、high/cinema 钳到 720P
-        # ¥0.9/秒；B 链 videoretalk 不分档 ¥0.08/秒。取最高档会把便宜档预估虚高一倍
-        # （用户就以为便宜档也不划算）；红线（装配期）才按最高档 —— 分工不同，
-        # 见 factory._video_cost_cap。
+        # 按**实际会发的那一档**取价（wan3.0 按 480P/720P/1080P 分档，差数倍）。取最高档
+        # 会把便宜档预估虚高一倍（用户就以为便宜档也不划算）；红线（装配期）才按最高档
+        # —— 分工不同，见 factory._video_cost_cap。
         talk_rate = price_of_route(provider, "talk", getattr(cfg, "i2v_resolution", None))
     if dialogue_sec is None:
         dialogue_sec = float(duration_sec) * DIALOGUE_SHARE  # 没剧本可数时按经验占比

@@ -45,11 +45,7 @@ from fastvideo3.providers.factory import (
 
 KEYS = {
     "DASHSCOPE_API_KEY": "sk-test",
-    "SILICONFLOW_API_KEY": "sk-sf",
-    "FAL_KEY": "fal-test",
     "DEEPSEEK_API_KEY": "sk-ds",
-    "KLING_ACCESS_KEY": "ka",
-    "KLING_SECRET_KEY": "ks",
 }
 
 #: provider → 它属于哪个能力（用于把路由单独指到它身上做比对）。口型通道由 talk_mode
@@ -59,10 +55,8 @@ _PROVIDER_CAP = {
     "dashscope_qwen": "text",
     "dashscope_t2i": "t2i",
     "dashscope_wan27_image": "t2i",
-    "siliconflow_flux": "t2i",
     "dashscope_wan22_i2v": "i2v",
     "dashscope_wan27_i2v": "i2v",
-    "siliconflow_wan22": "i2v",
     "dashscope_wan27_r2v": "r2v",
     "dashscope_cosyvoice": "tts",
     "edge_tts": "tts",

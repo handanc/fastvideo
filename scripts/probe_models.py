@@ -27,9 +27,14 @@ from typing import Any
 
 import httpx
 
+from fastvideo3.core import endpoints
 from fastvideo3.core.config import CONFIGS_DIR, load_config
 from fastvideo3.providers import protocols
-from fastvideo3.providers.dashscope import API_BASE, COMPAT_BASE
+
+# 探单脚本打的端点 = 当前 `.env` 解析出来的那两条（不是 providers 模块里的公共默认值）：
+# 换套餐/业务空间后探单若仍打公共端点，"模型不可用"的结论就是假的。
+API_BASE = endpoints.task_base_url()
+COMPAT_BASE = endpoints.compat_base_url()
 
 for _stream in (sys.stdout, sys.stderr):  # Windows GBK 控制台 → UTF-8
     try:
@@ -105,21 +110,16 @@ def _variants(cap: str, model: str, image_url: str | None) -> list[tuple[str, st
         ]
         return out
     if cap == "talk":
+        # A/B 独立口型链（wan2.2-s2v 的图片+音频、wan2.7 的 driving_audio）已于 2026-11-04
+        # 删除 → talk 只剩 C 链一种请求形态：**台词写在提示词里**、模型自己发声。
         return [
             (
-                "i2v_driving_audio",
+                protocols.TALK_SCRIPTED,
                 f"{API_BASE}/services/aigc/video-generation/video-synthesis",
                 {"model": model,
-                 "input": {"prompt": TINY_PROMPT,
+                 "input": {"prompt": TINY_PROMPT + '（他说："我到了。"）',
                            "media": [{"type": "first_frame", "url": image_url}]},
                  "parameters": {"resolution": "480P", "duration": 5}},
-                _ASYNC_HEADER,
-            ),
-            (
-                protocols.TALK_S2V,
-                f"{API_BASE}/services/aigc/video-generation/video-synthesis",
-                {"model": model, "input": {"image_url": image_url, "audio_url": image_url},
-                 "parameters": {"resolution": "480P", "watermark": False}},
                 _ASYNC_HEADER,
             ),
         ]
@@ -144,7 +144,7 @@ async def probe_cap(cfg, cap: str, image_url: str | None, results: dict) -> None
     provider_name = routed.default if routed else ""
     model = cfg.model_overrides.get(cap) or cfg.models.get(
         {"text": "dashscope_text", "t2i": "dashscope_t2i", "i2v": "dashscope_i2v",
-         "r2v": "dashscope_r2v", "talk": "dashscope_s2v"}.get(cap, ""), ""
+         "r2v": "dashscope_r2v", "talk": "dashscope_i2v"}.get(cap, ""), ""
     )
     if not model:
         print(f"[{cap}] 无模型名，跳过")
@@ -212,7 +212,9 @@ async def main() -> int:
 
         tmp = Path(".probe_frame.png")
         make_placeholder_image(tmp, label="probe", color="#3c3c5a")
-        image_url = await upload_local_file(cfg.dashscope_api_key, "probe", tmp)
+        image_url = await upload_local_file(
+            cfg.dashscope_api_key, "probe", tmp, base_url=cfg.dashscope_task_base_url
+        )
         print(f"探测用首帧已上传: {image_url[:60]}…")
 
     results: dict = {}

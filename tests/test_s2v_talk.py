@@ -72,9 +72,13 @@ def _wav(path: Path, seconds: float = 5.0, rate: int = 16000) -> Path:
     return path
 
 
-def _mock_oss() -> None:
-    """百炼临时 OSS 三步流（getPolicy + 表单直传）。"""
-    respx.get(f"{_DS}/uploads").mock(
+def _mock_oss(base: str = _DS) -> None:
+    """百炼临时 OSS 三步流（getPolicy + 表单直传）。
+
+    `base` 要等于 provider 的端点：换业务空间端点后，上传策略也必须从**那个**端点取
+    （公共端点签出的 oss:// URL，专属端点不认）。
+    """
+    respx.get(f"{base}/uploads").mock(
         return_value=Response(
             200,
             json={
@@ -136,7 +140,7 @@ async def test_business_space_base_url_used_for_submit_and_poll(tmp_path):
     img, audio = _png(tmp_path / "f.png"), _wav(tmp_path / "mix.wav")
     p = _provider(base_url=_WS)
     with respx.mock:
-        _mock_oss()
+        _mock_oss(_WS)
         respx.post(f"{_WS}{_S2V_PATH}").mock(
             return_value=Response(200, json={"output": {"task_id": "t-ws"}})
         )

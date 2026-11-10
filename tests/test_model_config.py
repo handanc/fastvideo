@@ -15,7 +15,7 @@ from fastvideo3.providers import protocols
 from fastvideo3.providers.base import Capability
 from fastvideo3.providers.factory import make_fallback, make_provider
 
-KEYS = {"DASHSCOPE_API_KEY": "sk-test", "SILICONFLOW_API_KEY": "sk-sf", "FAL_KEY": "fal-test"}
+KEYS = {"DASHSCOPE_API_KEY": "sk-test", "DEEPSEEK_API_KEY": "sk-ds"}
 _MODEL_ENVS = (
     "FV3_TEXT_MODEL", "FV3_T2I_MODEL", "FV3_I2V_MODEL", "FV3_TALK_MODEL", "FV3_R2V_MODEL",
     "FV3_VLM_MODEL", "FV3_TTS_MODEL", "FV3_T2I_PROTOCOL", "FV3_I2V_PROTOCOL",
@@ -62,30 +62,21 @@ def test_i2v_trial_model_reroutes_to_media_array_provider(monkeypatch, tmp_path)
     assert isinstance(p, DashScopeI2V27Provider) and p.model == "wan3.0-video"
 
 
-def test_talk_trial_model_routes_to_its_real_protocol(monkeypatch, tmp_path):
-    """.env 写 `FV3_TALK_MODEL=<模型名>` 时，provider 必须改道到**该模型真正的口型协议**。
+def test_talk_model_stays_on_its_real_protocol(monkeypatch, tmp_path):
+    """`FV3_TALK_MODEL=wan3.0-video` 装配到的必须是**台词进提示词**那条协议。
 
-    wan3.0-video 与 wan2.7-i2v 都叫"视频大模型做口型"，协议却相反：
-    - `wan3.0-video`：media 枚举里**没有 driving_audio** → 台词写进提示词、模型自发声
-      （`TALK_SCRIPTED` → `dashscope_wan30_talk`）。曾按 2.7 那套发音频 → 每个对白镜头
-      一次真实 400（原文存在 tests/test_talk_fallback.py）。
-    - `wan2.7-i2v`：确实有 `media[].type=driving_audio` → 音频驱动（`TALK_MEDIA_AUDIO`）。
-    显式覆盖优先于模式表（见 factory._talk_route 的例外分支）：那是专家级的手动换通道，
-    喂错输入时通道自己会响亮拒绝，不是静默降级。
+    这条曾经还要断言 `wan2.7-i2v` 走 driving_audio（音频驱动）—— 那条链与 A/B 独立口型链
+    一起于 2026-11-04 删除，现在口型只剩 C 链一种输入形态：media 枚举里**没有** driving_audio，
+    台词写在提示词里由模型自己发声。曾按 2.7 那套发音频 → 每个对白镜头一次真实 400
+    （报文原文存在 tests/test_talk_fallback.py），所以"发错形态"仍是要钉的事。
     """
-    from fastvideo3.providers.dashscope import (
-        DashScopeI2V27TalkProvider,
-        DashScopeWan30TalkProvider,
-    )
+    from fastvideo3.providers.dashscope import DashScopeWan30TalkProvider
 
     cfg = _cfg(monkeypatch, tmp_path, FV3_TALK_MODEL="wan3.0-video")
     p = make_provider(Capability.TALK, cfg)
     assert isinstance(p, DashScopeWan30TalkProvider) and p.model == "wan3.0-video"
     assert p.accepts_audio is False and p.supports_video_input is False
 
-    cfg2 = _cfg(monkeypatch, tmp_path, FV3_TALK_MODEL="wan2.7-i2v")
-    p2 = make_provider(Capability.TALK, cfg2)
-    assert isinstance(p2, DashScopeI2V27TalkProvider) and p2.model == "wan2.7-i2v"
 
 
 def test_fallback_is_the_paid_yaml_model_not_the_trial_one(monkeypatch, tmp_path):
@@ -103,18 +94,6 @@ def test_fallback_is_the_paid_yaml_model_not_the_trial_one(monkeypatch, tmp_path
     assert fb.model == "wan2.7-image", "兜底必须用 yaml 里的付费模型名，不吃 .env 覆盖"
     assert fb.supports_reference_image is True
 
-
-def test_third_party_fallback_never_eats_dashscope_override(monkeypatch, tmp_path):
-    """SiliconFlow/可灵 上没有 qwen-image-3.0，覆盖漏进去会让兜底 404。"""
-    from fastvideo3.providers.siliconflow import SiliconFlowT2IProvider
-
-    cfg = _cfg(monkeypatch, tmp_path, FV3_T2I_MODEL="qwen-image-3.0")
-    cfg.routing["t2i"] = ProviderRouting(default="dashscope_t2i", fallback="siliconflow_flux")
-    from fastvideo3.providers import factory
-
-    p = factory._make_real("siliconflow_flux", Capability.T2I, cfg, overrides={})
-    assert isinstance(p, SiliconFlowT2IProvider)
-    assert p.model == "black-forest-labs/FLUX.1-dev"
 
 
 def test_r2v_model_not_clobbered_by_i2v_override(monkeypatch, tmp_path):

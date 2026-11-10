@@ -247,18 +247,20 @@ def test_scripted_talk_mode_selects_its_own_channel_and_needs_no_clip(cfg):
     assert channel("scripted_talk").label == "wan3.0-video"
     assert provider_name(cfg, "scripted_talk") == "dashscope_wan30_talk"
     assert needs_clip_for_dialogue("scripted_talk") is False, "C 链不出运动片段（台词在提示词里）"
-    assert needs_clip_for_dialogue("v2v_overlay") is True
+    assert needs_clip_for_dialogue("audio_overlay") is True, "不做口型时对白镜头靠运动片段当画面"
+    # A/B 链（2026-11-04 删除）的历史模式串**不再有自己的语义**：`channel()` 把它们
+    # 规范成 C 链。旧 run_meta 因此照常出片、也不会莫名要多花一份运动片段的钱。
     assert needs_clip_for_dialogue("s2v_direct") is False
-    assert needs_clip_for_dialogue("audio_overlay") is True
-    assert tier_conflict("v2v_overlay", "480P"), "480P 片段喂不进 videoretalk，要提前说"
+    assert needs_clip_for_dialogue("v2v_overlay") is False
+    assert tier_conflict("v2v_overlay", "480P") == "", "旧 B 链的 480P 告警随通道一起消失"
     # 默认口径下面板不该挂任何泛泛的风险提示（2026-10-18 用户要求去掉"音色由模型定，
     # 同一角色跨镜头可能不同"那句）：跨场景锁声正是 `core/voiceref.py` 把说话人音色样本
     # 发进 `reference_audio` 的目的，天天复读"可能会飘"等于对着已生效的机制报警。
-    # 剩下的冲突只有两条，且都是具体的：人工把音轨换成 master、历史 run 的 B 链喂不进 480P。
+    # 剩下的冲突只有一条，且是具体的：人工把音轨换成 master（实测声画错位）。
     assert tier_conflict("scripted_talk", "1080P") == ""
     assert tier_conflict("scripted_talk", "480P") == ""
     assert "0～2.2" in tier_conflict("scripted_talk", "720P", "master")
-    assert tier_conflict("s2v_direct", "1080P") == ""
+    assert tier_conflict("s2v_direct", "1080P") == ""  # 旧 A 链串规范成 C 链
 
 
 def test_scripted_talk_dialogue_shots_skip_i2v():
@@ -267,8 +269,8 @@ def test_scripted_talk_dialogue_shots_skip_i2v():
     need = {s.shot_id for s in shots_need_i2v(script, "scripted_talk")}
     assert dialogue_ids, "用例前提：fake 剧本要有对白镜头"
     assert not (dialogue_ids & need), "C 链给对白镜头出 i2v 就是白烧钱（通道不吃片段）"
-    need_v2v = {s.shot_id for s in shots_need_i2v(script, "v2v_overlay")}
-    assert dialogue_ids <= need_v2v, "B 链必须为对白镜头出片段，否则通道拿不到输入"
+    need_audio = {s.shot_id for s in shots_need_i2v(script, "audio_overlay")}
+    assert dialogue_ids <= need_audio, "audio_overlay 必须为对白镜头出片段，否则没有画面可叠音"
 
 
 # ───────────────────────── m6 端到端：音轨来源与多人同屏 ─────────────────────────
@@ -368,8 +370,11 @@ async def test_scripted_talk_sends_first_and_last_frame(cfg, storage, ledger, jo
 
 
 async def test_scripted_talk_does_not_waive_two_person_shots(cfg, storage, ledger, jobs):
-    """多人同屏在 C 链里**不再走豁免**：台词逐条点名后模型自己分配嘴型（A/B 链做不到）。"""
-    cfg.two_person_talk = "overlay"  # A/B 链的默认策略，C 链应当绕过它
+    """多人同屏在 C 链里**不走豁免**：台词逐条点名后模型自己分配嘴型（A/B 链做不到）。
+
+    双人策略字段 `two_person_talk` 已于 2026-11-04 随 m6 的双人分支一起删除 —— 这条用例
+    现在守的是"给了真口型就不许记豁免台账"（否则看板会说谎），不再需要声明任何策略。
+    """
     _talk, talks, fallbacks = await _run_talk(cfg, storage, ledger, jobs, _duo_script())
     assert "s1_01" in talks and not fallbacks
     assert not storage.lipsync_waivers(), "给了真口型就不该记豁免台账，否则看板会说谎"
@@ -392,7 +397,7 @@ def test_factory_assembles_scripted_channel_from_mode(cfg):
 
     cfg.talk_mode = "scripted_talk"
     cfg.routing = {
-        "talk": ProviderRouting(default="dashscope_wan22_s2v", fallback="fal_infinitalk")
+        "talk": ProviderRouting(default="dashscope_wan22_s2v", fallback="dashscope_videoretalk")
     }
     route = _talk_route(cfg, cfg.routing["talk"])
     assert route.default == "dashscope_wan30_talk", "模式覆盖路由（s2v 不吃「提示词自发声」这套）"
@@ -416,7 +421,9 @@ def test_scripted_channel_price_lookup_is_wired():
     assert price_of_provider("dashscope_wan30_talk", "talk") == 1.2
     # prime 贵一档：预估要能把这个差别带出来，否则"换 prime"在成本上看起来是免费的
     assert price_of_route("dashscope_wan30_talk", "talk", "1080P") == 1.2
-    assert price_of_route("dashscope_wan27_audio", "talk", "1080P") == 1.0
+    # 分档缺键时回落能力默认价（talk 默认 ¥0.6/秒）—— 单价表里没这条模型就该被看见，
+    # 而不是让预估悄悄变成 0（旧 A/B/wan27 三条链的单价已随通道删除，2026-11-04）。
+    assert price_of_route("dashscope_wan22_s2v", "talk", "1080P") == 0.6
 
 
 async def test_default_voice_source_is_model_and_makes_no_driver(cfg, storage, ledger, jobs):
@@ -541,7 +548,7 @@ def test_action_typed_shot_with_dialogue_skips_i2v_in_scripted_mode():
 
     实测形状：`shot_1_2` 被 LLM 标成 `action` 却带 1 句台词 → m4 按 type 出了 2 条
     `wan2.7-r2v` 候选（**¥10**），m6 按"有无台词"又出了 C 链口型产物，而 m7 优先用口型
-    产物的画面 → 那 ¥10 从头到尾没被用上。A 链（s2v_direct）同样中招，不是 C 链独有。
+    产物的画面 → 那 ¥10 从头到尾没被用上。旧 A 链（s2v_direct）同样中招，不是 C 链独有。
     """
     script = Script(
         base_info=BaseInfo(topic="判据分叉"),
@@ -573,11 +580,11 @@ def test_action_typed_shot_with_dialogue_skips_i2v_in_scripted_mode():
             )
         ],
     )
-    for mode in ("scripted_talk", "s2v_direct"):
+    for mode in ("scripted_talk", "s2v_direct", "v2v_overlay"):
         ids = {s.shot_id for s in shots_need_i2v(script, mode)}
         assert "mis_typed" not in ids, f"{mode}：带台词的镜头不该再花一份运动片段的钱"
         assert ids == {"pure_action", "scenery"}, f"{mode} 下空镜/纯动作恒需运动片段"
-    for mode in ("v2v_overlay", "audio_overlay"):
+    for mode in ("audio_overlay",):
         assert "mis_typed" in {s.shot_id for s in shots_need_i2v(script, mode)}, mode
 
 

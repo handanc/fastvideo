@@ -199,12 +199,36 @@ def test_doctor_rows_come_from_one_source_for_cli_and_api(project, monkeypatch):
     rows = runtime.checks(load_config(dotenv_path=project / "none.env"))
     items = [r["item"] for r in rows]
     for want in ("FFmpeg", "配置文件 .env", "依赖锁 requirements.lock.txt", "前端构建 web/dist",
-                 "身份一致性权重（可选）", "数据库", "DASHSCOPE_API_KEY"):
+                 "身份一致性权重（可选）", "数据库", "DASHSCOPE_API_KEY", "百炼端点(base_url)"):
         assert want in items, items
     assert all(set(r) == {"item", "ok", "detail"} for r in rows)
     # 可选 KEY 缺了不算失败，但影响面必须写在 detail 里（不然用户以为环境坏了）
     ds = next(r for r in rows if r["item"] == "FAL_KEY")
     assert ds["ok"] is True and "可选" in ds["detail"]
+
+
+def test_doctor_shows_the_endpoint_from_env(project, monkeypatch):
+    """doctor 要把**当前生效的端点**说出来：换套餐只改 `.env` 一行，改完得有个地方确认。
+
+    只打印端点、绝不打印 KEY（同一份清单会贴到界面上，`env_file_status` 也是这个口径）。
+    """
+    env = project / "endpoint.env"
+    env.write_text(
+        "DASHSCOPE_API_KEY=sk-anything\n"
+        "DASHSCOPE_BASE_URL=https://token-plan.cn-beijing.maas.aliyuncs.com\n",
+        encoding="utf-8",
+    )
+    )
+    for k in ("DASHSCOPE_BASE_URL", "DASHSCOPE_TASK_BASE_URL", "DASHSCOPE_COMPAT_BASE_URL",
+              "FV3_S2V_BASE_URL", "DASHSCOPE_TEXT_BASE_URL"):
+        monkeypatch.delenv(k, raising=False)
+    from fastvideo3.core.config import load_config
+
+    rows = runtime.checks(load_config(dotenv_path=env))
+    row = next(r for r in rows if r["item"] == "百炼端点(base_url)")
+    assert "token-plan.cn-beijing.maas.aliyuncs.com/api/v1" in row["detail"], row
+    assert "/compatible-mode/v1" in row["detail"], row
+    assert "sk-anything" not in row["detail"]
 
 
 def test_api_doctor_and_provision_do_not_leak_keys(monkeypatch, tmp_path):

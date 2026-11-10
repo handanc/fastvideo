@@ -58,18 +58,20 @@ def test_parse_page_takes_list_price_and_splits_token_in_out():
 
 
 def test_parse_page_handles_multi_tier_in_one_cell():
-    """s2v 那行把两档挤在一个单元格里："480P：0.5元/秒720P：0.9元/秒"。
+    """旧 A 链那行把两档挤在一个单元格里："480P：0.5元/秒720P：0.9元/秒"。
 
     只取第一档的话，一次刷新就把 720P 的价**从表里抹掉** —— 比缺价更坏，因为看不出来。
     """
     html = """
     <table><tr><th>模型 ID（Model ID）</th><th>单价</th><th>免费额度</th></tr>
-    <tr><td>wan2.2-s2v</td><td>输出视频：480P：0.5元/秒720P：0.9元/秒</td><td>100秒</td></tr>
+    <tr><td>wan2.2-i2v-flash</td><td>输出视频：480P：0.5元/秒720P：0.9元/秒</td><td>100秒</td></tr>
     </table>
     """
+    # 行形状取自旧 A 链的价目页；模型名换成仍在 WATCHED 表里的分档模型（parse_page 按
+    # WATCHED 过滤行）。这里测的是解析器会不会漏档，不是价格数字。
     merged, updated, _missing = pricetable.merge_into({"models": {}}, pricetable.parse_page(html))
-    assert updated == ["wan2.2-s2v"]
-    assert merged["models"]["wan2.2-s2v"]["tiers"] == {"480p": 0.5, "720p": 0.9}
+    assert updated == ["wan2.2-i2v-flash"]
+    assert merged["models"]["wan2.2-i2v-flash"]["tiers"] == {"480p": 0.5, "720p": 0.9}
 
 
 def test_refresh_matches_the_table_when_a_page_snapshot_is_given():
@@ -111,20 +113,20 @@ def test_refresh_matches_the_table_when_a_page_snapshot_is_given():
 
 
 def test_parse_page_separates_per_image_row_in_a_per_second_table():
-    """s2v 那张表里混着一行"输入图像：0.004元/张"——按秒计价的表不能把它记成元/秒。
+    """同一张表里混着一行"输入图像：0.004元/张"——按秒计价的表不能把它记成元/秒。
 
     只看表头会整表判成 `second`（同表另一行带"/秒"），于是 detect 项的**单位**错了：
     价数字对、含义不对，看板与账单都没法读。所以计价类别要**按行**再分一次。
     """
     html = """
     <table><tr><th>模型 ID（Model ID）</th><th>单价</th><th>免费额度</th></tr>
-    <tr><td>wan2.2-s2v-detect</td><td>输入图像：0.004元/张</td><td>200张</td></tr>
-    <tr><td>wan2.2-s2v</td><td>输出视频：480P：0.5元/秒720P：0.9元/秒</td><td>100秒</td></tr>
+    <tr><td>wanx2.1-t2i-turbo</td><td>输入图像：0.004元/张</td><td>200张</td></tr>
+    <tr><td>wan2.2-i2v-flash</td><td>输出视频：480P：0.5元/秒720P：0.9元/秒</td><td>100秒</td></tr>
     </table>
     """
     by = pricetable.parse_page(html).by_model()
-    assert by["wan2.2-s2v-detect"][0].kind == "image"
-    assert by["wan2.2-s2v"][0].kind == "second"
+    assert by["wanx2.1-t2i-turbo"][0].kind == "image"
+    assert by["wan2.2-i2v-flash"][0].kind == "second"
 
 
 def test_parse_page_skips_international_tables():

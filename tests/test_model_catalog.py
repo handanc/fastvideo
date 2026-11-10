@@ -50,13 +50,13 @@ def client(outdir, monkeypatch):
 
 
 # ─────────────────────────── 目录与校验规则 ───────────────────────────
-def test_env_talk_model_drives_talk_mode(tmp_path):
-    """.env 点名口型模型时，`talk_mode` 必须跟着它走 —— 否则整条链静默无口型。
+def test_talk_model_never_reopens_a_second_mode(tmp_path):
+    """口型模型名**不再反推模式**：`talk_mode` 恒为 C 链，模型只在 wan3.0-video / -prime 之间选。
 
-    实测形状（用户 .env）：`FV3_TALK_MODEL=wan3.0-video` 让工厂改道到 `dashscope_wan30_talk`
-    （只吃"图片+提示词"），而 talk_mode 仍是 yaml 的 `s2v_direct` → m6 按 A 链把**音频**
-    喂过去 → 每个对白镜头 CapabilityMismatchError → 全部降级成无口型叠音，
-    而"生成镜头视频"因缺口永远不绿。
+    要防的老病还在：`.env` 点名的模型与实际装配的通道必须是同一条 —— 当年是"模型改道到
+    wan3.0（只吃图片+提示词）而 talk_mode 仍是 s2v_direct → m6 把音频喂过去 → 每个对白镜头
+    CapabilityMismatch → 全部降级无口型"。A/B 链于 2026-11-04 删除后，能错配的形态没有了，
+    这条断言改成钉住"模式不随模型名漂移"（漂移=又一份事实）。
     """
     from fastvideo3.core.talkmode import channel
     from fastvideo3.providers.base import Capability
@@ -67,8 +67,10 @@ def test_env_talk_model_drives_talk_mode(tmp_path):
         "DASHSCOPE_API_KEY=sk-test\nFV3_TALK_MODEL=wan3.0-video\n", encoding="utf-8"
     )
     cfg = load_config(resolution="1080P", dotenv_path=env)
-    assert cfg.talk_mode == "scripted_talk", "模式必须跟随 .env 点名的口型模型"
-    assert channel(cfg.talk_mode).needs_audio is False
+    # 口型不再有"按模型名反推模式"那一步（A/B 链与 needs_audio 字段均已删除）：
+    # talk_mode 恒为 C 链，FV3_TALK_MODEL 只在 wan3.0-video 与 -prime 之间选模型
+    assert cfg.talk_mode == "scripted_talk"
+    assert channel(cfg.talk_mode).default_model == "wan3.0-video"
     p = make_provider(Capability.TALK, cfg)
     assert p.name == "dashscope_wan30_talk" and p.model == "wan3.0-video"
 
@@ -168,34 +170,6 @@ def test_validate_accepts_configured_but_unlisted_model():
     assert protocol_error("i2v", "随便一个名字") is not None
 
 
-def test_talk_model_outside_channel_table_resolves_by_protocol():
-    """.env 写了目录外的口型模型（如 fal 端点 ID）→ 按**协议**反推模式，不能推不出来。"""
-    from fastvideo3.core.talkmode import mode_for_model
-
-    assert mode_for_model("wan3.0-video-prime") == "scripted_talk"
-    assert mode_for_model("fal-ai/infinitalk") == "s2v_direct"  # 图片+音频端点
-    assert mode_for_model("fal-ai/infinitalk/video-to-video") == "v2v_overlay"
-    assert mode_for_model("videoretalk") == "v2v_overlay"
-    assert mode_for_model("wan2.7-i2v") == "s2v_direct"  # driving_audio，不吃视频
-    assert mode_for_model("完全不认识的模型") is None
-
-
-def test_explicit_panel_pick_of_unlisted_talk_model_uses_protocol_mode():
-    """面板上**显式**点选目录外的口型端点时，没有"当前模式"可保持 → 按协议取它的主形态。
-
-    与 `.env` 那条路径的区别是有意的：`.env` 走 `reconcile_mode`（相容就别动档位语义），
-    面板点选走 `resolve_talk_choice`→`mode_for_model`（用户就是在指定这条链）。
-    """
-    from fastvideo3.core.talkmode import resolve_talk_choice
-
-    assert resolve_talk_choice("fal-ai/infinitalk") == ("s2v_direct", "fal-ai/infinitalk")
-    assert resolve_talk_choice("fal-ai/infinitalk/video-to-video") == (
-        "v2v_overlay",
-        "fal-ai/infinitalk/video-to-video",
-    )
-    assert resolve_talk_choice("wan3.0-video-prime") == ("scripted_talk", "wan3.0-video-prime")
-
-
 def test_every_selectable_model_resolves_to_a_real_protocol():
     """t2i/i2v 的每一个可选项都要能解析出协议并落到一个真实 provider。
 
@@ -221,7 +195,7 @@ def test_validate_rejects_unknown_names_and_non_selectable_caps():
     """
     err = validate("t2i", "wan2.2-i2v-flash")  # 那是图生视频的模型
     assert err and "可选" in err
-    for model in ("videoretalk", "wan3.0-video", "wan3.0-video-prime", "sora-2"):
+    for model in ("videoretalk", "wan2.2-s2v", "wan3.0-video", "wan3.0-video-prime", "sora-2"):
         assert "不支持手动选择 talk" in (validate("talk", model) or ""), model
     # 图生视频只剩 wan3.0 两档：曾经合法的旧名字现在要被拒，并把可选项说出来
     for gone in ("wan2.7-i2v", "wan2.2-i2v-flash", "wan2.2-i2v-plus"):

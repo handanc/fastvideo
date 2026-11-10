@@ -14,16 +14,21 @@ from pathlib import Path
 
 import httpx
 
+from fastvideo3.core import endpoints
 from fastvideo3.providers.base import ProviderError
 
-API_BASE = "https://dashscope.aliyuncs.com/api/v1"
+# 默认值只在 `core/endpoints.py` 定义一份。上传策略是**原生任务 API** 的一部分，
+# 所以它必须跟提交用同一个端点：换业务空间/套餐端点后仍打公共端点拿到的 oss:// 临时
+# URL，那边根本不认（表现为 400 url error，像"图片坏了"而不是"端点没换全"）。
+API_BASE = endpoints.DEFAULT_TASK_BASE_URL
 OSS_RESOLVE_HEADER = {"X-DashScope-OssResourceResolve": "enable"}
 
 
-async def get_upload_policy(api_key: str, model: str) -> dict:
+async def get_upload_policy(api_key: str, model: str, base_url: str | None = None) -> dict:
+    base = (base_url or API_BASE).rstrip("/")
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(
-            f"{API_BASE}/uploads",
+            f"{base}/uploads",
             params={"action": "getPolicy", "model": model},
             headers={"Authorization": f"Bearer {api_key}"},
         )
@@ -35,10 +40,16 @@ async def get_upload_policy(api_key: str, model: str) -> dict:
     return data
 
 
-async def upload_local_file(api_key: str, model: str, path: Path) -> str:
-    """本地文件直传百炼临时 OSS，返回 oss:// URL（供 s2v/retalk 等模型输入）。"""
+async def upload_local_file(
+    api_key: str, model: str, path: Path, base_url: str | None = None
+) -> str:
+    """本地文件直传百炼临时 OSS，返回 oss:// URL（供 s2v/retalk 等模型输入）。
+
+    `base_url` 传调用方那个 provider 的端点（`self.api_base`）—— 见模块头的说明：
+    上传与提交不同端点，拿到的 oss:// URL 会在提交时被拒。
+    """
     path = Path(path)
-    policy = await get_upload_policy(api_key, model)
+    policy = await get_upload_policy(api_key, model, base_url=base_url)
     key = f"{policy['upload_dir']}/{path.name}"
     fields = {
         "OSSAccessKeyId": policy["oss_access_key_id"],

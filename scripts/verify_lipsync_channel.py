@@ -8,13 +8,13 @@
 - `--cap`（默认 ¥5/秒，用户的硬红线）落进 `cfg.max_video_cost_per_sec`：路由哪天解析到
   比这更贵的通道，**装配阶段直接报错**，不会先烧钱再告诉你贵了。
 - `--spend` 闸门：预估费用 > ¥0.5 时**不加 --spend 就不提交、不加锁**（主通道换成按秒计价的
-  fal InfiniteTalk 后，这条脚本从"≈¥0 的验证"变成了"会花真钱的操作"，所以默认只打印计划）。
+  分档计价的 wan 系之后，这条脚本从"≈¥0 的验证"变成了"会花真钱的操作"，所以默认只打印计划）。
   想零成本验证链路 → `--channel cheap`（钉回百炼 videoretalk 兜底档）。
 - 不传 fallback provider：主通道挂了就是挂了，绝不静默换到更贵的通道。
 - 全程过全局单任务锁（`output/.task.lock`）：与网页/CLI 的任何生成本质上是同一件事，
   不能并发，防止同时点两处烧双份钱。
 
-用法（2026-10-04 口型主通道换成 fal InfiniteTalk 后，**默认会花真钱**，故加 --spend 闸门）：
+用法（口型通道按输出秒计价，**默认真跑会花钱**，故加 --spend 闸门）：
     # 只看计划与费用（零成本，不提交、不加锁）
     python scripts/verify_lipsync_channel.py output/run_20261002_235904 --shot shot_1_2
     # 确认费用后再真跑
@@ -96,7 +96,7 @@ def main() -> int:
         "--channel",
         choices=("main", "cheap"),
         default="main",
-        help="main=按当前路由走（现=fal InfiniteTalk，收费）；cheap=钉回百炼 videoretalk 兜底档",
+        help="main=按当前路由走（收费）；cheap=钉回百炼 videoretalk 低档",
     )
     ap.add_argument("--spend", action="store_true", help="确认可以产生真实计费")
     args = ap.parse_args()

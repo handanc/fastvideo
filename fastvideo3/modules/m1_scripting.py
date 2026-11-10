@@ -18,7 +18,9 @@ from fastvideo3.core.config import AppConfig
 from fastvideo3.core.cost import CostLedger, llm_meta
 from fastvideo3.core.prompts import render, render_strict
 from fastvideo3.core.schema import (
+    AppearanceFill,
     BaseInfo,
+    Character,
     CharacterLook,
     Script,
     ShotType,
@@ -153,6 +155,15 @@ def _reformat_prompt(raw: str, problems: list[str]) -> str:
         "烧录，模型再画一遍就是两层字幕，这类行删掉即可（系统会另行人工处理）；",
         "7) 大段散文按位置归位：镜头标记之后的散文写进「画面:」，场景标题之后、第一个镜头"
         "   之前的散文写进「概要:」。",
+        "8) 散文/大纲稿的小标题行（核心设定：、剧情：、场景：、人物：、反转：、结尾钩子：、"
+        "   第1集：…）**不是台词**，别写成台词行：整片设定并进第一行《片名》那一行的后面或"
+        "   场「概要:」；「场景：X」变成 `## scene_n · X · 日/夜`；「人物：A、B」变成"
+        "   「# 角色」段的登记行；「剧情/反转/结尾钩子」里的叙述写进对应镜头的「画面:」或场"
+        "   「概要:」。**文字逐字照搬**，只换位置，不改词、不缩写。",
+        "9) 原文里带动作插叙的台词（如「玉帝（老板）看着财报：“香火钱下跌！”」）要拆成两行："
+        "   动作写进「画面:」，引号里的话**逐字**成为台词行 `char_id（情绪）: 香火钱下跌！`。",
+        "10) 「# 角色」段每个角色必须有 `  外貌: ` 一行；原文没描写外貌就**留空**"
+        "（写成「外貌: 」即可），不要替我编造发型/服装/年龄细节 —— 立绘与外貌卡由后续步骤生成。",
         "",
         _FORMAT_SPEC,
         "",
@@ -223,7 +234,7 @@ async def script_from_draft(
     `text=None` 时只用第①层（离线/假模式，或没有文本供应商）。
     """
     from fastvideo3.core import scriptio
-    from fastvideo3.core.draft_norm import flat, parse_draft, spoken_lines
+    from fastvideo3.core.draft_norm import flat, parse_draft, quoted_spans, spoken_lines
 
     def attempt(source: str) -> tuple[Script | None, list[str], list[str], list[str]]:
         """→ (script|None, 该次整理说明, 格式问题, 语义问题)"""
@@ -243,7 +254,19 @@ async def script_from_draft(
     if cfg.fake or text is None or not getattr(cfg, "draft_llm_format", True):
         return script or old, fixes, problems + semantic
 
-    want = spoken_lines(raw)
+    # 两份清单，判据强度不同：
+    #   want_strict = 高置信台词（排除散文小标题）→ 丢一句就**拒绝保存**（台词是字幕唯一来源）
+    #   want_loose  = 其余"某某：一句话"形状的原文（核心设定/场景/人物/第1集…）→ 它们被归进
+    #                 概要、场标题、角色表是**正确**的整理，只有整段从结果里消失才提醒人核对
+    # 模型整理过却被校验拦下时，**必须把这一层的原因说给人听**：只回原稿的格式问题，
+    # 看到的就是"字段不在可识别位置"，而真相是"模型整理时删了你的台词，我们不敢存"
+    # （2026-11-05 实测：用户据此判断"根本没调模型"，方向完全被带偏）。
+    llm_reject = ""
+    want_strict = spoken_lines(raw)
+    want_loose = [w for w in spoken_lines(raw, strict=False) if w not in set(want_strict)]
+    strict_flat = {flat(w) for w in want_strict}
+    # 引号里的话：spoken_lines 抓不到「动作插叙 + 冒号 + 引号」那种散文台词，单列一档
+    want_quote = [w for w in quoted_spans(raw) if flat(w) not in strict_flat]
     reasons = problems + semantic
     best: tuple[Script, list[str]] | None = None
     best_text = ""
@@ -258,32 +281,58 @@ async def script_from_draft(
             reasons = c_problems + c_semantic
             best_text = new_text
             continue
-        # 逐字校验：原稿里每一句话都还必须还在整理稿里（标点/空格差异不算改内容）
-        got = spoken_lines(new_text)
-        flat_new = {flat(g) for g in got}
-        lost = [w for w in want if flat(w) not in flat_new]
+        # 逐字校验（硬）：原稿里每一句**台词**都还必须还在整理稿的台词里
+        # （标点/空格差异不算改内容）。丢了就拒绝保存 —— 静默接受等于花钱出一条缺台词的成片。
+        got = {flat(g) for g in spoken_lines(new_text)}
+        lost = [w for w in want_strict if flat(w) not in got]
         if lost:
             reasons = [f"整理时丢了 {len(lost)} 句台词（模型改写了内容），例如："
                        + "、".join(f"「{x[:20]}」" for x in lost[:3])]
+            llm_reject = reasons[0]
             best_text = new_text
             if storage is not None:
                 storage.log_event("m1_scripting", "draft_format_lost_lines",
                                   lost=len(lost), detail=reasons[0][:200])
             continue
+        # 软校验：散文小标题（核心设定/场景/人物/第1集…）本该被归进概要/场标题/角色表，
+        # 所以不要求它仍以"台词"的身份出现；但**整段从结果里消失**要说一声给人核对，
+        # 而不是既不拒绝也不吭声（那等于模型可以悄悄删掉用户的设定段）。
+        whole = flat(new_text)
+        dropped_quotes = [w for w in want_quote if flat(w) not in whole]
+        if dropped_quotes:
+            reasons = [f"整理时删掉了 {len(dropped_quotes)} 处原文引号里的话（散文台词），例如："
+                       + "、".join(f"「{x[:20]}」" for x in dropped_quotes[:3])]
+            llm_reject = reasons[0]
+            best_text = new_text
+            if storage is not None:
+                storage.log_event("m1_scripting", "draft_format_dropped_quotes",
+                                  lost=len(dropped_quotes), detail=reasons[0][:200])
+            continue
+        # 挪了位置（不再以台词身份出现）但文字还在 → 软提醒，不挡保存
+        moved = [w for w in want_loose + want_quote if flat(w) not in got and flat(w) not in whole]
         # 说明以**模型那一版**的整理为准：原稿的行号在重排后已经没有意义（整份稿子都换了
         # 排版），拿旧行号去对照用户的编辑器只会误导。
         best = (
             cand,
-            ["已用模型把稿子重排为标准剧本稿（逐字校验：一句台词都没改、也没加）"] + c_fixes,
+            ["已用模型把稿子重排为标准剧本稿（逐字校验：一句台词都没改、也没加）"]
+            + (
+                [f"整理后原文有 {len(moved)} 处内容没出现在结果里（多为散文小标题被归入"
+                 f"概要/场标题/角色表，请核对）：" + "、".join(f"「{x[:18]}」" for x in moved[:3])]
+                if moved
+                else []
+            )
+            + c_fixes,
         )
         if storage is not None:
             storage.log_event("m1_scripting", "draft_formatted", round=round_no,
-                              notes=len(c_fixes))
+                              notes=len(c_fixes), moved_content=len(moved))
         break
 
     if best is not None:
         return best[0], best[1], []
-    return old, fixes, (problems + semantic)
+    # 模型那一版的失败原因排在最前：它比"原稿第 1 行不认识"更能说明**现在**该改什么
+    head = [f"模型整理了一版，但被逐字校验拦下：{llm_reject}"] if llm_reject else []
+    return old, fixes, head + problems + semantic
 
 
 async def rewrite_script_text(
@@ -535,6 +584,101 @@ async def extract_looks(
         chars=done, skipped=skipped, total=len(script.characters),
     )
     return script
+
+
+async def fill_appearances(
+    cfg: AppConfig,
+    text: TextProvider,
+    script: Script,
+    storage: RunStorage,
+    ledger: CostLedger,
+) -> Script:
+    """给**外貌为空**的角色补一行外貌描述（一次调用，逐角色点名线索）。
+
+    为什么需要它：散文/大纲稿的「# 角色」段常常只有名字（人设写在正文里），排版规范化器
+    又被明确要求"原文没写就别编"，于是导入完 7 个角色外貌全空 —— 而外貌是 m2 定妆照的
+    **唯一**输入，空着就是让画师凭空乱画，同一角色跨镜头必然换脸，m9 也无从度量。
+    规则 10 让模型先自己提炼，这一层是兜底：手写稿、模型偷懒、旧稿重存都仍能保证不落空。
+
+    三条硬边界：
+    - 只动 `appearance` 为空的角色。已有外貌的一律不碰 —— 改它等于改全片那个角色的脸，
+      会连带作废定妆照与所有首帧（`diff_invalidation` 就按这个判据算），那是花真钱的；
+    - 模型补不出来的（线索确实为零）保持空着 + 记事件，**不编**。看板那格"点击写外貌描述"
+      就是给人留的入口，比一句漂亮的假描述更诚实；
+    - 失败（供应商挂了/JSON 不合契约）只记事件，绝不把保存变成报错：外貌缺失可补，
+      保存被打断则是用户没料到的损失。
+    """
+    from fastvideo3.core.prompts import render_strict
+
+    missing = [c for c in script.characters if not (c.appearance or "").strip()]
+    if not missing:
+        return script
+
+    roster = chr(10).join(_appearance_clues(script, c) for c in missing)
+    setting = (
+        f"{script.base_info.topic} / 风格 {script.base_info.style} / "
+        f"{script.base_info.aspect_ratio} / {script.base_info.target_duration_sec}s"
+    )
+    try:
+        raw = await text.chat(
+            [{"role": "user", "content": render_strict("appearance_fill.v1",
+                                                       setting=setting, roster=roster)}],
+            json_schema=AppearanceFill,
+        )
+        filled = {
+            d.character_id.strip(): (d.appearance or "").strip()
+            for d in AppearanceFill.model_validate_json(strip_code_fence(raw)).characters
+        }
+        ledger.record("text", text.name, text.model, quantity=1,
+                      note="appearance_fill", meta=llm_meta(text))
+    except Exception as e:  # noqa: BLE001
+        storage.log_event("m1_scripting", "appearance_fill_failed",
+                          chars=len(missing), error=str(e)[:200])
+        return script
+
+    applied = 0
+    for ch in missing:
+        got = filled.get(ch.character_id, "")
+        if got:
+            ch.appearance = got[:120]
+            ch.canonical_tokens = []   # 旧卡的必留词与新描述无关了，交给外貌卡重抽
+            applied += 1
+    still = [c.character_id for c in missing if not (c.appearance or "").strip()]
+    storage.log_event("m1_scripting", "appearances_filled", chars=applied,
+                      asked=len(missing), empty=still[:8])
+    if still:
+        # 这不是"成功了"：这些人还得人工填，说清楚比沉默有用
+        storage.log_event("m1_scripting", "appearance_still_empty",
+                          chars=len(still), ids=still[:8])
+    return script
+
+
+def _appearance_clues(script: Script, ch: Character) -> str:
+    """一个角色能用的全部线索：人设行 + 他说的话 + 他在场镜头的画面/镜头语言。"""
+    lines: list[str] = [f"- {ch.character_id}（{ch.name}）"]
+    said: list[str] = []
+    seen: list[str] = []
+    for shot in script.all_shots():
+        on_stage = ch.character_id in (shot.characters or [])
+        for d in shot.dialogues:
+            if d.character_id == ch.character_id:
+                said.append(d.text[:60])
+        if on_stage:
+            for txt in (shot.action, shot.camera):
+                v = (txt or "").strip()
+                if v and v not in seen:
+                    seen.append(v)
+    if said:
+        lines.append("  台词：" + "｜".join(said[:8]))
+    if seen:
+        lines.append("  在场画面：" + "｜".join(x[:40] for x in seen[:6]))
+    for sc in script.scenes:
+        if any(ch.character_id in (s.characters or []) for s in sc.shots) and (sc.summary or "").strip():
+            lines.append("  所处场景概要：" + sc.summary.strip()[:80])
+            break
+    if not said and not seen:
+        lines.append("  （剧本里没有任何台词与在场镜头，只能按名字与人设推断，推不出就返回空串）")
+    return chr(10).join(lines)
 
 
 # （已删除）_critic_review / _revise：AI 剧本评审 → 自动重写回路。

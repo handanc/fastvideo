@@ -83,6 +83,19 @@ class CharacterLook(BaseModel):
     distinctive: list[str] = Field(default_factory=list)  # 关键辨识特征
 
 
+class AppearanceDraft(BaseModel):
+    """一个角色的外貌补写结果。"""
+
+    character_id: str
+    appearance: str = ""
+
+
+class AppearanceFill(BaseModel):
+    """`prompts/appearance_fill.v1.md` 的返回契约：只补**没有外貌**的那些角色。"""
+
+    characters: list[AppearanceDraft] = Field(default_factory=list)
+
+
 class Character(BaseModel):
     character_id: str
     name: str

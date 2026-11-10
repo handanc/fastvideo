@@ -23,7 +23,13 @@ from fastapi.testclient import TestClient
 from test_board_api import _mk_run
 
 import fastvideo3.app.api as api_mod
-from fastvideo3.core.draft_norm import flat, labels_of, normalize_draft, spoken_lines
+from fastvideo3.core.draft_norm import (
+    flat,
+    labels_of,
+    normalize_draft,
+    quoted_spans,
+    spoken_lines,
+)
 from fastvideo3.core.schema import BaseInfo, Script
 from fastvideo3.core.script_text import parse_script_text, render_script_text
 from fastvideo3.core.storage import RunStorage
@@ -334,3 +340,102 @@ def test_deterministic_layer_is_enough_for_real_drafts(client, run, monkeypatch)
         r = client.put(f"/api/runs/{RUN}/script/text", json={"text": _fixture(name)})
         assert r.status_code == 200, (name, r.text)
     assert not any(FORMATTER_MARK in c for c in called), "确定性整理层没理由让模型插手"
+
+# ───────────── 散文/大纲稿导入：假阳性修复 + 三档逐字校验 ─────────────
+#: 形状取自 2026-11-05 的真实失败：散文小标题（核心设定/第1集/场景/人物/剧情/反转）被旧判据
+#: 当成台词，模型把它们正确归进 概要/场标题/角色表 之后，校验必然报"丢了 5 句台词"，于是任何
+#: 散文稿都导入不了 —— 而用户看到的报错是"第 1 行字段「核心设定」不在可识别位置"，指错了方向。
+_PROSE_OUTLINE = """核心设定：取经结束一千年后，天庭裁员，师徒四人法力尽失，下凡再就业。
+第1集：天庭裁员，下凡渡劫
+场景：凌霄宝殿（现代办公室风）
+人物：唐僧、孙悟空
+剧情：
+唐僧（整理袈裟，淡定地）：“徒儿们，莫慌。”
+孙悟空：呆子，就知道吃！
+反转：师徒四人走进人才市场。
+"""
+
+#: 模型把上面那份整理成标准稿：散文归位到 概要/场标题/角色表，两句台词逐字保留成台词行
+_OUTLINE_REFORCED = """《天庭裁员》 · 都市轻喜剧 · 30s · 9:16
+
+# 角色
+c_1 唐僧 · male · adult
+  外貌: 身着袈裟
+c_2 孙悟空 · male · adult
+  外貌: 
+
+## scene_1 · 凌霄宝殿（现代办公室风） · 日
+标题: 天庭裁员，下凡渡劫
+概要: 取经结束一千年后，天庭裁员，师徒四人法力尽失，下凡再就业。
+
+### shot_1_1 对白 4s · 切
+在场: c_1, c_2
+画面: 师徒四人走进人才市场。
+  c_1（neutral）: 徒儿们，莫慌。
+  c_2（neutral）: 呆子，就知道吃！
+"""
+
+
+def test_spoken_lines_strict_skips_prose_labels():
+    """散文小标题不是台词：硬判据里排除，宽松档里仍留着（软提醒用）。"""
+    strict = spoken_lines(_PROSE_OUTLINE)
+    loose = spoken_lines(_PROSE_OUTLINE, strict=False)
+    assert any("呆子，就知道吃！" in x for x in strict), strict      # 真台词必须守住
+    assert not any("取经结束一千年后" in x for x in strict), strict   # 「核心设定：」不是台词
+    assert not any("天庭裁员，下凡渡劫" in x for x in strict), strict  # 「第1集：」不是台词
+    assert any("取经结束一千年后" in x for x in loose), loose          # 宽松档仍盯着它别整段消失
+
+
+def test_quoted_spans_skips_onscreen_text():
+    """画面里的字（写着/招牌/字幕）不算台词 —— 排版器被要求删掉它们，不能反过来判它违规。"""
+    assert quoted_spans("他说：“走吧。”") == ["走吧。"]
+    assert quoted_spans("墙上写着「天庭集团」四个字。") == []
+    assert quoted_spans("字幕：三年后") == []
+
+
+def test_prose_outline_imports_after_reformat(client, outdir, monkeypatch):
+    """整条链：散文稿 → 确定性层读不出 → 模型整理 → 三档校验全过 → 落盘成功。"""
+    called: list[str] = []
+    _mk_run(outdir, RUN, with_script=False)
+    _stub_formatter(monkeypatch, outdir, _OUTLINE_REFORCED, called)
+    r = client.post(f"/api/runs/{RUN}/script/import", json={"text": _PROSE_OUTLINE})
+    assert r.status_code == 200, r.text
+    assert any(FORMATTER_MARK in c for c in called), "散文稿应当走到模型整理那一层"
+    script = _saved(outdir)
+    spoken = [d.text for sh in script.all_shots() for d in sh.dialogues]
+    assert "徒儿们，莫慌。" in spoken, spoken          # 引号里的散文台词逐字成为台词行
+    assert "呆子，就知道吃！" in spoken, spoken
+    assert any("取经结束一千年后" in (sc.summary or "") for sc in script.scenes), "设定该并进概要"
+    # 提示词里必须写着"小标题不是台词"和"外貌可以留空"，否则模型只能猜
+    fmt = [c for c in called if FORMATTER_MARK in c][0]
+    assert "不是台词" in fmt and "留空" in fmt, fmt[-400:]
+
+
+def test_prose_outline_rejected_when_a_quote_vanishes(client, outdir, monkeypatch):
+    """模型把引号里的话整段删掉 → 拒绝保存并点名是哪句（这次是真的丢了内容）。"""
+    called: list[str] = []
+    _mk_run(outdir, RUN, with_script=False)
+    lossy = _OUTLINE_REFORCED.replace("  c_1（neutral）: 徒儿们，莫慌。\n", "")
+    _stub_formatter(monkeypatch, outdir, lossy, called)
+    r = client.post(f"/api/runs/{RUN}/script/import", json={"text": _PROSE_OUTLINE})
+    assert r.status_code == 422, r.text
+    detail = json.dumps(r.json(), ensure_ascii=False)
+    assert "徒儿们，莫慌" in detail, detail
+    assert "引号" in detail, detail
+    assert not (outdir / RUN / "script.json").exists(), "被拒的整理结果不能落盘"
+
+
+def test_relocated_content_warns_but_does_not_block(client, outdir, monkeypatch):
+    """模型把「核心设定」整段删了（它不是台词）→ 保存照过，但必须提醒人核对。"""
+    called: list[str] = []
+    _mk_run(outdir, RUN, with_script=False)
+    trimmed = _OUTLINE_REFORCED.replace(
+        "概要: 取经结束一千年后，天庭裁员，师徒四人法力尽失，下凡再就业。",
+        "概要: 师徒四人下凡。",
+    )
+    _stub_formatter(monkeypatch, outdir, trimmed, called)
+    r = client.post(f"/api/runs/{RUN}/script/import", json={"text": _PROSE_OUTLINE})
+    assert r.status_code == 200, r.text
+    notes = "".join(r.json().get("notes") or [])
+    assert "没出现在结果里" in notes, notes
+    assert "莫慌" not in notes, "台词一句没丢，不该拿台词吓人"

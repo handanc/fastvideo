@@ -42,14 +42,15 @@ WATCHED = frozenset(
         "qwen3.8-27b", "qwen-plus", "qwen3-vl-plus", "qwen-vl-plus", "qwen-vl-max",
         "qwen-vl-ocr", "deepseek-chat",
         # 图生视频 / 文生视频
-        "wan3.0-video", "wan3.0-video-prime", "wan2.7-i2v", "wan2.7-r2v", "wan2.6-i2v",
+        "wan3.0-video", "wan3.0-video-prime", "wan2.7-r2v", "wan2.6-i2v",
         "wan2.2-i2v-flash", "wan2.2-i2v-plus", "wanx2.1-i2v-turbo", "wanx2.1-i2v-plus",
         # 文生图
         "wan2.7-image", "wan2.7-image-pro", "wan2.6-image", "wan2.6-t2i",
         "wanx2.1-t2i-turbo", "wanx2.1-t2i-plus", "qwen-image-3.0", "qwen-image-3.0-pro",
         "qwen-image-2.0", "qwen-image-2.0-pro", "qwen-image-2.1-pro", "qwen-image-2.1-turbo",
-        # 口型 / 语音
-        "wan2.2-s2v", "wan2.2-s2v-detect", "videoretalk", "cosyvoice-v2",
+        # 语音（口型类 wan2.2-s2v / wan2.2-s2v-detect / videoretalk 已于 2026-11-04 随
+        # A/B 链删除，refresh-prices 不再抓它们）
+        "cosyvoice-v2",
         "cosyvoice-v3-flash", "cosyvoice-v3-plus",
     }
 )

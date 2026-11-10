@@ -76,8 +76,8 @@ def ref_paths(ref_image: RefImage) -> list[Path]:
 
 _RES_RANK = {"480p": 1, "720p": 2, "1080p": 3, "2k": 4, "4k": 5}
 
-# 计价键的分辨率后缀统一用**小写**（fal 官方枚举本身就是 480p/720p，百炼档位是 480P/720P；
-# pricing.yaml 只认一种写法，否则高/低档键各漂移一份 → price_of 静默回落默认价）。
+# 计价键的分辨率后缀统一用**小写**（百炼档位写 480P/720P，价目键写 480p/720p；
+# pricing 表只认一种写法，否则高/低档键各漂移一份 → price_of 静默回落默认价）。
 _TIER_SUFFIX = {1: "480p", 2: "720p", 3: "1080p", 4: "2k", 5: "4k"}
 
 
@@ -112,7 +112,7 @@ _PROTOCOL_ERROR_MARKERS = (
     "media.1.type",
     "unsupported media",
     "invalid parameter",
-    # fal（FastAPI 校验）：缺必填字段/枚举值非法 → "field required"/"validation error"。
+    # 部分托管方用 FastAPI 校验：缺必填字段/枚举值非法 → "field required"/"validation error"。
     # 这类报文重试 3 次结果完全相同，必须立刻换通道或降级（见 m6 的 is_protocol_error 分支）。
     "field required",
     "validation error",
@@ -246,7 +246,7 @@ class Provider(ABC):
     def price_key(self, resolution: str | None = None, *, has_video: bool = False) -> str:
         """**台账计价键**（默认=模型名）。
 
-        同一模型按分辨率/输入形态分档计价的供应商（fal InfiniteTalk：480p 与 720p
+        同一模型按分辨率/输入形态分档计价的供应商（百炼 wan 系按档位、历史 fal 通道
         差 2 倍、i2v 与 v2v 差 1.5 倍）覆写此方法，让记账按**实际发送的那一档**，
         而不是一个笼统的模型价 —— 熔断线只能按真实单价收紧，不能靠事后对账单发现。
         """
