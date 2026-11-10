@@ -130,14 +130,21 @@ class _Capture:
         self.urls: list[str] = []
         self.headers: list[dict] = []
         self.uploads: list[tuple[str, str]] = []  # (type, 本地文件名)
+        self.upload_bases: list[str] = []  # 每次上传打的端点
 
     def install(self, monkeypatch, provider) -> None:
         import fastvideo3.utils.dashscope_upload as up
 
         cap = self
 
-        async def fake_upload(api_key, model, path):
+        async def fake_upload(api_key, model, path, base_url=None):
+            # base_url 是端点跟随（`.env` 的 DASHSCOPE_BASE_URL）新增的形参：上传必须与
+            # 提交打同一个端点，否则专属端点不认公共端点签出的 oss:// URL。
+            assert base_url == provider.api_base, (
+                f"上传端点漂移：{base_url!r} != 提交端点 {provider.api_base!r}"
+            )
             Path(path).is_file()
+            cap.upload_bases.append(base_url or "")
             cap.uploads.append((Path(path).name, str(path)))
             return f"oss://dashscope-instant/fake/{Path(path).name}"
 

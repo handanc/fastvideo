@@ -638,14 +638,37 @@ def flat(s: str) -> str:
     return "".join(ch for ch in s if ch.isalnum() or "一" <= ch <= "鿿")
 
 
-def spoken_lines(text: str) -> list[str]:
+#: 散文/大纲稿里的小标题：`核心设定：…`、`场景：…`、`人物：…` —— **形状与台词一模一样**
+#: （都是"某某：一句话"），但它们不是说出口的话。把它们算进台词清单，"模型只改排版"的
+#: 逐字校验就必然失败：模型（正确地）把这些行归进 概要/场标题/角色表，于是报"丢了 5 句台词"，
+#: 任何散文稿都存不进去（2026-11-05 实测 run_20261105_105642：三轮整理全被这条假阳性否掉，
+#: 用户看到的却是"第 1 行字段「核心设定」不在可识别位置"，完全指错了方向）。
+_PROSE_LABELS = frozenset({
+    "核心设定", "设定", "世界观", "背景", "剧情", "情节", "故事", "故事梗概", "大纲", "梗概",
+    "摘要", "主题", "立意", "看点", "反转", "转折", "结尾钩子", "钩子", "开场", "结局", "收尾",
+    "场景", "场次", "地点", "时间", "环境", "人物", "角色", "出场人物", "主要人物", "演员表",
+    "备注", "说明", "提示", "分集", "集数", "幕", "段落", "镜头", "分镜", "旁白说明", "字幕说明",
+})
+
+#: `第1集：`、`第三幕：`、`2场：` 这类集/场/幕标号同样不是台词
+_EPISODE_LABEL = re.compile(r"^第?[0-9一二三四五六七八九十百]+[集场幕话回段节]$")
+
+
+def spoken_lines(text: str, *, strict: bool = True) -> list[str]:
     """稿子里**说出口的话**（逐字清单，任意排版都能抠出来）。
 
     用途是模型整理格式后的逐字校验：它只许动排版，一句台词都不许改词、吞句、加句。
     认形状而不是认语义：`  id（情绪）: 台词`、`**猪八戒：** 台词`、`唐僧：台词` 都算，
     而字段行（在场/画面/运镜/…）与整片设定行（时长/画幅/风格/…）排除掉。
+
+    `strict=True`（默认，用于**拒绝保存**的硬判据）再排除散文小标题与集/场/幕标号 ——
+    它们形状像台词但不是台词，留在硬判据里会让散文稿永远存不进去（见 `_PROSE_LABELS`）。
+    `strict=False` 返回宽松集（含小标题），只用于"整段内容有没有凭空消失"的**软提醒**：
+    模型把「核心设定：…」归进概要是对的，但把整段设定删了就该说一声。
     """
     stop = set(CANON_KEYS) | set(KEY_RENAMES) | set(META_KEYS) | set(DROP_KEYS) | set(_PLACE_KEYS)
+    if strict:
+        stop |= set(_PROSE_LABELS)
     out: list[str] = []
     for raw in text.replace("\r\n", "\n").split("\n"):
         s = unmark(raw).strip()
@@ -657,14 +680,32 @@ def spoken_lines(text: str) -> list[str]:
         )
         if not m:
             continue
-        who = m.group("who").strip()
-        if re.sub(r"\s", "", who) in stop:
+        who = re.sub(r"\s", "", m.group("who").strip())
+        if who in stop or (strict and _EPISODE_LABEL.match(who)):
             continue
         said = m.group("text").strip()
         said = re.sub(r"^[「“\"'『]+|[」”\"'』]+$", "", said).strip()
         if len(flat(said)) < 2 or said in out:
             continue
         out.append(said)
+    return out
+
+
+#: 引号里的话。散文稿的台词常写成「玉帝（老板）看着财报，愁眉苦脸：“香火钱连年下跌！”」——
+#: 冒号不在括号后面，`spoken_lines` 的形状判据抓不到它，而它偏偏是**最不该被模型删掉**的内容。
+#: 所以单独抠出来做一档介于两者之间的判据：整段从结果里消失 = 删台词 → 拒绝保存；
+#: 还在但没落成台词行（被并进「画面:」）= 挪位置 → 只提醒人核对。
+_QUOTED = re.compile(r"""[“「『'"]([^”」』'"]{2,120})[”」』'"]""")
+
+
+def quoted_spans(text: str) -> list[str]:
+    """稿子里所有引号内的内容（去重，保序）。"""
+    out: list[str] = []
+    for m in _QUOTED.finditer(text.replace(chr(13) + chr(10), chr(10))):
+")):
+        v = m.group(1).strip()
+        if len(flat(v)) >= 2 and v not in out:
+            out.append(v)
     return out
 
 

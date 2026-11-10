@@ -29,15 +29,11 @@ T2I_ASYNC = "async_text2image"        # /services/aigc/text2image/image-synthesi
 T2I_MULTIMODAL = "multimodal_sync"    # /services/aigc/multimodal-generation/generation（同步 messages）
 I2V_LEGACY = "i2v_legacy"             # video-synthesis + input.img_url（wan2.2 系）
 I2V_MEDIA = "i2v_media_array"         # video-synthesis + input.media[{type:first_frame|reference_image|driving_audio}]
-TALK_S2V = "s2v"                      # image_url + audio_url 数字人口型
-TALK_RETALK = "videoretalk"           # video_url + audio_url 重对口型
-TALK_MEDIA_AUDIO = "i2v_driving_audio"  # media[{first_frame},{driving_audio}]（**仅 wan2.7 系**）
 # wan3.0 的口型**不吃音频**：官方 media 枚举里没有 driving_audio，台词写在提示词里由模型自己
 # 发声（"提示词重点描述动态过程、剧情、台词与运镜"）。把它当 driving_audio 发会得到真实 400，
-# 项目里存着原文（tests/test_talk_fallback.py）—— 所以这条必须是独立协议，不能复用上一条。
+# 项目里存着原文（tests/test_talk_fallback.py）。A 链 s2v / B 链 videoretalk / wan2.7 的
+# driving_audio 三种 talk 协议已于 2026-11-04 随那两条链一起删除。
 TALK_SCRIPTED = "wan30_scripted_talk"  # media[{first_frame(,last_frame)}] + 台词进 prompt
-TALK_FAL_I2V = "fal_infinitalk_image"  # fal.ai：image_url + audio_url + prompt → 说话视频
-TALK_FAL_V2V = "fal_infinitalk_v2v"    # fal.ai：video_url + audio_url + prompt → 重对口型
 # 文本这一族两家都是 OpenAI 兼容 `/chat/completions`，但**域名与 KEY 不同**。
 # 2026-10-14 事故：面板点名 `deepseek-v4-flash-0731`，而路由是 `dashscope_qwen` →
 # 这个名字被发到百炼端点，连上但不返回，180s × 3 次重试 = 9 分钟后才报 ReadTimeout。
@@ -58,16 +54,9 @@ _PATTERNS: list[tuple[str, str, str]] = [
     ("wan2.7-i2v*", "i2v", I2V_MEDIA),
     ("wan2.7-r2v*", "i2v", I2V_MEDIA),
     ("wan2.2-i2v*", "i2v", I2V_LEGACY),
-    ("wan2.2-s2v*", "talk", TALK_S2V),
-    ("videoretalk*", "talk", TALK_RETALK),
-    # fal.ai 托管的 InfiniteTalk（端点 ID 就是模型名）。*video-to-video 必须排在
-    # *infinitalk* 之前：模式表顺序敏感，越具体越靠前，否则 v2v 端点会被判成 i2v。
-    ("*infinitalk*video-to-video*", "talk", TALK_FAL_V2V),
-    ("*infinitalk*", "talk", TALK_FAL_I2V),
     # wan3.0：台词写进提示词、模型自发声（**没有 driving_audio**，别按 2.7 那套发）
     ("wan3.0-video*", "talk", TALK_SCRIPTED),
     # wan2.7-i2v 才有 media[].type=driving_audio 这条原生音频驱动口型
-    ("wan2.7-i2v*", "talk", TALK_MEDIA_AUDIO),
 ]
 
 # (能力, 协议) → factory 里的 provider 名
@@ -78,14 +67,7 @@ _PROVIDER_FOR: dict[tuple[str, str], str] = {
     ("t2i", T2I_MULTIMODAL): "dashscope_wan27_image",
     ("i2v", I2V_LEGACY): "dashscope_wan22_i2v",
     ("i2v", I2V_MEDIA): "dashscope_wan27_i2v",
-    ("talk", TALK_S2V): "dashscope_wan22_s2v",
-    ("talk", TALK_RETALK): "dashscope_videoretalk",
-    ("talk", TALK_MEDIA_AUDIO): "dashscope_wan27_audio",
     ("talk", TALK_SCRIPTED): "dashscope_wan30_talk",
-    # 同一个 provider 类内部按输入形态选端点（有 video→v2v，只有 image→i2v），
-    # 所以两种协议都映射到 fal_infinitalk：改道不会改变行为，只是把端点名认对。
-    ("talk", TALK_FAL_I2V): "fal_infinitalk",
-    ("talk", TALK_FAL_V2V): "fal_infinitalk",
 }
 
 _ENV_KEYS = {

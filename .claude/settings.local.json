@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:fal.ai)",
+      "WebSearch",
+      "WebFetch(domain:www.withone.ai)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.aimodels.fyi)",
+      "PowerShell(Set-Location D:\\\\FastVideo3; try { \\(Invoke-WebRequest http://127.0.0.1:8000/api/health -UseBasicParsing -TimeoutSec 3\\).Content } catch { \"no server on 8000: $\\($_.Exception.Message\\)\" }; \"--- tasklock ---\"; if \\(Test-Path output\\\\.task.lock\\) { Get-Content output\\\\.task.lock -Raw } else { \"no lock file\" }; \"--- recent runs ---\"; Get-ChildItem output -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 5 Name,LastWriteTime | Format-Table -AutoSize)",
+      "PowerShell(git *)",
+      "PowerShell(cd D:\\\\FastVideo3\\\\01-code\\\\FastVideo3; echo \"=== .env tracked? ===\"; git ls-files --error-unmatch .env 2>&1 | Select-Object -First 3; echo \"=== gitignored-but-tracked files ===\"; git ls-files -i -c --exclude-standard; echo \"=== total tracked files on HEAD ===\"; \\(git ls-files | Measure-Object\\).Count; echo \"=== is .env in ANY commit history? ===\"; git log --all --oneline -- .env | Select-Object -First 10; echo \"=== untracked+ignored top-level ===\"; git status --porcelain --ignored | Select-String \"!!\" | Select-Object -First 30)",
+      "PowerShell(cd D:\\\\FastVideo3\\\\01-code\\\\FastVideo3; echo \"=== zip / binary tracked? ===\"; git ls-files | Select-String -Pattern \"\\\\.zip$|\\\\.exe$|\\\\.onnx$|\\\\.pt$|\\\\.dll$|\\\\.so$|\\\\.env$\"; echo \"=== largest tracked files ===\"; git ls-files | ForEach-Object { if \\(Test-Path -LiteralPath $_ -PathType Leaf\\) { $i = Get-Item -LiteralPath $_; [PSCustomObject]@{KB=[math]::Round\\($i.Length/1KB,1\\); Path=$_} } } | Sort-Object KB -Descending | Select-Object -First 15 | Format-Table -AutoSize; echo \"=== worktree vs index dirty files ===\"; git status --porcelain)",
+      "PowerShell(cd D:\\\\FastVideo3\\\\01-code\\\\FastVideo3; Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[System.IO.Compression.ZipFile]::OpenRead\\(\"$PWD\\\\6a4b3c2d1e0f9f66.zip\"\\); echo \"=== zip entries: $\\($z.Entries.Count\\) ===\"; $z.Entries | Select-Object -First 40 @{n='KB';e={[math]::Round\\($_.Length/1KB,1\\)}}, FullName, Length | Format-Table -AutoSize; $z.Dispose\\(\\))",
+      "PowerShell(New-Item *)",
+      "PowerShell(cd D:\\\\FastVideo3\\\\01-code\\\\FastVideo3; echo \"=== repo visibility \\(unauthenticated API\\) ===\"; try { $r = Invoke-RestMethod -Uri \"https://api.github.com/repos/Mingyang0018/FastVideo3\" -Method Get -TimeoutSec 20 -UserAgent \"inspect\"; echo \"exists=$\\($r.full_name\\) private=$\\($r.private\\) default_branch=$\\($r.default_branch\\) size_kb=$\\($r.size\\)\" } catch { echo \"API says: $\\($_.Exception.Message\\)\" }; echo \"=== tracked files by top dir ===\"; git ls-files | ForEach-Object { \\($_ -split '/'\\)[0] } | Group-Object | Sort-Object Count -Descending | Select-Object Count, Name | Format-Table -AutoSize)",
+      "PowerShell(git push *)",
+      "PowerShell(cd D:\\\\FastVideo3\\\\01-code\\\\FastVideo3; echo \"HEAD: $\\(git rev-parse --abbrev-ref HEAD\\) $\\(git rev-parse --short HEAD\\)\"; echo \"main: $\\(git rev-parse --short refs/heads/main\\)\"; echo \"origin/main: $\\(git rev-parse --short refs/remotes/origin/main\\)\"; echo \"local main == pushed main ? $\\(\\(git rev-parse refs/heads/main\\) -eq \\(git rev-parse refs/remotes/origin/main\\)\\)\"; echo \"=== main tip log ===\"; git log --oneline -3 refs/heads/main)"
+    ]
+  }
+}

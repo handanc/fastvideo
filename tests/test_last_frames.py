@@ -104,24 +104,6 @@ async def test_scene_mode_decides_who_needs_last_frames(cfg, storage, ledger, tm
     }
 
 
-async def test_last_frames_not_burned_for_channels_that_ignore_them(cfg, storage, ledger):
-    """A 链（wan2.2-s2v 吃"图片+音频"）根本不发 last_frame → 为对白镜头产尾帧就是白烧钱。"""
-    cfg.use_last_frames = True
-    cfg.talk_mode = "s2v_direct"
-    script = _script_with_dialogue()
-    await _frames(cfg, storage, ledger, script)
-    assert _last_frame_path(storage, "talk") is None, "该通道不吃尾帧，别为它花一次 t2i 钱"
-    assert _last_frame_path(storage, "scenery") is not None
-
-
-async def test_last_frames_cover_dialogue_shots_in_v2v_mode(cfg, storage, ledger):
-    """B 链下对白镜头也要出运动片段 → 尾帧同样要产（判据与 m4 同源，不各写一份）。"""
-    cfg.use_last_frames = True
-    cfg.talk_mode = "v2v_overlay"
-    await _frames(cfg, storage, ledger, _script_with_dialogue())
-    assert _last_frame_path(storage, "talk") is not None
-
-
 async def test_last_frames_disabled_produces_nothing(cfg, storage, ledger):
     cfg.use_last_frames = False
     await _frames(cfg, storage, ledger, _script_with_dialogue())
@@ -321,7 +303,7 @@ async def test_missing_last_frame_is_reported_not_silent(cfg, storage, ledger):
             return await super().generate(prompt, **kw)
 
     cfg.use_last_frames = True
-    cfg.talk_mode = "v2v_overlay"  # B 链：对白镜头也要运动片段 → 三个镜头都要尾帧
+    cfg.talk_mode = "audio_overlay"  # 逐镜头路径（scene_active=False）：三个镜头都要尾帧
     script = _script_with_dialogue()
     assets = await build_assets(cfg, FakeT2IProvider(), script, storage, ledger)
     await build_storyboard(cfg, _Boom(), script, assets, storage, ledger)

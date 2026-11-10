@@ -101,6 +101,8 @@ filterwarnings = ["ignore::DeprecationWarning"]
 checked_at = "2026-10-12"
 source = "https://help.aliyun.com/zh/model-studio/model-pricing"
 basis = "list_price"
+# 2026-11-04：A 链 wan2.2-s2v（含 wan2.2-s2v-detect）、B 链 videoretalk、wan2.7 driving_audio
+# 的口型链路已删除，这些模型的单价与 worst_case 键一并摘除（不是漏登记，原值见 git 历史）。
 
 [tool.fastvideo3.pricing.defaults]
 # 没登记单价的模型按这里兜底，并标 price_certain=false（看板会说"其中 ¥X 是估算"）
@@ -112,12 +114,7 @@ tts = { unit = "char", price_cny = 0.0002 }
 vlm = { unit = "token_m", price_cny = 1.0, in_cny = 1.0, out_cny = 10.0 }
 
 [tool.fastvideo3.pricing.worst_case]
-dashscope_wan22_s2v = "wan2.2-s2v@720p"
-fal_infinitalk = "fal-ai/infinitalk/video-to-video@720p"
-dashscope_videoretalk = "videoretalk"
-dashscope_wan27_audio = "wan2.7-i2v@1080p"
 dashscope_wan30_talk = "wan3.0-video@1080p"
-kling_lipsync = "kling-v2-master"
 
 [tool.fastvideo3.pricing.models]
 # ── 文本（元/百万 Token：输入 | 输出）── 一次调用真实花多少 = 用 API 回传的 usage 算
@@ -141,19 +138,16 @@ kling_lipsync = "kling-v2-master"
 "qwen-vl-max" = { unit = "token_m", in_cny = 3.0, out_cny = 9.0, verified = false, note = "旧表沿用，官网价目页当前未列出" }
 "qwen-vl-plus" = { unit = "call", price_cny = 0.01, verified = false, note = "旧表沿用，官网价目页当前未列出" }
 "deepseek-chat" = { unit = "token_m", in_cny = 0.004, out_cny = 0.004, verified = false, note = "备选供应商，价在 DeepSeek 官网不在百炼" }
-"black-forest-labs/FLUX.1-dev" = { unit = "image", price_cny = 0.10, verified = false, note = "模型市场托管，不在百炼价目页" }
 
 # ── 图生视频 / 文生视频（元/输出秒，按分辨率分档）──
 "wan3.0-video" = { unit = "second", tiers = { "480p" = 0.3, "720p" = 0.6, "1080p" = 1.2 }, note = "限时7折 0.21/0.42/0.84" }
 "wan3.0-video-prime" = { unit = "second", tiers = { "480p" = 0.45, "720p" = 0.9, "1080p" = 1.8 } }
-"wan2.7-i2v" = { unit = "second", tiers = { "720p" = 0.6, "1080p" = 1.0 }, note = "有声视频" }
 "wan2.7-r2v" = { unit = "second", tiers = { "720p" = 0.6, "1080p" = 1.0 }, note = "参考视频/多主体，按同族价" }
 "wan2.6-i2v" = { unit = "second", tiers = { "720p" = 0.6, "1080p" = 1.0 } }
 "wan2.2-i2v-flash" = { unit = "second", tiers = { "480p" = 0.10, "720p" = 0.20, "1080p" = 0.48 }, note = "无声视频" }
 "wan2.2-i2v-plus" = { unit = "second", tiers = { "480p" = 0.14, "1080p" = 0.70 }, note = "官网只列 480P/1080P" }
 "wanx2.1-i2v-turbo" = { unit = "second", tiers = { "480p" = 0.24, "720p" = 0.24 } }
 "wanx2.1-i2v-plus" = { unit = "second", tiers = { "720p" = 0.70 } }
-"Wan-AI/Wan2.2-I2V-A14B" = { unit = "second", price_cny = 0.35, verified = false, note = "开源托管档，非百炼价目页" }
 
 # ── 文生图（元/张）──
 "wan2.7-image" = { unit = "image", price_cny = 0.20 }
@@ -170,15 +164,9 @@ kling_lipsync = "kling-v2-master"
 "qwen-image-2.0-pro" = { unit = "image", price_cny = 0.50 }
 
 # ── 口型 / 数字人（元/输出秒）──
-"wan2.2-s2v" = { unit = "second", tiers = { "480p" = 0.5, "720p" = 0.9 } }
-"wan2.2-s2v-detect" = { unit = "image", price_cny = 0.004, note = "输入图像检测，按张" }
-"videoretalk" = { unit = "second", price_cny = 0.08, note = "输出分辨率=输入，不分档" }
-"kling-v2-master" = { unit = "second", price_cny = 0.90, verified = false, note = "备选供应商，价在其官网不在百炼" }
 
-# ── fal.ai 托管 InfiniteTalk（美元×7.15 向上取整；端点 ID 即计价键前缀）──
-# 单价取自 fal 官方 OpenAPI 的 endpointBilling（2026-10-04 实取），页面明写 720p 翻倍。
-"fal-ai/infinitalk" = { unit = "second", tiers = { "480p" = 1.45, "720p" = 2.90 } }
-"fal-ai/infinitalk/video-to-video" = { unit = "second", tiers = { "480p" = 2.17, "720p" = 4.34 } }
+# ── fal.ai InfiniteTalk 单价条目已随该通道于 2026-11-04 一起移除（原值取自 fal 官方
+# endpointBilling 2026-10-04 实取，备查见 git 历史与 INTEGRATION.md）。
 
 # ── 语音与真正免费的端点 ──
 "cosyvoice-v2" = { unit = "char", price_cny = 0.0002, note = "2元/万字符" }

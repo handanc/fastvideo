@@ -20,7 +20,7 @@ from test_board_api import _mk_run
 import fastvideo3.app.api as api_mod
 from fastvideo3.core import progress as prog
 from fastvideo3.core import tasklock
-from fastvideo3.core.schema import Script
+from fastvideo3.core.schema import BaseInfo, Script
 from fastvideo3.core.storage import RunStorage
 
 RUN = "run_20260101_000060"
@@ -306,3 +306,93 @@ def test_put_script_title_only_change_invalidates_nothing(client, run):
     assert body["items"] == [], body
     assert _saved(root.parent).title == "师徒女儿国沦陷记（改名）"
     assert _saved(root.parent).version == script.version + 1, "改名也要涨版本（可追溯）"
+
+# ───────────────────────── 导入剧本（与保存剧本稿同一份实现）─────────────────────────
+def _standard_draft() -> str:
+    """一份"标准格式"的剧本文本 —— 与 `_mk_run` 用的是同一个 fake_script，保证可解析。
+
+    不从盘上 GET 的原因：导入的正是要在**还没有剧本**时跑，GET 那时是 404。
+    """
+    from fastvideo3.core.script_text import render_script_text
+    from fastvideo3.providers.fake import fake_script
+
+    return render_script_text(fake_script(BaseInfo(topic="测试主题")))
+
+
+def test_import_creates_script_on_a_fresh_run(client, outdir):
+    """没有剧本的 run 也能导入：这是它与「保存剧本稿」唯一的差别。"""
+    _mk_run(outdir, RUN, with_script=False)
+    assert not (outdir / RUN / "script.json").exists()
+    r = client.post(f"/api/runs/{RUN}/script/import", json={"text": _standard_draft()})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True and body["version"] == 1 and body["invalidated"] == 0
+    sc = _saved(outdir)
+    assert sc.shot_count() > 0, "导入的稿子必须落成剧本，不能只回个 200"
+    assert sc.base_info.topic == "测试主题", "base_info 要继承 run_meta，不能被稿子悄悄改掉"
+    # 假模式下不建 provider、不调模型：确定性那一层就该过完，不产生任何"花钱整理"的痕迹
+    assert not [
+        e for e in _storage(outdir).read_events()
+        if str(e.get("status", "")).startswith("draft_format")
+    ], "导入不该在假模式下触发 LLM 排版"
+
+
+def test_import_rejected_and_nothing_written(client, outdir):
+    """稿子有问题就整条拒绝，并且**不留半个剧本**（半份 script.json 会让后续步骤炸得更晚）。"""
+    root, _ = _mk_run(outdir, RUN, with_script=False)   # with_script=False 时 script 为 None
+    broken = _standard_draft().replace("在场: ", "在场: ghost, ", 1)
+    r = client.post(f"/api/runs/{RUN}/script/import", json={"text": broken})
+    assert r.status_code == 422, r.text
+    assert "ghost" in json.dumps(r.json()["detail"], ensure_ascii=False)
+    assert not (root / "script.json").exists(), "被拒的稿子不能落盘"
+
+
+def test_import_and_save_produce_the_same_script(client, outdir):
+    """同一份稿子走导入与走保存，产物必须一模一样 —— 共用实现的**行为**证据。
+
+    不这样钉，日后有人给导入写一份"差不多"的解析（少一层校验、少一次血缘作废）就会静默分叉：
+    同一份稿子在两个入口存出两个剧本，用户只会看到"我明明粘的一样，结果不一样"。
+    """
+    _mk_run(outdir, RUN, with_script=False)
+    text = _standard_draft()
+    a = client.post(f"/api/runs/{RUN}/script/import", json={"text": text})
+    assert a.status_code == 200, a.text
+    imported = _saved(outdir).model_dump(mode="json")
+
+    b = client.put(f"/api/runs/{RUN}/script/text", json={"text": text})
+    assert b.status_code == 200, b.text
+    saved = _saved(outdir).model_dump(mode="json")
+
+    # version 会随保存自增，这是**应该**的差别；其余必须逐字段相同
+    imported.pop("version"), saved.pop("version")
+    assert imported == saved, "导入与保存给出的剧本不一致"
+
+
+def test_import_and_save_share_one_implementation():
+    """两个入口都只是薄壳：解析/校验/落盘必须落在 `_apply_draft_text` 一份实现里。"""
+    import inspect
+
+    for fn in (api_mod.put_script_text, api_mod.import_script_text):
+        src = inspect.getsource(fn)
+        assert "_apply_draft_text(" in src, fn.__name__
+        for dup in ("parse_draft(", "script_from_draft(", "_commit_script("):
+            assert dup not in src, f"{fn.__name__} 里自己实现了一遍 {dup}"
+
+
+def test_import_blocked_while_generating(client, outdir):
+    _mk_run(outdir, RUN, with_script=False)
+    assert tasklock.acquire(outdir, "other_run", "step")[0]
+    r = client.post(f"/api/runs/{RUN}/script/import", json={"text": _standard_draft()})
+    assert r.status_code == 409
+    tasklock.release(outdir, "other_run")
+
+
+def test_import_without_base_info_says_why(client, outdir):
+    """run_meta 缺 base_info 时不许拿空主题硬凑一个剧本（设定错了整片跟着错）。"""
+    root = outdir / RUN
+    for stage in ("assets", "storyboard", "audio", "clips", "talk", "final", "review"):
+        (root / stage).mkdir(parents=True, exist_ok=True)
+    (root / "run_meta.json").write_text(json.dumps({"run_id": RUN}), encoding="utf-8")
+    r = client.post(f"/api/runs/{RUN}/script/import", json={"text": _standard_draft()})
+    assert r.status_code == 409, r.text
+    assert "base_info" in r.json()["detail"]

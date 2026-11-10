@@ -1,8 +1,8 @@
 # 1080P 商业级档（`--resolution 1080P` / `FV3_RESOLUTION=1080P`）：对标主流商业 AI 短剧的模型栈。
 # 选型依据（2026-08 实测与文档调研）：
-#   - 运动/口型：wan2.7-i2v（新协议，driving_audio 原生口型同步，运动质量代差级提升）
+#   - 运动/口型：wan3.0-video（台词写进提示词、模型自发声 → 一条调用出口型+动作+音轨；2026-11-04 起这是唯一口型通道，A/B 链已删除）
 #   - 角色一致性：wan2.7-r2v 参考生视频（像素级形象一致，商业管线的"角色资产"引擎）
-#   - 抽卡选优：每镜头 2 候选 + qwen-vl-max 打分取优（商业团队"反复抽卡"的工程化等价）
+#   - 抽卡选优：每镜头 2 候选 + VLM 打分取优（商业团队「反复抽卡」的工程化等价；模型名见 .env 的 FV3_VLM_MODEL）
 # 成本量级：1080P 约 ¥1/秒，90 秒片含抽卡约 ¥150-260，用 --budget 300 跑。
 providers:
   # 文生图**不在这里各档一份**（2026-10-17）：三档共用 configs/default.yaml 的
@@ -11,21 +11,14 @@ providers:
   # 三档相同、models 却各写各的，于是面板"默认 wanx2.1-t2i-plus"而这条 run 打的是
   # wan2.7-image —— 用户在错的基线上做选择。
   i2v: {default: dashscope_wan27_i2v}   # 兜底 wan2.2 已删：换模型=换画面语法
-  # 口型：**模式自己就是通道选择器**（唯一映射表 core/talkmode.py，五次定档 2026-10-11）。
-  # 本文件只决定 1080P 档的默认模型与一致性深度；口型恒为 wan3.0 场景生成自带，三条链在
-  # 任何档位都能选，所以这里**不再需要**"改模式必须同时改本路由"那条成对规则 —— 上一版正是
-  # 这两份事实各漂一次，才出现"对白镜头先烧一份运动片段的钱、再 100% 降级成无口型叠音"。
-  #   s2v_direct(wan2.2-s2v)：图片+我们的语音 → 口型视频。只到 720P（1080P 成片会被钳位后
-  #     由 m7 cover）、单人同屏、音频 <20s 要分段拼接；优点是语音一致、对白镜头不过 i2v。
-  #   v2v_overlay(videoretalk)：m4 的 1080P 运动片段 + 语音 → 只重绘嘴部。**历史上本档的默认**：
-  #     不重画画面 → 继承 m3 参考图锁脸；「输出分辨率与帧率=输入」→ 1080P 不降级；
-  #     ¥0.08/秒 + 1800 秒免费额度；音频上限 120s 免分段。代价：两段付费、最慢。
-  #   scripted_talk(wan3.0-video)：图片+提示词（台词在里面）→ 一条调用出口型+动作+音轨，
-  #     原生 1080P、多人同屏有解；音轨恒为模型原声。
-  # ⚠ videoretalk 硬门槛：输入视频边长 ≥640（本档 1080P 满足；480P 档会被拒）。
-  # ⚠ 兜底 fal_infinitalk 当前等于没有：2026-10-11 实测 403「User is locked. Reason: Exhausted
-  #   balance」。主通道失败时会多花一次 403 往返，不影响交付。
-  talk: {default: dashscope_videoretalk, fallback: fal_infinitalk}
+  # 口型：**模式自己就是通道选择器**（唯一映射表 core/talkmode.py）。
+  # 本文件只决定 1080P 档的默认模型与一致性深度；口型恒为 C 链 wan3.0-video（图片+提示词
+  # 台词在里面 → 一条调用出口型+动作+音轨，原生 1080P、多人同屏有解，音轨为模型原声）。
+  # 历史包袱已清：A 链 wan2.2-s2v（只到 720P、单人同屏）、B 链 videoretalk（两段付费最慢、
+  #   要求运动片段边长 ≥640，本档曾是它的默认）、wan2.7 driving_audio 与第三方口型（fal/可灵）
+  #   已于 2026-11-04 全部移除 → **本档没有兜底通道**，主通道失败即降级叠音并落
+  #   degradations.json（看板红标），不会再出现"先烧一份运动片段的钱、再 100% 无口型"。
+  talk: {default: dashscope_wan30_talk}
   r2v: {default: dashscope_wan27_r2v}
   # tts 继承 default.yaml：主 = cosyvoice-v2、兜底 = edge-tts（三档同一套配音口径）
 
@@ -38,15 +31,14 @@ generation:
   consistency_gate: reshoot       # 不达标镜头自动带参考图重做（≤2 轮），仍不过则标不合格
   scene_ref_mode: scenery_only    # 场景图只喂空镜；all 需 m9 证明人脸不降才允许
   ref_max_chars: 1   # 多图协议待 scripts/probe_multi_ref.py 探单通过后再放开到 2（风险 R1）
-  # 本档**默认**走 B 链：videoretalk 吃"运动片段+音频" → 模式即 v2v_overlay（模式自己装配
-  # 对应通道，见 core/talkmode.py，不需要再动上面的 providers.talk）。这一档下对白镜头**也要过
-  # m4 i2v**（m4.shots_need_i2v），而 videos 步骤的顺序已是 片段 → 配音 → 口型，前置依赖天然满足。
-  # 想换 C 链（wan3.0-video 一条调用出口型+动作）在建任务时选 `scripted_talk` 即可，
-  # 不必改本文件；对白镜头的画面与口型都由场景片段一次调用直出。
+  # 本档对白镜头的画面与口型由 C 链一次调用直出（ wan3.0-video：提示词里带台词），
+  # 不需要再单独跑口型步；只有**无台词**的动作镜头才过 m4 i2v 出运动片段。
+  # （本档历史上默认走 B 链 v2v_overlay，要求运动片段边长 ≥640；该链已于 2026-11-04 移除。）
   # C 链的成片音轨：**model = 保留模型自发声（默认）** | master = 换回 m5 的 TTS 母带。
   # 不换母带是实测结论：换了以后语音领先口型 0～2.2 秒且每镜偏移不同（测量表在
-  # core/talkmode.py）。商业交付真要"音色统一 + 嘴型对着这条配音"，走本档默认的
-  # v2v_overlay（对着我们的母带重画嘴），而不是在 C 链里换音轨。
+  # core/talkmode.py）。要"音色统一 + 嘴型对着这条配音"在现通道下**做不到**：原先指路
+  # B 链 v2v_overlay，该链已于 2026-11-04 移除；现在只能接受模型原声，或用
+  # reference_audio 克隆音色（嘴型仍对模型自己的发声，且与首尾帧互斥）。
   use_r2v_for_characters: true
   keyframe_seed_scope: cast      # 同角色跨场景同种子（旧 scene_cast 换场景即换脸）
   asset_style_gate: warn         # 立绘写实闸门：动漫/3D 立绘记事件+降级台账

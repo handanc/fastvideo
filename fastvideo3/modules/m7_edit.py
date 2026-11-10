@@ -93,7 +93,7 @@ def build_srt(
         1  00:00:08,320 --> 00:00:10,240  色即是空...哎？
         2  00:00:09,519 --> 00:00:14,032  师傅！观音菩萨还在天上看着呢！   ← 重叠 0.72s
     旧实现把"字幕时长 = 音频时长、下一条起点 = 下一镜头起点 + 偏移"直接拼起来，
-    而口型模型回传的片段**比它的驱动音频短**（s2v 片段 1.70s vs 音频 1.92s），
+    而口型片段**比它的驱动音频短**（旧 A 链实测：片段 1.70s vs 音频 1.92s；C 链换母带同理），
     上一条字幕于是溢出进下一个镜头的时间窗，两条同时挂在画面上。
 
     规则（顺序敏感）：
@@ -219,7 +219,7 @@ async def compose_final(
     # 1) 选取每个镜头的最终素材并按需挂音轨
     # model_audio：成片里**用的是口型模型自带音轨**的那些镜头。字幕时间轴要认这个集合 ——
     # 见 `build_srt`：模型发声的节奏与我们 TTS 母带的节奏不是一回事（实测差 0～2.2 秒）。
-    # 只有 C 链 + `voice_source=model` 才是"模型原声进成片"；A/B 链的音轨始终是我们的母带。
+    # 只有 `voice_source=model` 才是"模型原声进成片"；换 master 时音轨仍是我们的母带。
     scripted_model_track = cfg.talk_mode == "scripted_talk" and cfg.voice_source == "model"
     model_audio: set[str] = set()
     selected: list[tuple[str, Path]] = []
@@ -288,7 +288,7 @@ async def compose_final(
                 )
             elif driver.exists():
                 # 口型片段**只取它的画面**，音轨换回我们自己的 TTS 母带。
-                # 实测原因（run_20261005_130208）：wan2.2-s2v 回传的 mp4 自带一条
+                # 实测原因（run_20261005_130208，旧 A 链 wan2.2-s2v；C 链换母带同样成立）：
                 # 44.1kHz/stereo/AAC-101kbps 音轨，那是我们 16k 单声道驱动音频经模型
                 # 上变换的产物（高频受损 = 发闷/电话音），而且片段只有 4.30s 而音频是
                 # 4.51s —— **句尾被截 0.21s**。嘴型在视频流里，换音轨不影响口型对齐；
@@ -298,7 +298,7 @@ async def compose_final(
                 src = swapped
                 storage.log_event("m7_edit", "talk_audio_replaced", shot=shot.shot_id)
         if not from_talk:
-            # 对白音轨直叠：audio_overlay 模式，或对话镜头无口型产物（S2V 降级路径）
+            # 对白音轨直叠：audio_overlay 模式，或对话镜头没有口型产物（口型失败降级路径）
             wavs = [Path(ln.wav_uri) for ln in audio_lines if ln.shot_id == shot.shot_id]
             if wavs:
                 from fastvideo3.utils.audio import concat_wavs
@@ -316,7 +316,7 @@ async def compose_final(
     if not selected:
         raise RuntimeError("没有任何可用镜头片段，无法合成")
 
-    # 2) 规格统一（I2V/S2V 混源 → 统一分辨率/帧率/像素格式；cover 裁切防黑边）
+    # 2) 规格统一（i2v 片段与口型片段混源 → 统一分辨率/帧率/像素格式；cover 裁切防黑边）
     normalized: list[tuple[str, Path]] = []
     for sid, src in selected:
         out = norm_dir / f"{sid}.mp4"

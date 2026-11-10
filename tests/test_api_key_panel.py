@@ -43,7 +43,18 @@ def dotenv(tmp_path, monkeypatch):
     p.write_text(SAMPLE, encoding="utf-8")
     monkeypatch.setattr(envfile, "env_path", lambda: p)
     # 进程环境变量优先于 .env：不清掉的话测的是这台机器的 shell，不是被测代码
-    for k in ("DASHSCOPE_API_KEY", "FAL_KEY", "DEEPSEEK_API_KEY", "SILICONFLOW_API_KEY"):
+    for k in (
+        "DASHSCOPE_API_KEY",
+        "FAL_KEY",
+        "DEEPSEEK_API_KEY",
+        "SILICONFLOW_API_KEY",
+        # 端点同理：不清掉这几项，探活打的就是这台机器 shell 里的端点而不是被测 .env
+        "DASHSCOPE_BASE_URL",
+        "DASHSCOPE_TASK_BASE_URL",
+        "DASHSCOPE_COMPAT_BASE_URL",
+        "FV3_S2V_BASE_URL",
+        "DASHSCOPE_TEXT_BASE_URL",
+    ):
         monkeypatch.delenv(k, raising=False)
     return p
 
@@ -193,12 +204,16 @@ def stub_probe(monkeypatch):
     """把真请求换成可编程的桩 —— 测试**绝不**打百炼端点（那会花真钱，也不该依赖网络）。"""
     calls: list[tuple[str, str]] = []
 
-    async def fake_probe(api_key: str, model: str = "qwen3.7-plus") -> tuple[str, str]:
+    async def fake_probe(
+        api_key: str, model: str = "qwen3.7-plus", base_url: str | None = None
+    ) -> tuple[str, str]:
         calls.append((api_key, model))
+        stub_probe.bases.append(base_url or "")
         return stub_probe.result  # type: ignore[attr-defined]
 
     stub_probe.result = ("ok", "KEY 有效，账户正常")
     stub_probe.calls = calls
+    stub_probe.bases = []
     import fastvideo3.providers.dashscope as ds
 
     monkeypatch.setattr(ds, "probe_account", fake_probe)
@@ -214,6 +229,24 @@ def test_probe_reports_ok_without_the_key(client, dotenv, stub_probe):
     # 探的是 chat 族（文本模型）：拿 wan2.7-image 去探会收到"content 应为列表"这种
     # 请求形状错误，被判成"KEY 无效"就是指着好 KEY 喊错
     assert stub_probe.calls and stub_probe.calls[0][1].startswith("qwen"), stub_probe.calls
+
+
+def test_probe_targets_the_endpoint_in_env(client, dotenv, stub_probe):
+    """换套餐端点后，那颗「账户探活」按钮必须探**套餐端点**。
+
+    写死公共端点会探出一个与真实生成路径无关的 ✔：套餐 KEY 在公共端点有效、在套餐端点
+    没额度（或反过来）时，用户看到"KEY 有效"却一建任务就 401，比没有探活更误导。
+    """
+    dotenv.write_text(
+        SAMPLE + "\nDASHSCOPE_BASE_URL=https://token-plan.cn-beijing.maas.aliyuncs.com\n",
+        encoding="utf-8",
+    )
+    )
+    r = client.post("/api/api-keys/probe")
+    assert r.status_code == 200, r.text
+    assert stub_probe.bases == [
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    ], stub_probe.bases
 
 
 def test_probe_detail_is_scrubbed_of_the_key(client, dotenv, stub_probe):

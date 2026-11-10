@@ -378,7 +378,7 @@ def test_lipsync_coverage_and_verdict_merge(outdir):
     dlg = [sh.shot_id for sc in script.scenes for sh in sc.shots if sh.dialogues]
     (root / "talk" / f"shot_{dlg[0]}.mp4").unlink()
     cov = lipsync_coverage(RunStorage("run_20260101_000042", root=outdir), script,
-                           "v2v_overlay")
+                           "scripted_talk")
     assert cov["required"] and cov["missing"] == [dlg[0]]
     assert cov["with_lipsync"] == len(dlg) - 1
 

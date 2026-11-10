@@ -392,19 +392,25 @@ def servable_groups(
 
     仍保留两个例外（判据来自 run_meta，老 run 要能续跑）：
     1. `scene_mode="off"`：一组都不服务（逐镜头兜底，仅历史 run 用）；
-    2. 非 C 链（talk_mode 是历史上的 A/B 链）且环里没有 wan3.0：只服务**整组无对白**的组，
-       否则 m6 与新路径会抢同一秒画面（重复付费）。
+    2. `audio_overlay`（不做口型、对白镜头的画面由 m4 出运动片段、m7 叠音）：只服务
+       **整组无对白**的组，否则场景路径与 m4/m6 会抢同一秒画面（重复付费或跳过口型）。
+       旧 A/B 链的模式串已于 2026-11-04 随通道删除，`channel()` 会把它们规范成 C 链。
+
+    ⚠ 这份判据**必须**与 `progress.scene_covered_shots` 同源 —— 后者直接调用本函数，
+      两处各写一份就会出现"含对白的组算不算已被场景覆盖"的分叉：算 → m6 被跳过 →
+      成片没口型；不算 → 场景路径与逐镜头路径双重付费。都是本项目实测踩过的形状。
     """
+    from fastvideo3.core.talkmode import channel
+
     if scene_mode == "off":
         return []
-    wan30_i2v = str(i2v_model or "").startswith("wan3.0")
-    c_chain = talk_mode in ("", "scripted_talk")
-    if not c_chain and not wan30_i2v:
-        return []  # 环里没有 wan3.0：老 run 的 A/B 链，画面不归场景路径
+    # 先规范化：历史串（s2v_direct/v2v_overlay）按现行默认（C 链）处理，不再有特殊分支
+    c_chain = channel(talk_mode).mode == "scripted_talk"
+    if not c_chain and not str(i2v_model or "").startswith("wan3.0"):
+        return []  # 环里没有 wan3.0：画面不归场景路径
     if force_scene and c_chain:
         return list(groups)
-    # A/B 链（s2v / videoretalk 驱动对白镜头）且环里没有 wan3.0：含对白的组**不能**算覆盖，
-    # 否则 m6 会被跳过 → 成片没有口型。这是"静默交付坏片"的形状，宁可重复付费也不放行。
+    # 含对白的组**不能**算覆盖，否则 m6/叠音路径被跳过 → 成片没有口型。
     return [g for g in groups if not group_has_dialogue(script, g)]
 
 

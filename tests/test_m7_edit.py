@@ -211,7 +211,8 @@ def test_loudnorm_measure_parses_or_none(tmp_path):
 async def test_talk_clip_audio_is_replaced_by_our_tts_master(cfg, storage, ledger, jobs):
     """口型片段只取画面，音轨换回我们的 TTS 母带（模型回传的那条是 16k 上变换产物）。
 
-    实测病灶（run_20261005_130208）：wan2.2-s2v 回传的 mp4 自带 44.1k/stereo/AAC
+    C 链 `voice_source=master` 走的就是这条换轨机制（当年在 A 链上实测出来：
+    wan2.2-s2v 回传的 mp4 自带 44.1k/stereo/AAC
     音轨 —— 那是我们把 16k 单声道驱动音频交给模型后的上变换结果（高频受损、听感发闷），
     而且片段只有 4.30s 而台词音频是 4.51s，**句尾被吃掉 0.21s**。m6 因此把"真正驱动
     这条片段"的音频落成 shot_{id}_driver.wav，m7 用它替换；音频更长时补末帧而不是截句。
@@ -222,7 +223,8 @@ async def test_talk_clip_audio_is_replaced_by_our_tts_master(cfg, storage, ledge
     t2i = FakeT2IProvider()
     assets = await build_assets(cfg, t2i, script, storage, ledger)
     frames = await build_storyboard(cfg, t2i, script, assets, storage, ledger)
-    cfg.talk_mode = "s2v_direct"
+    cfg.talk_mode = "scripted_talk"
+    cfg.voice_source = "master"  # C 链换回我们的母带
     lines = await synthesize_dialogues(cfg, FakeTTSProvider(), script, storage, ledger)
     talks, _fb = await make_talk_clips(
         cfg, FakeTalkProvider(), FakeI2VProvider(), script, frames, assets, lines,
@@ -348,12 +350,13 @@ def test_generated_prompts_forbid_onscreen_text():
     from fastvideo3.core.config import load_config
     from fastvideo3.core.prompts import NO_ONSCREEN_TEXT
     from fastvideo3.modules.m4_shots import _motion_prompt
-    from fastvideo3.modules.m6_talk import _no_text_prompt
+    from fastvideo3.modules.m6_talk import _scripted_prompt
 
     cfg = load_config(resolution="480P")
     assert "字幕" in cfg.negative_prompt and "text" in cfg.negative_prompt
     script = fake_script(BaseInfo(topic="文字"))
     shot = script.all_shots()[0]
     assert NO_ONSCREEN_TEXT in _motion_prompt(cfg, script, shot)
-    assert NO_ONSCREEN_TEXT in _no_text_prompt("男僧在城门前说话")
-    assert NO_ONSCREEN_TEXT in _no_text_prompt("")
+    # 口型/场景这一路：台词写进提示词的 C 链构造器（A 链的 `_no_text_prompt` 已随通道删除）
+    char_map = {c.character_id: c for c in script.characters}
+    assert NO_ONSCREEN_TEXT in _scripted_prompt(cfg, shot, char_map)

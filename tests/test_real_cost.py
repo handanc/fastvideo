@@ -26,11 +26,11 @@ from fastvideo3.providers.dashscope import actual_resolution_tier, billable_seco
 # ─────────────────────────── 单价解析分层 ───────────────────────────
 def test_resolve_uses_the_price_table_and_marks_it_certain():
     """权威单价表 = pyproject.toml 的 [tool.fastvideo3.pricing]（旧 yaml 只是兜底）。"""
-    info = price_info("wan2.7-i2v", "i2v")
+    info = price_info("wan3.0-video", "i2v")
     assert info.source == "pyproject" and info.certain is True
-    # 裸键取**最高档**（1080P ¥1.0/秒）：预估/红线按最坏情况，分档键才是实际出账价
-    assert info.price_cny == 1.0 and info.unit == "second"
-    assert price_info("wan2.7-i2v@720p", "i2v").price_cny == 0.6, "分档键取本档价"
+    # 裸键取**最高档**（1080P ¥1.2/秒）：预估/红线按最坏情况，分档键才是实际出账价
+    assert info.price_cny == 1.2 and info.unit == "second"
+    assert price_info("wan3.0-video@720p", "i2v").price_cny == 0.6, "分档键取本档价"
 
 
 def test_resolve_falls_back_to_capability_default_and_flags_uncertain():
@@ -62,7 +62,7 @@ def test_remote_fetch_failure_never_raises_and_falls_back(monkeypatch):
     data, why = pricing.remote_sheet()
     assert data is None and why
     # 仍然能取到价（走本地单价表），不抛
-    assert price_info("wan2.7-i2v", "i2v").source == "pyproject"
+    assert price_info("wan3.0-video", "i2v").source == "pyproject"
 
 
 def test_stale_cache_is_used_when_remote_unreachable(monkeypatch, tmp_path):
@@ -133,12 +133,12 @@ def test_actual_resolution_tier_from_usage():
 # ─────────────────────────── 台账：来源与不确定性 ───────────────────────────
 def test_ledger_records_price_provenance(storage):
     led = CostLedger(storage, budget_limit_cny=100.0)
-    known = led.record("i2v", "dashscope_wan27_i2v", "wan2.7-i2v", quantity=5.0, note="a")
+    known = led.record("i2v", "dashscope_wan27_i2v", "wan3.0-video", quantity=5.0, note="a")
     unknown = led.record("t2i", "dashscope_t2i", "没登记的模型", quantity=2.0, note="b")
     assert known.meta["price_source"] == "pyproject" and known.meta["price_certain"] is True
-    assert known.meta["unit_price_cny"] == 1.0 and known.meta["quantity"] == 5.0
+    assert known.meta["unit_price_cny"] == 1.2 and known.meta["quantity"] == 5.0
     assert unknown.meta["price_source"] == "default" and unknown.meta["price_certain"] is False
-    assert known.amount_cny == 5.0
+    assert known.amount_cny == 6.0  # 1.2 × 5 秒
     # 不确定的那部分必须能单独汇总（成本上限按总额判，可信度取决于它）
     assert led.uncertain_total() == unknown.amount_cny
     assert led.summary()["uncertain"] == unknown.amount_cny

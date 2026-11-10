@@ -28,11 +28,12 @@ from fastvideo3.core.config import PROJECT_ROOT
 
 #: 能力 → 环境变量名。必须与 `config.load_config()` 读取的那几个键**一一对应**，
 #: 写错了就是"面板选了但没生效"。
-#: 口型（talk）也在其中：面板的「口型」下拉选的就是模型名（wan2.2-s2v / videoretalk /
-#: wan3.0-video / wan3.0-video-prime），写回 `FV3_TALK_MODEL` 才能成为下次新建任务的默认。
-#: ⚠ 但**模式不由这里决定**：`load_config` 会按这个模型名反推 `talk_mode`
-#: （见 `talkmode.mode_for_model`），所以写回一个模型名不会造成"模式与通道各存一份"——
-#: 恰恰相反，少了这层反推才会出现"通道已改道、模式还是旧的 → 全部降级无口型"。
+#: 口型（talk）也在其中：面板选的就是模型名（wan3.0-video / wan3.0-video-prime），写回
+#: `FV3_TALK_MODEL` 才能成为下次新建任务的默认。
+#: ⚠ **模式不由这里决定**：`talk_mode` 现在恒为 `scripted_talk`（口型由 wan3.0 场景片段
+#: 自带），所以"模型名与模式各存一份"这个老问题已随 A/B 链在 2026-11-04 一起消失 ——
+#: 当年靠 `talkmode.mode_for_model` 反推模式只是为了防止"通道改道、模式还是旧的 →
+#: 全部降级无口型"，现在没有可改道的独立通道了（该函数也已删除）。
 ENV_KEY_FOR_CAP: dict[str, str] = {
     "text": "FV3_TEXT_MODEL",
     "t2i": "FV3_T2I_MODEL",

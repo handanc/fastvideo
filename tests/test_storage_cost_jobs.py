@@ -43,7 +43,7 @@ def test_cost_ledger_record_and_persist(storage):
 
 def test_cost_budget_exceeded(storage):
     ledger = CostLedger(storage, budget_limit_cny=0.0001)
-    ledger.record("talk", "fake", "wan2.2-s2v", quantity=10)
+    ledger.record("talk", "fake", "wan3.0-video", quantity=10)
     assert ledger.exceeded()
 
 
@@ -66,7 +66,7 @@ def test_price_table_round_trips_without_losing_entries():
     """单价表（pyproject.toml）渲染→再解析必须一条不丢。
 
     旧版这条查的是 `pricing.yaml` 的**重复键**（PyYAML 静默取最后一个：实测
-    worst_case 里 `dashscope_wan22_s2v` 出现两次，480P 的预估被按 720P 记）。
+    worst_case 里同一个键出现两次，480P 的预估被按 720P 记）。
     表搬到 TOML 后重复键由格式本身挡住（tomllib 直接解析失败），风险移到了
     `refresh-prices` 的**写回**环节：渲染时把 `tiers` 摊平成同名键、或者漏掉一个
     字段，都会静默覆盖条目 —— 那和重复键是同一类"只看账单才发现"的失真，
@@ -110,7 +110,7 @@ def test_pricing_covers_all_configured_models():
             yml = yaml.safe_load(f) or {}
         configured.update((yml.get("models") or {}).values())
 
-    # 分档计价的模型（fal InfiniteTalk：`端点@480p`/`端点@720p`）用前缀匹配认账：
+    # 分档计价的模型（百炼 wan 系：`模型@480p`/`模型@720p`/`@1080p`）用前缀匹配认账：
     # 只要它有任何一个档位键就算"有定价"，但**必须覆盖全部档位**（下面的第二道断言），
     # 否则实际发送的那一档会静默回落到能力默认价 —— 熔断失真的老毛病。
     def has_price(model: str) -> bool:

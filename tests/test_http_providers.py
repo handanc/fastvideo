@@ -12,7 +12,6 @@ from fastvideo3.providers.dashscope import (
     DashScopeI2VProvider,
     DashScopeR2VProvider,
     DashScopeT2IProvider,
-    DashScopeTalkProvider,
     DashScopeWan27ImageProvider,
 )
 from fastvideo3.providers.deepseek import (
@@ -241,40 +240,6 @@ async def test_dashscope_i2v_sends_duration_and_watermark(tmp_path):
         assert sent["parameters"]["watermark"] is False
 
 
-async def test_dashscope_s2v_sends_resolution(tmp_path):
-    """wan2.2-s2v：parameters 块必须存在且带 resolution（此前对白镜头恒按服务端默认档出片）。
-
-    端点也在这里钉死：s2v 的创建任务地址是 `image2video/video-synthesis`（官方 API 参考）。
-    打在 `video-generation/video-synthesis` 上会得到 `400 url error, please check url`，
-    而那句报错把排查方向带偏成"s2v 不支持我们的输入"，差点永久砍掉这条便宜通道。
-    原先这条用例**mock 的就是那个错端点**，所以它一直绿——自证式测试的典型失效。
-    """
-    img = tmp_path / "f.png"
-    img.write_bytes(_PNG)
-    wav = tmp_path / "a.wav"
-    wav.write_bytes(b"RIFF" + b"0" * 64)
-    with respx.mock:
-        _mock_oss_upload()
-        wrong = respx.post(f"{_DS}/services/aigc/video-generation/video-synthesis").mock(
-            return_value=Response(400, json={"code": "InvalidParameter", "message": "url error"})
-        )
-        route = respx.post(f"{_DS}/services/aigc/image2video/video-synthesis").mock(
-            return_value=Response(200, json={"output": {"task_id": "t-11"}})
-        )
-        p = DashScopeTalkProvider(api_key="sk-x", model="wan2.2-s2v")
-        await p.submit(dest=tmp_path / "o.mp4", image=img, audio=wav, resolution="1080P")
-        assert route.called and not wrong.called, "s2v 必须走 image2video 端点"
-        sent = _json.loads(route.calls[0].request.content)
-        assert sent["input"]["image_url"].startswith("oss://")
-        assert sent["input"]["audio_url"].startswith("oss://")
-        # 官方只有 480P/720P 两档：档位名超上限时**靠上钳到 720P** 再发送。
-        # （旧断言写的是"1080P 原样透传"，而那本身就是每次必 400 的规格外请求 ——
-        #  这条用例当时 mock 的就是合法值，所以看不出问题。）
-        assert sent["parameters"]["resolution"] == "720P"
-        assert sent["parameters"]["watermark"] is False
-        assert "duration" not in sent["parameters"]  # s2v 时长由音频驱动，不发送防 400
-
-
 async def test_dashscope_r2v_sends_prompt_extend(tmp_path):
     """wan2.7-r2v：prompt_extend=False 必须发送（保护"图1/图2"指代不被服务端改写）。"""
     ref = tmp_path / "char.png"
@@ -364,3 +329,23 @@ async def test_i2v27_keeps_prompt_extend_no_watermark(tmp_path):
         assert sent["parameters"]["prompt_extend"] is False
         assert sent["parameters"]["duration"] == 6
         assert "watermark" not in sent["parameters"]
+
+
+# ─────────────────────────── 异步任务出参解包（全百炼通道共用） ───────────────────────────
+def test_first_media_url_accepts_object_and_list_results():
+    """`output.results` 的形状在不同模型间不一致：s2v 系是**对象**、t2i 是**数组**，
+    还有一族直接把 URL 平铺在 output 上 —— 三种都要认。
+
+    写死成数组时，任务 SUCCEEDED 那一刻 `results[0]` 直接 KeyError(0)：计费已经发生、
+    产物就在响应里，我们却报"失败"。`_first_media_url` 是所有百炼异步任务共用的解包
+    （含 wan3.0 场景片段），原来挂在 A 链测试文件里，那条链删除后搬到这里继续守着。
+    """
+    from fastvideo3.providers.dashscope import _first_media_url
+
+    obj = {"results": {"video_url": "https://x/1.mp4"}}
+    lst = {"results": [{"url": "https://x/2.png"}]}
+    flat = {"video_url": "https://x/3.mp4"}
+    assert _first_media_url(obj) == "https://x/1.mp4"
+    assert _first_media_url(lst) == "https://x/2.png"
+    assert _first_media_url(flat) == "https://x/3.mp4"
+    assert _first_media_url({"results": {}}) is None

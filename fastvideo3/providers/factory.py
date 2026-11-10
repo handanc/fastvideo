@@ -19,7 +19,7 @@ def _talk_route(cfg: AppConfig, route: ProviderRouting) -> ProviderRouting:
     （run_20261002_235904、run_20261011_164152 两次实测）。现在结构上不可能再错配。
 
     映射表与形态相容规则见 `core/talkmode.py`：yaml 路由仍然可以**换供应商**（例如把 B 链的
-    videoretalk 换成 fal 的 /video-to-video），但只在该供应商吃同样输入形态时生效。
+    videoretalk 换成同形态的另一条链），但只在该供应商吃同样输入形态时生效。
     """
     from fastvideo3.core import talkmode
 
@@ -52,27 +52,21 @@ _PROVIDER_MODEL_KEY: dict[str, tuple[str, str]] = {
     "dashscope_qwen": ("dashscope_text", "qwen3.7-plus"),
     "dashscope_t2i": ("dashscope_t2i", "wanx2.1-t2i-turbo"),
     "dashscope_wan27_image": ("dashscope_t2i27", "wan2.7-image"),
-    "siliconflow_flux": ("siliconflow_t2i", "black-forest-labs/FLUX.1-dev"),
     "dashscope_wan22_i2v": ("dashscope_i2v", "wan2.2-i2v-flash"),
     "dashscope_wan27_i2v": ("dashscope_i2v", "wan3.0-video"),
-    "dashscope_wan27_audio": ("dashscope_i2v27", "wan2.7-i2v"),
     "dashscope_wan30_talk": ("dashscope_wan30_talk", "wan3.0-video"),
-    "siliconflow_wan22": ("siliconflow_i2v", "Wan-AI/Wan2.2-I2V-A14B"),
     "dashscope_wan27_r2v": ("dashscope_r2v", "wan2.7-r2v"),
-    "dashscope_wan22_s2v": ("dashscope_s2v", "wan2.2-s2v"),
-    "dashscope_videoretalk": ("dashscope_retalk", "videoretalk"),
-    "kling_lipsync": ("kling_talk", "kling-v2-master"),
-    "fal_infinitalk": ("fal_talk", "fal-ai/infinitalk"),
     "dashscope_cosyvoice": ("dashscope_tts", "cosyvoice-v2"),
     "edge_tts": ("", ""),
     "dashscope_vlm": ("dashscope_vlm", "qwen-vl-plus"),
 }
 
-#: 外部平台**不吃** `.env`/run 的能力级模型覆盖（`qwen-image-3.0`、`wan3.0-video` 在
-#: SiliconFlow/可灵平台上不存在，漏进兜底就是 404 —— 见 `_build_real` 里那段注释）。
-#: `edge_tts` 同理：它压根没有"模型名"这个概念。
+#: 外部/无模型名概念的 provider **不吃** `.env`/run 的能力级覆盖：`edge_tts` 压根没有
+#: "模型名"这个概念。历史上这条规则还罩着 SiliconFlow 与可灵（2026-11-04 已随那两个
+#: 备选供应商一起删除）—— 同一族教训：**兜底必须指向它自己平台真实存在的模型**，否则
+#: `.env` 的 qwen-image-3.0 漏进 fallback 就是 404，"换道重试"变成原地第二次失败。
 #: 显示也必须按同一条规则算，否则 `doctor` 会报出一个"根本不会发出去"的名字。
-_NO_OVERRIDE_PROVIDERS = ("siliconflow_", "kling_", "edge_tts")
+_NO_OVERRIDE_PROVIDERS = ("edge_tts",)
 
 
 def provider_for(cfg: AppConfig, capability: Capability | str) -> str:
@@ -150,17 +144,17 @@ def make_fallback(
 ) -> Provider | None:
     """兜底供应商。.env 指定了试用/新模型时，**第一兜底是 yaml 原本指向的付费模型**。
 
-    必要性：economy 的 t2i fallback 是 siliconflow_flux，没配 SILICONFLOW_API_KEY 时
-    构造即抛错 → 返回 None。若 .env 把模型换成尚未开通的 qwen-image-3.0，主路径会
-    AccountGateError 而兜底为空，整条管线直接失败（用户要的是"额度耗尽自动回落付费"，
-    不是"跑不动"）。
+    必要性：兜底 provider 常常**因为没配那家 KEY 而构造即抛错**（历史上是 SiliconFlow，
+    现在也可能是任何未开通的模型）→ 这里返回 None 而不是崩。若 .env 把主模型换成尚未
+    开通的名字，主路径会 AccountGateError、兜底又为空，整条管线直接失败（用户要的
+    是"额度耗尽自动回落付费"，不是"跑不动"）。
     """
     route = cfg.routing.get(capability.value)
     if cfg.fake or route is None:
         return None
     if capability is Capability.TALK:
-        # 兜底也必须**吃得下本模式的输入形态**：scripted_talk 的兜底是空（fal 要音频、
-        # kling/retalk 要视频，都不吃"纯提示词自发声"），宁可响亮降级也不要第二次失败。
+        # 兜底也必须**吃得下本模式的输入形态**：scripted_talk 的兜底是空（第三方口型通道已移除，
+        # 且 s2v/retalk 要的音频/视频输入，C 链根本发不出去），宁可响亮降级也不要第二次失败。
         route = _talk_route(cfg, route)
     if cfg.model_overrides.get(capability.value):
         try:  # 用未覆盖的 yaml 模型名重建同一个 provider
@@ -230,7 +224,8 @@ def _video_cost_cap(cfg: AppConfig, provider: Provider) -> None:
     就可能静默切到贵通道，烧钱直到看账单才发现。
 
     取 `worst_case_price_key()`（该供应商**可能发出的最高单价**）而不是默认档：
-    fal InfiniteTalk 的 480p/720p、i2v/v2v 差到 3 倍，按低档校验等于红线形同虚设。
+    百炼 wan 系同一个模型 480P/720P/1080P 差到 3 倍（见 pyproject 的 worst_case 表），
+    按低档校验等于红线形同虚设。
     """
     from fastvideo3.core.cost import price_of
 
@@ -242,7 +237,7 @@ def _video_cost_cap(cfg: AppConfig, provider: Provider) -> None:
             f"两条出路：① 降分辨率档 `i2v_resolution`（wan3.0-video 1080P ¥1.2/秒 → "
             f"720P ¥0.6 → 480P ¥0.3，这条最直接）；② 确实要这一档就调高 "
             f"FV3_MAX_VIDEO_COST_PER_SEC 或 yaml 的 max_video_cost_per_sec。"
-            f"（别再列 A/B 链的便宜通道：videoretalk / fal-infinitalk / wan2.2-s2v 已从"
+            f"（别再列 A/B 链的便宜通道：videoretalk / wan2.2-s2v 已从"
             f"本项目删除，照着换是换不出模型的。）"
         )
 
@@ -292,7 +287,7 @@ def _build_real(
     cap_key: str | None = None,
     overrides: dict[str, str] | None = None,
 ) -> Provider:
-    from fastvideo3.providers import dashscope, deepseek, edge_tts, fal, kling, siliconflow
+    from fastvideo3.providers import dashscope, deepseek, edge_tts
 
     cap_key = cap_key or capability.value
     ov = cfg.model_overrides if overrides is None else overrides
@@ -302,7 +297,6 @@ def _build_real(
         """.env 能力级覆盖 > yaml models[provider_key] > 内置默认。"""
         return ov.get(cap_key) or cfg.models.get(provider_key, default)
 
-    m = cfg.models
     if name == "deepseek":
         return deepseek.DeepSeekTextProvider(
             cfg.deepseek_api_key,
@@ -319,33 +313,26 @@ def _build_real(
             timeout_sec=cfg.text_timeout_sec,
         )
     if name == "dashscope_t2i":
+        # 端点显式传下去：t2i 与 i2v/s2v/r2v 同属原生任务 API（/api/v1），过去这里不传，
+        # provider 内部就写死公共端点 —— `.env` 换了端点只有视频通道跟着走，立绘仍打
+        # 公共地址，报出来的错是 url/access 类，排查的人会先怀疑 KEY 与模型开通状态。
         return dashscope.DashScopeT2IProvider(
-            cfg.dashscope_api_key,
+            cfg.dashscope_task_key,
             mm("dashscope_t2i", "wanx2.1-t2i-turbo"),
+            base_url=cfg.dashscope_task_base_url,
         )
     if name == "dashscope_wan27_image":
         # multimodal-generation 同步协议：wan2.7-image 与 qwen-image 系同族
         return dashscope.DashScopeWan27ImageProvider(
-            cfg.dashscope_api_key,
+            cfg.dashscope_task_key,
             mm("dashscope_t2i27", "wan2.7-image"),
+            base_url=cfg.dashscope_task_base_url,
         )
     if name == "dashscope_wan22_i2v":
         return dashscope.DashScopeI2VProvider(
-            cfg.dashscope_api_key,
+            cfg.dashscope_task_key,
             mm("dashscope_i2v", "wan2.2-i2v-flash"),
-        )
-    if name == "dashscope_wan22_s2v":
-        # base_url 可指到业务空间专属端点（FV3_S2V_BASE_URL）：s2v 官方文档要求华北2
-        # （北京）地域，公共端点不通时换端点就够了，不该逼着改代码。
-        return dashscope.DashScopeTalkProvider(
-            cfg.dashscope_api_key,
-            mm("dashscope_s2v", "wan2.2-s2v"),
-            base_url=cfg.dashscope_video_base_url,
-        )
-    if name == "dashscope_videoretalk":
-        return dashscope.DashScopeRetalkProvider(
-            cfg.dashscope_api_key,
-            mm("dashscope_retalk", "videoretalk"),
+            base_url=cfg.dashscope_task_base_url,
         )
     if name == "dashscope_wan27_i2v":
         # media 数组新协议（wan2.7-i2v 与 wan3.0-video 系同族）。模型名读 **dashscope_i2v**
@@ -353,65 +340,35 @@ def _build_real(
         # 于是 yaml 里 `dashscope_i2v: wan2.2-i2v-flash` 会被面板显示、被目录拒（400）、
         # 却根本不会发出去：三份事实各漂一次，排查的人只能猜。
         return dashscope.DashScopeI2V27Provider(
-            cfg.dashscope_api_key,
+            cfg.dashscope_task_key,
             mm("dashscope_i2v", "wan3.0-video"),
-            base_url=cfg.dashscope_video_base_url,
-        )
-    if name == "dashscope_wan27_audio":
-        return dashscope.DashScopeI2V27TalkProvider(
-            cfg.dashscope_api_key,
-            mm("dashscope_i2v27", "wan2.7-i2v"),
+            base_url=cfg.dashscope_task_base_url,
         )
     if name == "dashscope_wan30_talk":
         # C 链：图片 + 提示词（台词在里面）→ 口型+动作+音轨一体。
         # base_url 与 s2v 同一个可覆盖项（FV3_S2V_BASE_URL）：万相视频族同样要求华北2/北京，
         # 业务空间专属端点时提交与轮询必须同端点，否则只会得到"任务不存在"。
         return dashscope.DashScopeWan30TalkProvider(
-            cfg.dashscope_api_key,
+            cfg.dashscope_task_key,
             _wan30_talk_model(cfg),
-            base_url=cfg.dashscope_video_base_url,
+            base_url=cfg.dashscope_task_base_url,
         )
     if name == "dashscope_wan27_r2v":
         return dashscope.DashScopeR2VProvider(
-            cfg.dashscope_api_key,
+            cfg.dashscope_task_key,
             mm("dashscope_r2v", "wan2.7-r2v"),
+            base_url=cfg.dashscope_task_base_url,
         )
     if name == "dashscope_cosyvoice":
         return dashscope.DashScopeTTSProvider(
-            cfg.dashscope_api_key,
+            cfg.dashscope_task_key,
             mm("dashscope_tts", "cosyvoice-v2"),
         )
     if name == "dashscope_vlm":
         return dashscope.DashScopeVLMProvider(
             cfg.dashscope_api_key,
             mm("dashscope_vlm", "qwen-vl-plus"),
-        )
-    # 非百炼供应商：只认 yaml 的 models:，**不吃 .env 的能力级覆盖** —— 用户设的
-    # qwen-image-3.0 / wan3.0-video 在 SiliconFlow/可灵上不存在，漏进 fallback 会让
-    # 兜底路径直接 404（fallback 必须永远指向它自己平台的模型）。
-    if name == "siliconflow_flux":
-        return siliconflow.SiliconFlowT2IProvider(
-            cfg.siliconflow_api_key, m.get("siliconflow_t2i", "black-forest-labs/FLUX.1-dev")
-        )
-    if name == "siliconflow_wan22":
-        return siliconflow.SiliconFlowI2VProvider(
-            cfg.siliconflow_api_key, m.get("siliconflow_i2v", "Wan-AI/Wan2.2-I2V-A14B")
-        )
-    if name == "kling_lipsync":
-        return kling.KlingTalkProvider(
-            cfg.kling_access_key, cfg.kling_secret_key, m.get("kling_talk", "kling-v2-master")
-        )
-    # fal.ai 托管的 InfiniteTalk 口型通道（本期口型主通道，见 providers/fal.py）。
-    # 与上面两个外部平台不同，它**吃** .env 的 FV3_TALK_MODEL：把模型名换成
-    # `fal-ai/infinitalk/video-to-video` 时 protocols 会把协议解析成 v2v 并仍留在本
-    # provider（providers/protocols.py），所以覆盖项在这里是有效入口而不是污染源。
-    # v2v 端点名只认 yaml（防止一次覆盖同时改掉两个端点）。
-    if name == "fal_infinitalk":
-        return fal.FalInfiniteTalkProvider(
-            cfg.fal_api_key,
-            mm("fal_talk", fal.IMAGE_ENDPOINT),
-            m.get("fal_talk_v2v", fal.V2V_ENDPOINT),
-            acceleration=cfg.fal_acceleration,
+            base_url=cfg.dashscope_text_base_url,
         )
     if name == "edge_tts":
         return edge_tts.EdgeTTSProvider()

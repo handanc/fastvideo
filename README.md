@@ -7,7 +7,28 @@
 - **分辨率是唯一旋钮**（480P / 720P / 1080P）：尺寸、度量深度、单价量级、是否自动重拍都由它带出来。
 - **一把 `DASHSCOPE_API_KEY` 跑通全系统**；花费到上限就停下问人，不静默少出片。
 
-设计：[PRD.md](PRD.md) · [TDD.md](TDD.md) · 踩坑复盘：[INTEGRATION.md](INTEGRATION.md)
+## 多模态 Agent 编排
+
+同一个 run 两种走法、**一份执行器**：分步（面板 / `fastvideo3 step`）或图（`fastvideo3 graph`）。
+缺口由 `core/progress.py` 从盘上算，执行只走 `core/stages.py` 这一份装配。
+
+```mermaid
+flowchart LR
+    S["剧本"] --> A["角色图 ‖ 场景图"]
+    A --> V["场景视频<br/>立绘+场景图+音色样本+提示词<br/>→ 一次调用出画面·语音·口型"]
+    V --> C["成片<br/>剪辑 → 一致性度量 → 闸门 → 终审"]
+    C --> G{"人审"}
+    G -- 点名重出某几组 --> V
+    G -- 收片 --> F(["final.mp4"])
+```
+
+| 步骤        | 产出                                   | 模型                                 | 人能做什么                                              |
+| ----------- | -------------------------------------- | ------------------------------------ | ------------------------------------------------------- |
+| ① 剧本     | `script.json`                        | `qwen3.7-flash`                    | 编辑剧本稿（任意排版都能存）· 按意见重写 · 删除重生成 |
+| ② 角色图   | `assets/char_*.png`                  | `wan2.7-image`                     | 生成 / 恢复 / 上传 / 改外貌描述（立绘是全片身份锚点）   |
+| ③ 场景图   | `assets/scene_*.png`                 | `wan2.7-image`                     | 同上；长场景拆出的多段共用同一张场景图                  |
+| ④ 场景视频 | `clips/scene_*.mp4` + 同名 `.json` | `wan3.0-video` · `cosyvoice-v2` | 改提示词、增删参考图、改时长、只重出某一组              |
+| ⑤ 成片     | `final/final.mp4` + 字幕 + 度量报告  | FFmpeg + `qwen-vl-plus`            | 看片、点名重出、改字幕后只重跑剪辑                      |
 
 ## 快速开始
 
@@ -27,49 +48,12 @@ pip install -e ".[web]" && fastvideo3 serve              # 面板 :8000（web/ �
 
 推荐用面板：每步之间能改剧本稿、换定妆照、删图重出、只重跑某一组。常用命令行：
 
-| 想做的事 | 命令 |
-| --- | --- |
-| 按意见改剧本（只作废真被改到的镜头） | `fastvideo3 script-regen <run> --prompt "…" --mode revise` |
-| 只重出一张图 / 一组视频 | `fastvideo3 asset-gen` · `fastvideo3 scene-gen` |
-| 进度 / 成本 / 降级 / 一致性 | `fastvideo3 cost <run>` · `consistency <run>` · `output/<run>/run_summary.json` |
-| 只重跑剪辑（零 API 费）/ 消融四臂 | `python scripts/recompose_final.py <run>` · `python scripts/run_ablation.py --fake` |
-
-## 多模态 Agent 编排
-
-同一个 run 两种走法、**一份执行器**：分步（面板 / `fastvideo3 step`）或图（`fastvideo3 graph`）。
-缺口由 `core/progress.py` 从盘上算，执行只走 `core/stages.py` 这一份装配。
-
-```mermaid
-flowchart LR
-    S["剧本"] --> A["角色图 ‖ 场景图"]
-    A --> V["场景视频<br/>立绘+场景图+音色样本+提示词<br/>→ 一次调用出画面·语音·口型"]
-    V --> C["成片<br/>剪辑 → 一致性度量 → 闸门 → 终审"]
-    C --> G{"人审"}
-    G -- 点名重出某几组 --> V
-    G -- 收片 --> F(["final.mp4"])
-```
-
-| 步骤 | 产出 | 模型 | 人能做什么 |
-| --- | --- | --- | --- |
-| ① 剧本 | `script.json` | `qwen3.7-flash` | 编辑剧本稿（任意排版都能存）· 按意见重写 · 删除重生成 |
-| ② 角色图 | `assets/char_*.png` | `wan2.7-image` | 生成 / 恢复 / 上传 / 改外貌描述（立绘是全片身份锚点） |
-| ③ 场景图 | `assets/scene_*.png` | `wan2.7-image` | 同上；长场景拆出的多段共用同一张场景图 |
-| ④ 场景视频 | `clips/scene_*.mp4` + 同名 `.json` | `wan3.0-video` · `cosyvoice-v2` | 改提示词、增删参考图、改时长、只重出某一组 |
-| ⑤ 成片 | `final/final.mp4` + 字幕 + 度量报告 | FFmpeg + `qwen-vl-plus` | 看片、点名重出、改字幕后只重跑剪辑 |
-
-第 ④ 步的输入合同（官方硬约束，超了直接 400）：`reference_image` ≤10 张（编号即提示词里的图N）、
-`reference_audio` ≤5 段且总 ≤15s、时长 2–30s（项目软顶 25s，超了按镜头边界拆分），且参考素材与
-`first_frame/last_frame` **互斥**。素材计划只有一份（`m4_scene.plan_inputs`）：面板预览与实发同源。
-
-**中断不需要恢复功能**：产物在盘且未被血缘标 stale 就复用，在途异步任务继续轮询而非重新提交；
-到上限只停"新的付费提交"并等人工确认，已出产物一个不动。自动重拍 ≤2 轮只在 ⑤ 内部，
-**图上的回边只承载人的决定**。图模式：
-
-```bash
-fastvideo3 graph <run>                          # 跑到人审门停下（成片已产出）
-fastvideo3 graph <run> --resume --redo scene_2  # 只重出这一组，再交人审
-fastvideo3 graph <run> --resume --finish        # 收片
-```
+| 想做的事                             | 命令                                                                                     |
+| ------------------------------------ | ---------------------------------------------------------------------------------------- |
+| 按意见改剧本（只作废真被改到的镜头） | `fastvideo3 script-regen <run> --prompt "…" --mode revise`                            |
+| 只重出一张图 / 一组视频              | `fastvideo3 asset-gen` · `fastvideo3 scene-gen`                                     |
+| 进度 / 成本 / 降级 / 一致性          | `fastvideo3 cost <run>` · `consistency <run>` · `output/<run>/run_summary.json`  |
+| 只重跑剪辑（零 API 费）/ 消融四臂    | `python scripts/recompose_final.py <run>` · `python scripts/run_ablation.py --fake` |
 
 ## 项目结构
 
@@ -92,23 +76,23 @@ output/<run_id>/# script.json assets/ storyboard/ audio/ clips/ final/ qc/
 
 ## 技术栈
 
-| 层 | 选型 |
-| --- | --- |
-| 语言 / 数据 | Python ≥ 3.11 · `asyncio` 全程异步 · Pydantic v2（剧本/资产/成本的唯一校验） |
-| 编排 | LangGraph `StateGraph` + `interrupt()`；检查点 SQLite，或 PostgreSQL（`[postgres]` + Docker） |
-| 入口 | FastAPI + Uvicorn（`[web]`）· Typer + Rich · Vue 3 + Vite（产物由后端同源托管） |
-| 生成模型 | `qwen3.7-flash` 文本 · `wan2.7-image` 文生图（带参考图 → 三档都靠它锁脸）· `wan3.0-video` 场景级生成（画面+语音+口型）· `cosyvoice-v2` 配音（降级免费 edge-tts 并留痕）· `qwen-vl-plus` 评审 |
-| 本地 | FFmpeg（项目内 `bin/` 优先于系统 PATH）· Pillow · OpenCV/SFace 人脸度量 |
-| 台账 | SQLite JobStore + JSON 文件：`cost.json` 逐条计费 · `events.jsonl` 全事件 · `lineage.json` 血缘 · `degradations.json` 降级 |
-| HTTP | httpx + tenacity 直连（不套 LLM 框架：请求形状、错误文本、计费口径都能直接读） |
+| 层          | 选型                                                                                                                                                                                                        |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 语言 / 数据 | Python ≥ 3.11 · `asyncio` 全程异步 · Pydantic v2（剧本/资产/成本的唯一校验）                                                                                                                           |
+| 编排        | LangGraph `StateGraph` + `interrupt()`；检查点 SQLite，或 PostgreSQL（`[postgres]` + Docker）                                                                                                         |
+| 入口        | FastAPI + Uvicorn（`[web]`）· Typer + Rich · Vue 3 + Vite（产物由后端同源托管）                                                                                                                         |
+| 生成模型    | `qwen3.7-flash` 文本 · `wan2.7-image` 文生图（带参考图 → 三档都靠它锁脸）· `wan3.0-video` 场景级生成（画面+语音+口型）· `cosyvoice-v2` 配音（降级免费 edge-tts 并留痕）· `qwen-vl-plus` 评审 |
+| 本地        | FFmpeg（项目内 `bin/` 优先于系统 PATH）· Pillow · OpenCV/SFace 人脸度量                                                                                                                                 |
+| 台账        | SQLite JobStore + JSON 文件：`cost.json` 逐条计费 · `events.jsonl` 全事件 · `lineage.json` 血缘 · `degradations.json` 降级                                                                       |
+| HTTP        | httpx + tenacity 直连（不套 LLM 框架：请求形状、错误文本、计费口径都能直接读）                                                                                                                              |
 
 **档位差异**（`GET /api/resolutions` 就是这张表；单价来自 `pricing.yaml`，`fastvideo3 refresh-prices` 回写）：
 
-| 档位 | 成片尺寸 | 30 秒预估 | 锁脸 | 度量 | 自动重拍 | 立绘抽卡 |
-| --- | --- | --- | --- | --- | --- | --- |
-| 480P 教学/试跑 | 540×960 | ≈¥10–16 | ✔ | 抽样 | ✘（只报告） | ✘ |
-| 720P 交付 | 720×1280 | ≈¥23–35 | ✔ | 抽样 | ✔ ≤2 轮 | ✘ |
-| 1080P 商业级 | 1080×1920 | ≈¥58–88 | ✔ | 全检 | ✔ ≤2 轮 | ✔ 2 候选 |
+| 档位           | 成片尺寸   | 30 秒预估  | 锁脸 | 度量 | 自动重拍     | 立绘抽卡  |
+| -------------- | ---------- | ---------- | ---- | ---- | ------------ | --------- |
+| 480P 教学/试跑 | 540×960   | ≈¥10–16 | ✔   | 抽样 | ✘（只报告） | ✘        |
+| 720P 交付      | 720×1280  | ≈¥23–35 | ✔   | 抽样 | ✔ ≤2 轮    | ✘        |
+| 1080P 商业级   | 1080×1920 | ≈¥58–88 | ✔   | 全检 | ✔ ≤2 轮    | ✔ 2 候选 |
 
 场景片段按输出秒计价 ¥0.3 / ¥0.6 / ¥1.2 —— **锁脸三档都开，重拍是唯一按档花钱的差别。**
 

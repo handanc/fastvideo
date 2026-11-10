@@ -1,29 +1,18 @@
-"""m6 口型与双人同屏（教学第 4 讲：语音与口型 下篇）。
+"""m6 口型（教学第 4 讲：语音与口型 下篇）。
 
-三档模式（talk_mode，教学消融点）——"口型由哪个模型做"与"何时做"是两件事：
-- s2v_direct：首帧+音频 → 口型模型直出说话视频，不依赖 m4
-- v2v_overlay：m4 的 I2V 运动片段 + 音频 → 重对口型（需要支持视频输入的通道）
-- audio_overlay：无口型，m7 直接叠音轨（本模块不做任何事）
+剩下两种 `talk_mode`（权威口径在 `core/talkmode.py` 与 configs/*.yaml）：
+- **scripted_talk（C 链，唯一出口型的链路）**：`dashscope_wan30_talk` = 百炼 wan3.0-video，
+  **图片 + 提示词**（台词按「角色 + 说话动词 + 引号」写进提示词）→ 一条调用同时出口型 +
+  动作 + 自带音轨，原生 1080P、显式 9:16，也是唯一能做**多人同屏各自对口型**的链路。
+  因此本模块不再有"先出运动片段再对嘴"的两段付费，也不再有双人豁免分支。
+- **audio_overlay**：不做口型，本模块整步跳过（m7 直接叠音轨），教学零成本演示与消融用它。
 
-口型通道（2026-10-11 四次定档：**分档位两条链**，权威口径在 configs/*.yaml）：
-- **A 链（economy / high）**：主 = 百炼 `wan2.2-s2v` 数字人（图片+音频直出，480P ¥0.5/秒、
-  720P ¥0.9/秒）→ 配 `talk_mode=s2v_direct`。选它的理由是**钱与出片率**：对白镜头不过 m4
-  i2v，省一整份运动费；代价是只到 720P（1080P 成片里对白镜头会被钳位后由 m7 cover）且
-  "从一张静帧重发明整个镜头"，身份要再洗一遍牌。
-- **B 链（cinema）**：主 = 百炼 `videoretalk`（m4 的 1080P 运动片段 + 音频 → **只重绘嘴部**，
-  ¥0.08/秒、新账号 1800 秒免费额度、音频上限 120s）→ 配 `talk_mode=v2v_overlay`。选它的
-  理由是**架构**：不重画画面 → m3 参考图锁住的脸一路继承；官方规格"输出分辨率与帧率=输入"
-  → 1080P 对白镜头不再降级。
-- 两档的兜底都是 **fal.ai 托管 MeiGen InfiniteTalk**（同一 provider 按输入形态自动选端点：
-  有运动片段→/video-to-video，只有首帧→图像端点），需要 .env 的 FAL_KEY；没 KEY 或账户
-  不可用时兜底为空 → 走 I2V+叠音降级并落 degradations.json（看板红标可见）。
-  ⚠ 2026-10-11 实测该账户 403「User is locked. Reason: Exhausted balance」→ 当前**等于没有兜底**。
-- 模式与通道**必须成对**，错配的后果是静默降级而非报错：见 `tests/test_model_config.py`
-  与 `tests/test_fal_talk.py` 的配对回归。历史定档过程（为什么换来换去）记在 INTEGRATION.md。
-
-双人对话镜头：直接用分镜首帧（本就两人同框）+ 按序拼接的全部对白走单条 S2V。
-（旧实现为每角色立绘站桩各出一条再左右拼接，横排画面被 9:16 cover 裁切毁掉大半；
-YOLO+rembg 分割合成未实现，见 utils/yolo.py 标注。）
+历史：A 链 `wan2.2-s2v`（图片+音频）、B 链 `videoretalk`（运动片段+音频重对嘴）、wan2.7 的
+`driving_audio`，以及第三方兜底（fal.ai InfiniteTalk、可灵）都在 2026-10-11 定档 C 链后陆续
+下线、2026-11-04 从代码移除（fal 账户当时已 403「Exhausted balance」）。所以**口型没有兜底
+通道**：主通道失败就直接 I2V+叠音降级并落 degradations.json（看板红标可见），绝不"换道重试"
+成第二次同形失败。旧 run_meta 里的 A/B 模式串由 `talkmode.channel()` 统一按 C 链处理 ——
+回落成 audio_overlay 会把"要口型"静默变成"没口型"，那正是这条链历史上烧过两次钱的形状。
 """
 
 from __future__ import annotations
@@ -65,7 +54,6 @@ async def make_talk_clips(
     ledger: CostLedger,
     jobs: JobStore,
     only_shots: set[str] | None = None,
-    fallback_talk: TalkProvider | None = None,
     vlm: object | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """返回 (talks, fallback_clips)：
@@ -112,9 +100,9 @@ async def make_talk_clips(
         try:
             if voices_script(cfg.talk_mode):
                 # C 链（wan3.0-video：图片 + 提示词 → 口型+动作+音轨一体）。
-                # **不走 `two_person_talk` 的豁免分支**：台词按「角色 + 说话动词 + 引号」逐条
-                # 写进提示词后，模型自己决定谁在什么时候动嘴 —— 这是三条链路里唯一能让多人
-                # 同屏各自对口型的（A/B 链受"单音轨驱动整幅画面"限制，见下面的 overlay 策略）。
+                # 台词按「角色 + 说话动词 + 引号」逐条写进提示词，模型自己决定谁在什么
+                # 时候动嘴 → 多人同屏各自对口型只有这一条链路做得到（旧 A/B 链受"单音轨驱动
+                # 整幅画面"限制，双人镜头只能豁免成无口型叠音，2026-11-04 随那两条链一起删）。
                 image = Path(
                     frames.get(shot.shot_id) or _char_image(assets_registry, shot.characters)
                 )
@@ -130,12 +118,11 @@ async def make_talk_clips(
                     shot.shot_id,
                     prompt=_scripted_prompt(cfg, shot, char_map),
                     duration_hint=_scripted_duration(shot, cfg, lines),
-                    fallback_talk=fallback_talk,
                     # 首尾帧：锁住镜头的结束状态（通道支持时才发，见 talk_for_shot）
                     last_frame=_last_frame_path(storage, shot.shot_id),
                 )
                 results[shot.shot_id] = str(dest)
-                # 模型重画了整段画面 → 首帧锁住的脸/衣服仍可能漂，与 A 链同样盯住
+                # 模型重画了整段画面 → 首帧锁住的脸/衣服仍可能漂，盯住身份漂移
                 _identity_drift_check(storage, shot, frames, dest)
                 # 音轨来源（换母带 / 留模型原声）+ 度量的对照音轨，一次决定
                 ref_wav = _apply_voice_source(cfg, storage, shot.shot_id, lines, dest)
@@ -151,80 +138,12 @@ async def make_talk_clips(
                     reason="口型段重生成（台词写在提示词里）",
                 )
                 continue
-            if len(set(ln.character_id for ln in lines)) >= 2:
-                if cfg.two_person_talk == "overlay":
-                    # 多人各自口型需要"每人一条音轨 + 人脸 bbox 绑定"（参考项目的
-                    # MultiTalk 靠本地 Wan2.1-I2V-14B 实现）；API 口型模型只有单音轨
-                    # 驱动整幅画面 → 没说话的人也会动嘴。默认改为运动片段+音轨叠加，
-                    # 宁可无口型也不给错口型，并落事件让看板/报告可见。
-                    storage.log_event(
-                        "m6_talk",
-                        "two_person_overlay_by_policy",
-                        shot=shot.shot_id,
-                        hint="多人各自口型需 MultiTalk 级本地模型；API 无音轨-人脸绑定能力",
-                    )
-                    # 显式豁免：否则该镜头永远缺 talk 产物 → videos 步骤永远 gap，
-                    # 「开始生成」会无限"补口型"却补不出（策略决定不补，不是补不了）
-                    storage.record_lipsync_waiver(
-                        shot.shot_id, "two_person_overlay_policy"
-                    )
-                    fb = await _fallback_overlay(
-                        cfg, i2v, shot, frames, lines, storage, ledger, jobs
-                    )
-                    if fb:
-                        fallbacks[shot.shot_id] = fb
-                        # 叠音降级也度量并记录（预期 corr≈0）：让"哪些镜头没口型"
-                        # 在看板/报告里可见，而不是只藏在一条 failed_fallback 事件里
-                        mix = _shot_wav(lines, storage, f"{shot.shot_id}_duo")
-                        await _lipsync_check(
-                            cfg, storage, shot.shot_id, Path(fb), mix, method="overlay"
-                        )
-                    continue
-                await _two_person(
-                    cfg, talk, shot, lines, frames, assets_registry, dest, ledger, storage, jobs,
-                    fallback_talk=fallback_talk,
-                )
-            else:
-                image = Path(
-                    frames.get(shot.shot_id) or _char_image(assets_registry, shot.characters)
-                )
-                duo = len({ln.character_id for ln in lines}) >= 2
-                mix_name = f"{shot.shot_id}_duo" if duo else shot.shot_id
-                # v2v_overlay：对 m4 的 I2V 运动片段重对口型（InfiniteTalk /video-to-video、
-                # videoretalk）；通道不接受视频（如 wan2.2-s2v）时 talk_mode 应为 s2v_direct，
-                # 由 talk_for_shot 走"首帧 + 音频"直出。
-                video = None
-                if cfg.talk_mode == "v2v_overlay":
-                    clip = storage.path("clips", f"shot_{shot.shot_id}.mp4")
-                    video = clip if clip.exists() else None
-                await talk_for_shot(
-                    cfg,
-                    talk,
-                    image,
-                    lines,
-                    dest,
-                    ledger,
-                    jobs,
-                    storage,
-                    shot.shot_id,
-                    video=video,
-                    prompt=shot.visual_prompt,
-                    fallback_talk=fallback_talk,
-                    mix_name=mix_name,
-                )
-            results[shot.shot_id] = str(dest)
-            _identity_drift_check(storage, shot, frames, dest)
-            # 度量用**整镜头混音**（分段生成时拼接出的口型片段仍是整镜头时长）
-            mix = _shot_wav(lines, storage, mix_name)
-            await _lipsync_check(
-                cfg, storage, shot.shot_id, dest, mix, method="lipsync", vlm=vlm
-            )
-            # 血缘：口型段 ← 首帧 + 该镜头全部台词 wav（换任一个都该重做口型）
-            storage.record_regeneration(
-                talk_rel,
-                [f"storyboard/shot_{shot.shot_id}.png"]
-                + [f"audio/line_{ln.line_id}.wav" for ln in lines],
-                reason="口型段重生成",
+            # 到这里只可能是 C 链：audio_overlay 已在函数开头整步返回，而认不出的历史模式串
+            # （旧 run_meta 里的 s2v_direct/v2v_overlay）由 `talkmode.channel()` 统一按 C 链处理。
+            # 显式抛错而不是"悄悄什么也不做"：对白镜头静默没有口型产物，正是这条链历史上
+            # 烧过两次钱又查不出来的形状（见本文件开头）。
+            raise ProviderError(
+                f"口型模式 {cfg.talk_mode!r} 没有可用链路（现只剩 scripted_talk 与 audio_overlay）"
             )
         except Exception as e:  # noqa: BLE001
             if isinstance(e, AccountGateError):
@@ -233,9 +152,8 @@ async def make_talk_clips(
                     "account_gate",
                     shot=shot.shot_id,
                     hint=(
-                        "口型通道账号门控：主通道请检查 .env 的 FAL_KEY（fal.ai "
-                        "dashboard → Keys/余额），兜底请检查百炼 videoretalk 开通与余额；"
-                        "本次自动降级 I2V+音频直叠（无口型）"
+                        "口型通道账号门控：请检查百炼（DASHSCOPE_API_KEY）的模型开通与余额；"
+                        "本链无兜底通道，本次自动降级 I2V+音频直叠（无口型）"
                     ),
                 )
             storage.log_event("m6_talk", "failed_fallback", shot=shot.shot_id, error=str(e))
@@ -346,41 +264,15 @@ def _shot_wav(lines: list[AudioLine], storage: RunStorage, shot_id: str) -> Path
     return normalize_wav(merged, mixed)
 
 
-def _ensure_16k(talk: TalkProvider, wav: Path, storage: RunStorage) -> Path:
-    """口型输入规格适配：provider 声明 prefers_16k_audio 时转 16k 副本（母带保持 44.1k）。
+def _talk_request_resolution(talk, cfg, storage: RunStorage, shot_id: str) -> str:
+    """按**该口型模型的官方规格**钳位分辨率（不钳就是"看着像模型不能对口型"的配置坑）。
 
-    TTS 母带升到 44.1k 后（成片对白带宽 8kHz→11kHz+），历史验证过的口型通道
-    仍按 16k 喂入 —— 与旧管线行为完全一致，零回归风险。
-    """
-    if not getattr(talk, "prefers_16k_audio", False):
-        return wav
-    import wave
+    cfg.i2v_resolution（1080P 档）原样透传给只有两档的模型 → 提交即 400/422，而报错只说
+    分辨率，排查时极易误判成"这个模型不能对口型"，把可用通道直接判死。所以按 provider 声明的
+    `max_resolution` 钳位，并落一条 `resolution_clamped` 事件让"这一镜实际发了哪档"可查。
 
-    try:
-        with wave.open(str(wav), "rb") as w:
-            if w.getframerate() == 16000:
-                return wav  # 已是 16k，免转
-    except Exception:  # noqa: BLE001  # 非标准 wav 交给 ffmpeg 兜底转换
-        pass
-    out = wav.with_name(wav.stem + "_16k.wav")
-    from fastvideo3.utils.ffmpeg import run_ffmpeg
-
-    run_ffmpeg(["-i", str(wav), "-ar", "16000", "-ac", "1", str(out)])
-    return out
-
-
-def _talk_request_resolution(
-    talk: TalkProvider, cfg, storage: RunStorage, shot_id: str, wav: Path | None
-) -> str:
-    """按**该口型模型的官方规格**钳位分辨率，并挡掉超长驱动音频。
-
-    两处都是"看起来像模型能力问题"的配置坑：
-    1. cfg.i2v_resolution（cinema/high=1080P）原样透传给只有两档的口型模型
-       （wan2.2-s2v 到 720P、fal InfiniteTalk 到 720p）→ 提交即 400/422，
-       排查时极易误判成"这个模型不能对口型"，把可用通道直接判死；
-    2. 驱动音频有硬上限（s2v <20s；InfiniteTalk 受 num_frames 上限约束，
-       v2v ≤241 帧=15s）→ 超长同样是永久错误，重试无意义，
-       故抛 CapabilityMismatchError 让调用方立刻换通道/降级，而不是空转 3 次。
+    （另一半历史职责——挡超长驱动音频——随 A 链 wan2.2-s2v 于 2026-11-04 删除：C 链没有驱动
+    音频，那条上限对它从不适用，留着就是一段永不触发的分支。）
     """
     res, clamped = clamp_resolution(talk, cfg.i2v_resolution)
     if clamped:
@@ -389,82 +281,7 @@ def _talk_request_resolution(
             wanted=cfg.i2v_resolution, used=res,
             hint="口型模型分辨率上限低于成片档位；按官方规格钳位以免 400",
         )
-    cap = getattr(talk, "max_audio_sec", None)
-    if cap and wav is not None:  # C 链没有驱动音频，这条上限对它不适用（不查、不拦、不报错）
-        actual = wav_duration(wav)
-        if actual > cap:
-            raise CapabilityMismatchError(
-                f"{talk.model} 的驱动音频上限 {cap:.0f}s，本镜头混音 {actual:.1f}s"
-                f"（shot {shot_id}）；请拆分台词或改走叠音降级"
-            )
     return res
-
-
-def _no_text_prompt(prompt: str) -> str:
-    """口型模型的提示词里也钉死"画面内不得出现任何文字"。
-
-    字幕的唯一来源是 m7 用剧本台词烧录 —— 模型画出来的字幕会错字、会漏句，还会和
-    我们烧的那条叠成两层（这条 bug 就是这么来的）。
-    """
-    base = (prompt or "").strip()
-    return f"{base} {NO_ONSCREEN_TEXT}".strip() if base else NO_ONSCREEN_TEXT
-
-
-def plan_talk_groups(
-    lines: list[AudioLine], per_group_max_sec: float, gap_sec: float = 0.25
-) -> list[list[AudioLine]]:
-    """把镜头内的台词按"每段驱动音频不超过通道上限"分组（**按句子边界切，不切断一句话**）。
-
-    官方依据（wan2.2-s2v API 参考）：生成视频时长=音频时长，且"若输入音频超过 20 秒，
-    会导致任务报错；如需更长的视频，可将长音频按小于 20 秒切分为多段分别调用本接口
-    生成对应片段，再用剪辑工具拼接"。
-
-    为什么必须在管线里做而不是报错收工：一个镜头只要累计对白超上限，没有这层分组
-    就**永远拿不到口型**（CapabilityMismatch → 兜底 → 叠音降级），而这正是"成片没有
-    对口型"的又一个成因。分组在句子边界进行：句中切开会让嘴型在拼接点跳变。
-
-    上限未知/不限（per_group_max_sec<=0）→ 返回单组。单条台词本身就超上限时无法再分，
-    仍返回它单独一组，由提交前的规格检查响亮报错（不静默截断音频）。
-    """
-    if not lines:
-        return []
-    if per_group_max_sec <= 0:
-        return [list(lines)]
-    groups: list[list[AudioLine]] = []
-    cur: list[AudioLine] = []
-    cur_sec = 0.0
-    for ln in lines:
-        dur = float(ln.duration_sec or 0) or (
-            wav_duration(Path(ln.wav_uri)) if Path(ln.wav_uri).exists() else 0.0
-        )
-        add = dur if not cur else dur + gap_sec  # 句间换气间隔也占时长
-        if cur and cur_sec + add > per_group_max_sec:
-            groups.append(cur)
-            cur, cur_sec = [ln], dur
-        else:
-            cur.append(ln)
-            cur_sec += add
-    if cur:
-        groups.append(cur)
-    return groups
-
-
-def _stitch_groups(parts: list[Path], dest: Path) -> Path:
-    """把多段口型片段硬拼成一个镜头片段（同模型同规格产物 → `-c copy` 零代际损耗）。
-
-    concat 失败（时间戳/编码参数不一致）时 `concat_demux(copy=True)` 内部自动回退重编码，
-     correctness 优先；两条都失败才抛错，由上层按镜头失败处理。
-    """
-    from fastvideo3.utils.ffmpeg import concat_demux
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if len(parts) == 1:
-        if parts[0].resolve() != dest.resolve():
-            dest.write_bytes(parts[0].read_bytes())
-        return dest
-    return concat_demux(parts, dest, copy=True)
-
-
 def _char_image(assets_registry: dict, character_ids: list[str]) -> str:
     for cid in character_ids:
         asset = assets_registry.get(f"char_{cid}")
@@ -681,8 +498,10 @@ def _apply_voice_source(
     - `master`：落 `audio/shot_{id}_driver.wav` = 我们的 TTS 混音，m7 据此换成母带 →
       全片音色由 m5 的性别分桶音色池统一（"唐僧拿女声"那条红线不破）。
       **但实测声画会错开 0～2.2 秒且偏移不恒定**（测量表在 `core/talkmode.py`），
-      固定延迟也修不齐 —— 只适合"宁可嘴不上也要音色统一"的对比试验；
-      要两者兼得请走 B 链 videoretalk（它是对着我们的母带重画嘴的）。
+      固定延迟也修不齐 —— 只适合"宁可嘴不上也要音色统一"的对比试验。以前给这条需求
+      指的路是 B 链 videoretalk（对着我们的母带重画嘴），该链已于 2026-11-04 移除：
+      现在**没有**既音色统一又有真口型的通道，只能二选一（或用 reference_audio 克隆
+      音色，但那条与首尾帧互斥，且嘴型仍对模型自己的发声节奏）。
 
     对照音轨怎么选：master 用母带混音（成片听到的就是它），model 从产物里抽音轨 —— 拿我们的
     混音去对照模型自己发的嘴会得出假阴性（度量本来就只报告不重做，但假阴性会污染看板）。
@@ -699,7 +518,7 @@ def _apply_voice_source(
             hint=(
                 "成片用模型自发声的音轨：嘴型与声音同轨（这是 C 链唯一结构正确的配对）。"
                 "同一角色跨镜头可能换嗓子，已在提示词里钉了音色锚；要绝对统一的音色，"
-                "改用 videoretalk 模式对着我们的母带重画嘴"
+                "只能换 voice_source=master 并接受声画错位（旧 videoretalk 链已移除）"
             ),
         )
         if Path(clip).exists():
@@ -723,7 +542,8 @@ def _apply_voice_source(
             "成片音轨换回我们的 TTS 母带（保语音一致）；模型原声不进成片。"
             "⚠ 实测代价：**语音会领先口型 0～2.2 秒且偏移不恒定**"
             "（run_20261011_231024 逐镜测量，见 core/talkmode.py 的 DEFAULT_VOICE_SOURCE 上方），"
-            "所以这不是可用的交付口径 —— 要音色统一请改走 videoretalk 模式"
+            "所以这不是可用的交付口径 —— 旧 videoretalk 链（对着母带重画嘴）已移除，"
+            "现在音色统一与嘴型对齐只能二选一"
         ),
     )
     return mix
@@ -757,126 +577,51 @@ async def talk_for_shot(
     jobs: JobStore,
     storage: RunStorage,
     shot_id: str,
-    video: Path | None = None,
     prompt: str = "",
-    fallback_talk: TalkProvider | None = None,
-    mix_name: str = "",
     duration_hint: int = 0,
     last_frame: Path | None = None,
 ) -> Path:
-    """按**通道的驱动音频上限**把镜头对白切成 1..N 段生成口型，多段则拼回一个镜头片段。
+    """C 链的一次口型请求：图片 + 提示词（台词写在里面）→ 一段**自带音轨**的口型片段。
 
-    存在理由（官方规格，不是臆想）：wan2.2-s2v 生成的视频时长=音频时长，且音频必须
-    <20s，"若输入音频超过 20 秒，会导致任务报错"，官方给的解决办法就是"切成多段分别
-    生成再拼接"。不做这件事的后果很具体：一个累计对白超上限的镜头**永远拿不到口型**
-    （规格错 → 兜底通道 → 叠音降级），而这正是用户投诉的"成片没有对口型"的形态之一。
-
-    单段时行为与改造前完全一致（同一份混音、同一个 dest），只有真超长才分段——
-    分段点选在句子边界，句中切开会让嘴型在拼接点跳变。
-
-    C 链（`scripted_talk` / wan3.0-video）是另一回事：它**不吃音频**，所以没有
-    "驱动音频上限"、不需要按句分段、也不产生混音输入；`duration_hint` 由台词长度算出
-    后直接当 `parameters.duration` 发（见 `_scripted_duration`）。
+    `duration_hint` 由 `_scripted_duration` 按台词字数算出，直接当 `parameters.duration` 发。
+    本链路不吃驱动音频，因此没有"音频上限"、不按句分段、也不产生混音输入 —— 旧 A 链那套
+    "对白累计超 20s 就分段生成再拼回"（官方为 wan2.2-s2v 明写的做法）随通道于 2026-11-04 删除。
     """
-    if voices_script(cfg.talk_mode):
-        dur = int(duration_hint or cfg.shot_duration_sec or 5)
-        await _s2v_one(
-            cfg,
-            talk,
-            image,
-            None,  # 没有驱动音频：台词在提示词里，声音由模型自己发
-            dest,
-            ledger,
-            jobs,
-            storage,
-            shot_id,
-            video=None,  # 本链路的输入形态是图片，交运动片段同样是规格错配
-            prompt=prompt,
-            fallback_talk=fallback_talk,
-            duration_sec=dur,
-            last_frame=last_frame,
-        )
-        return dest
-    # 分段上限取**主通道与兜底通道里更严的那个**：分段发生在选择之前，若只按主通道的
-    # 上限分（s2v 19.5s），主通道挂了、兜底更严（fal 15s）时那段音频会再次超限 ——
-    # 于是"分段了但还是没口型"，白跑一趟。取 min 让每一段两条通道都喂得进去。
-    caps = [float(getattr(talk, "max_audio_sec", 0) or 0)]
-    if fallback_talk is not None and fallback_talk.name != talk.name:
-        caps.append(float(getattr(fallback_talk, "max_audio_sec", 0) or 0))
-    cap = min((c for c in caps if c > 0), default=0.0)
-    prefix = mix_name or shot_id  # 双人镜头用 "{shot_id}_duo"，与口型度量的混音文件同名
-    groups = plan_talk_groups(lines, cap)
-    if not groups:
-        raise ProviderError(f"镜头 {shot_id} 没有可用对白音频（台词为空或 wav 缺失）")
-    if len(groups) == 1:
-        wav = _shot_wav(groups[0], storage, prefix)
-        await _s2v_one(
-            cfg, talk, image, wav, dest, ledger, jobs, storage, shot_id,
-            video=video, prompt=_no_text_prompt(prompt), fallback_talk=fallback_talk,
-        )
-        _record_driver_audio(storage, [wav], shot_id)
-        return dest
-    storage.log_event(
-        "m6_talk", "s2v_split", shot=shot_id, groups=len(groups), cap_sec=cap,
-        hint=f"本镜头对白累计超过通道音频上限 {cap:.1f}s：按句分段生成后拼接（官方推荐做法）",
+    dur = int(duration_hint or cfg.shot_duration_sec or 5)
+    await _s2v_one(
+        cfg, talk, image, dest, ledger, jobs, storage, shot_id,
+        prompt=prompt, duration_sec=dur, last_frame=last_frame,
     )
-    parts: list[Path] = []
-    seg_wavs: list[Path] = []
-    for i, grp in enumerate(groups, start=1):
-        seg = storage.path("talk", f"shot_{shot_id}_g{i}.mp4")
-        wav = _shot_wav(grp, storage, f"{prefix}_g{i}")
-        await _s2v_one(
-            cfg, talk, image, wav, seg, ledger, jobs, storage, shot_id,
-            video=video, prompt=_no_text_prompt(prompt), fallback_talk=fallback_talk,
-            tag=f"_g{i}",
-        )
-        parts.append(seg)
-        seg_wavs.append(wav)
-    out = _stitch_groups(parts, dest)
-    _record_driver_audio(storage, seg_wavs, shot_id)
-    return out
-
-
+    return dest
 async def _s2v_one(
     cfg,
     talk: TalkProvider,
     image: Path,
-    wav: Path | None,
     dest: Path,
     ledger: CostLedger,
     jobs: JobStore,
     storage: RunStorage,
     shot_id: str,
-    video: Path | None = None,
     prompt: str = "",
-    fallback_talk: TalkProvider | None = None,
-    tag: str = "",
     duration_sec: int | None = None,
     last_frame: Path | None = None,
 ) -> None:
-    """提交**一段**口型请求 → 一段口型片段（分段逻辑见 `talk_for_shot`）。
+    """提交**一段** C 链口型请求 → 一段口型片段（一次调用出口型 + 动作 + 音轨）。
 
-    `tag` 用于长对白的多段生成：job_id 与台账 note 都带段号，否则第二段会覆盖第一段的
-    job 行（续跑时"看起来已完成"其实缺后一段）。
-
-    `wav=None` 是 C 链（`scripted_talk`）的形态：通道不吃音频，台词在提示词里、声音由模型
-    自己发，此时时长取 `duration_sec`（由 `_scripted_duration` 依台词字数算出）。
-    重试、止损、兜底换道、计价这几段语义与 A/B 链**共用同一条实现**，不再抄第二份。
+    本函数是 A/B 链时代的共用工单；那些链路（`fallback_talk` 换通道重试、按驱动音频定秒数、
+    超长音频按句分段再拼回）已于 2026-11-04 随通道删除，现在只有 C 链这一个调用方。
+    ⚠ **`job_id` 的 `s2v_` 前缀与 `s2v_*` 事件名一律保留**：C 链现在就在生产这些名字，改名会
+    让已有 run 的 `jobs.get()` 判据失配 → 续跑重复提交口型 = 重复花钱，看板读事件状态的口径
+    也会一起断。名字丑但活着：只删生产者，不动产物。
     """
     from fastvideo3.providers.base import poll_until_done
 
-    if wav is not None:
-        # 时长由台词音频实际时长驱动：此前恒 cfg.shot_duration_sec(5s)，长对白在
-        # wan2.7 通道被硬截（无 video_extension 兜底）；记账同步按实际秒数（熔断不再失真）
-        dur = max(int(cfg.shot_duration_sec), math.ceil(wav_duration(wav)))
-        wav = _ensure_16k(talk, wav, storage)  # 口型模型输入规格（母带已是 44.1k）
-    else:
-        dur = int(duration_sec or cfg.shot_duration_sec or 5)
+    dur = int(duration_sec or cfg.shot_duration_sec or 5)  # 台词字数算出的时长（本链无音频可依据）
 
     last_err = ""
     perm = False  # 最后一次失败是否为"官方规格外"（重试/换协议都救不了）
     for attempt in range(cfg.retry_per_shot + 1):  # 对齐 m4 的镜头级重试
-        job_id = f"s2v_{shot_id}{tag}_{attempt}"
+        job_id = f"s2v_{shot_id}_{attempt}"
         job = jobs.get(job_id)
         if job is not None and job.status is JobStatus.SUCCEEDED and dest.exists():
             return  # 续跑/驳回重拍跳过：产物已在盘，不重复花钱
@@ -893,12 +638,12 @@ async def _s2v_one(
                 )
             )
         try:
-            res = _talk_request_resolution(talk, cfg, storage, shot_id, wav)
+            res = _talk_request_resolution(talk, cfg, storage, shot_id)
             ext_id = await talk.submit(
                 dest=dest,
                 image=image,
-                audio=wav,
-                video=video,
+
+
                 prompt=prompt,
                 resolution=res,
                 duration=dur,
@@ -946,7 +691,7 @@ async def _s2v_one(
             continue
         if status.status == "succeeded" and status.output_uri:
             jobs.update(job_id, status=JobStatus.SUCCEEDED, output_uri=str(dest))
-            # 计价键由供应商给：同一模型按分辨率/端点分档计价时（fal InfiniteTalk
+            # 计价键由供应商给：同一模型按分辨率/端点分档计价时（wan 系/旧 fal 通道
             # 480p↔720p 差 2 倍、i2v↔v2v 差 1.5 倍），按笼统模型名记账会让熔断失真。
             # 计费量与档位都**以 API 回传为准**：服务端按实际产出秒数计费，`usage.SR`
             # 才是真实分辨率档（s2v 480P/720P 差 80%，记错档位金额就错）。
@@ -960,8 +705,8 @@ async def _s2v_one(
             billed_res = actual_resolution_tier(status.usage) or res
             ledger.record(
                 "talk", talk.name,
-                price_key_for(talk, billed_res, has_video=video is not None),
-                quantity=secs, note=f"shot:{shot_id}{tag}",
+                price_key_for(talk, billed_res),
+                quantity=secs, note=f"shot:{shot_id}",
                 meta={
                     "quantity_source": qsrc,
                     "billed_seconds": round(secs, 3),
@@ -978,74 +723,6 @@ async def _s2v_one(
         storage.log_event(
             "m6_talk", "s2v_attempt_failed", shot=shot_id, attempt=attempt, error=last_err[:200]
         )
-    # 主通道协议不被模型接受/连续失败 → 试备用口型通道（另一套协议，如 wan2.2-s2v
-    # 的 image_url+audio_url），仍失败才交上层 I2V 叠音降级（无口型）
-    # `wav is not None` 这条守卫是给 C 链留的边界：备用通道全都要求音频输入，而 C 链
-    # （scripted_talk）压根没有驱动音频 —— 现在映射表也不给它配兜底（talkmode.py），
-    # 但将来真加了"提示词自发声"的兜底时，不该在这里静默把 None 喂过去。
-    if fallback_talk is not None and fallback_talk.name != talk.name and wav is not None:
-        fb_job = f"s2v_{shot_id}{tag}_fb"
-        if jobs.get(fb_job) is None:
-            jobs.submit(
-                RunJob(
-                    job_id=fb_job, run_id=storage.run_id, capability="talk",
-                    provider=fallback_talk.name,
-                    params={"shot_id": shot_id, "attempt": -1},
-                )
-            )
-        try:
-            fb_wav = _ensure_16k(fallback_talk, wav, storage)
-            # 备用通道有它自己的官方规格（wan2.2-s2v 只到 720P / 音频 <20s）
-            fb_res = _talk_request_resolution(
-                fallback_talk, cfg, storage, shot_id, fb_wav
-            )
-            ext_id = await fallback_talk.submit(
-                dest=dest, image=image, audio=fb_wav, video=video, prompt=prompt,
-                resolution=fb_res, duration=dur,
-            )
-            jobs.update(fb_job, status=JobStatus.RUNNING, output_uri=ext_id)
-            status = await poll_until_done(
-                fallback_talk.poll, ext_id, timeout_sec=cfg.i2v_poll_timeout_min * 60,
-                fast_interval=2 if cfg.fake else 5, slow_interval=5 if cfg.fake else 15,
-            )
-            if status.status == "succeeded" and status.output_uri:
-                jobs.update(fb_job, status=JobStatus.SUCCEEDED, output_uri=str(dest))
-                from fastvideo3.providers.dashscope import (
-                    actual_resolution_tier,
-                    billable_seconds,
-                )
-
-                fb_secs, fb_qsrc = billable_seconds(status.usage, dur)
-                ledger.record(
-                    "talk", fallback_talk.name,
-                    price_key_for(
-                        fallback_talk,
-                        actual_resolution_tier(status.usage) or fb_res,
-                        has_video=video is not None,
-                    ),
-                    quantity=fb_secs,
-                    note=f"shot:{shot_id}{tag}#fallback_talk",
-                    meta={
-                        "quantity_source": fb_qsrc,
-                        "billed_seconds": round(fb_secs, 3),
-                        "usage": dict(status.usage or {}),
-                    },
-                )
-                storage.log_event(
-                    "m6_talk", "talk_fallback_used", shot=shot_id,
-                    provider=fallback_talk.name, primary=talk.name,
-                )
-                return
-            last_err = str(status.error or "poll failed")
-        except CapabilityMismatchError as e:
-            perm, last_err = True, str(e)
-            storage.log_event(
-                "m6_talk", "s2v_capability_mismatch", shot=shot_id,
-                model=fallback_talk.model, error=last_err[:200], channel="fallback",
-            )
-        except Exception as e:  # noqa: BLE001
-            last_err = str(e)
-        jobs.update(fb_job, status=JobStatus.FAILED, error=last_err[:200])
     # 规格外失败与瞬时失败分开报：上层降级时事件里能看出"是通道规格不满足"，
     # 而不是又得到一条"s2v failed after 3 attempts" 这种诱导误诊的模糊信息。
     raise (
@@ -1055,37 +732,6 @@ async def _s2v_one(
             f"s2v failed after {cfg.retry_per_shot + 1} attempts: {shot_id}: {last_err}"
         )
     )
-
-
-async def _two_person(
-    cfg, talk, shot, lines, frames, assets_registry, dest, ledger, storage, jobs,
-    fallback_talk: TalkProvider | None = None,
-) -> None:
-    """双人对话：分镜首帧（本就两人同框）+ 全部对白按序拼接 → 单条口型片段。
-
-    旧实现为每角色用立绘（纯色背景站桩）各出一条再 hstack 左右拼接：1440×1280 横排
-    画面被 m7 cover 裁回 9:16 时裁掉大半（观感灾难），且 YOLO+rembg「分割合成」分支
-    与降级分支代码完全相同（从未实现，见 utils/yolo.py 标注）。首帧由 m3 按
-    shot.characters 生成、本就两人同框，单通道口型直接继承该构图。
-    已知局限：API 侧没有"每人一条音轨 + 人脸 bbox 绑定"的能力，单音轨驱动整幅画面时
-    口型归属可能不准（没说话的人也会动嘴）——所以默认策略 two_person_talk=overlay
-    **根本不走到这里**（宁可无口型也不给错口型），只有显式设 s2v_merged 才用本函数。
-    """
-    frame = frames.get(shot.shot_id)
-    if frame:
-        image = Path(frame)
-    else:  # 首帧缺失（m3 失败路径，罕见）：退化角色立绘
-        storage.log_event("m6_talk", "duo_frame_missing", shot=shot.shot_id)
-        image = Path(_char_image(assets_registry, shot.characters))
-    # 全部对白按台词顺序拼成**一条音轨**驱动整幅画面；超过通道音频上限时
-    # talk_for_shot 会按句子边界分段生成再拼回（官方对 >20s 音频的唯一正确做法）
-    await talk_for_shot(
-        cfg, talk, image, lines, dest, ledger, jobs, storage, shot.shot_id,
-        prompt=shot.visual_prompt,
-        fallback_talk=fallback_talk,
-        mix_name=f"{shot.shot_id}_duo",
-    )
-    storage.log_event("m6_talk", "two_person_single_s2v", shot=shot.shot_id)
 
 
 async def _fallback_overlay(cfg, i2v, shot, frames, lines, storage, ledger, jobs) -> str | None:

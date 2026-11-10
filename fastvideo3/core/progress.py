@@ -434,9 +434,9 @@ def scene_covered_shots(storage: RunStorage, script: Script, cfg: Any) -> dict[s
     约定同源（`clips/scene_{gid}.mp4` + 映射 json），并且要求片段**不作废** —— 上游
     立绘/剧本改过之后血缘会标 stale，那时覆盖失效、逐镜头缺口重新出现。
 
-    **必须与 `servable_groups` 同一份判据**：A/B 链下对白镜头的画面归 m6（用我们的
-    TTS 音频驱动），若这里把含对白的组也算覆盖，m6 会被跳过 → 成片没有口型，
-    正是本项目踩过多次的"静默交付坏片"形状。
+    **判据与 `servable_groups` 同源**（本函数就是直接调它，不抄第二份）：`audio_overlay`
+    下对白镜头的画面归 m4+m6/m7 叠音，含对白的组不算覆盖，否则口型/配音步骤被跳过
+    → 成片没有口型，正是本项目踩过多次的"静默交付坏片"形状。
     """
     from fastvideo3.core.scenegroup import group_scenes, servable_groups
 

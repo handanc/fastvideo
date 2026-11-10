@@ -225,7 +225,7 @@ async def test_m6_reports_lipsync_but_never_marks_stale(cfg, storage):
     _write_video(clip, on, ls.MOUTH_BOX)
     wav = storage.path("audio", "shot_s1_01_mix.wav")
     _write_wav(wav, shifted)
-    d = await _lipsync_check(cfg, storage, "s1_01", clip, wav, method="lipsync",
+    d = await _lipsync_check(cfg, storage, "s1_01", clip, wav, method="scripted",
                              vlm=StubVLM(_lips_at(ls.MOUTH_BOX)))
     assert d["located"] is True and d["corr"] is not None
     assert not storage.is_stale("talk/shot_s1_01.mp4"), "度量不得自动标 stale（会触发付费重做）"
@@ -238,18 +238,9 @@ async def test_m6_reports_lipsync_but_never_marks_stale(cfg, storage):
     _write_video(clip2, on, ls.MOUTH_BOX)
     wav2 = storage.path("audio", "shot_s1_02_mix.wav")
     _write_wav(wav2, shifted)
-    d2 = await _lipsync_check(cfg, storage, "s1_02", clip2, wav2, method="lipsync", vlm=None)
+    d2 = await _lipsync_check(cfg, storage, "s1_02", clip2, wav2, method="scripted", vlm=None)
     assert d2["verdict"] == "inconclusive"
     assert not storage.is_stale("talk/shot_s1_02.mp4")
-
-    # 叠音降级：只记录
-    clip3 = storage.path("clips", "shot_s1_03.mp4")
-    _write_video(clip3, on, ls.MOUTH_BOX)
-    wav3 = storage.path("audio", "shot_s1_03_mix.wav")
-    _write_wav(wav3, on)
-    await _lipsync_check(cfg, storage, "s1_03", clip3, wav3, method="overlay")
-    assert not storage.is_stale("clips/shot_s1_03.mp4")
-
 
 def test_lipsync_never_enters_auto_reshoot_gate(cfg):
     """闸门里口型一律不触发重做（含 located+unsynced），但脸/衣不一致照旧触发。"""
@@ -311,68 +302,27 @@ def test_scan_reports_none_when_nothing_moves(tmp_path):
     assert d["verdict"] == "inconclusive" and d["corr"] is None, d
 
 
-# ── 5. 口型通道官方硬规格（防"配置越界"伪装成"模型不行"） ──
+# ── 5. 分辨率钳位（防"配置越界"伪装成"模型不行"） ──
 
-def test_s2v_resolution_is_clamped_to_its_official_ceiling():
+def test_clamp_resolution_follows_the_provider_declared_ceiling():
+    """`clamp_resolution` 只认 provider 声明的上限，不猜、不越界。
+
+    机理由 A 链（wan2.2-s2v 只到 720P）验证过，通道本身已于 2026-11-04 删除，但
+    C 链提交前走的是**同一个**钳位（`m6._talk_request_resolution`）—— 1080P 档把
+    非法档名原样发给只有两档的模型，服务端只回一句分辨率相关的 400，看着像"这个模型
+    不能对口型"。所以这条机制的测试必须留下，且不能绑在某一家 provider 上。
+    """
     from fastvideo3.providers.base import clamp_resolution
-    from fastvideo3.providers.dashscope import DashScopeTalkProvider
 
-    s2v = DashScopeTalkProvider("sk-x", "wan2.2-s2v")
-    # 官方写"时长 <20s"（严格小于）；19.5 是留的换气/取整余量，见 provider 注释
-    assert s2v.max_resolution == "720P" and s2v.max_audio_sec == 19.5
-    # cinema 档位是 1080P：必须钳到 720P，否则提交即 400，看着像"口型模型不行"
-    assert clamp_resolution(s2v, "1080P") == ("720P", True)
-    assert clamp_resolution(s2v, "720P") == ("720P", False)
-    assert clamp_resolution(s2v, "480P") == ("480P", False)
-    # 上限未知就不猜；未知档位名原样透传
-    assert clamp_resolution(s2v, "") == ("", False)
+    class _Cap720:
+        max_resolution = "720P"
 
     class _NoCap:
         max_resolution = None
 
+    assert clamp_resolution(_Cap720(), "1080P") == ("720P", True)
+    assert clamp_resolution(_Cap720(), "720P") == ("720P", False)
+    assert clamp_resolution(_Cap720(), "480P") == ("480P", False)
+    # 上限未知就不猜；未知档位名原样透传
+    assert clamp_resolution(_Cap720(), "") == ("", False)
     assert clamp_resolution(_NoCap(), "1080P") == ("1080P", False)
-
-
-@pytest.mark.asyncio
-async def test_m6_clamps_resolution_and_stops_on_overlong_audio(cfg, storage, jobs, ledger,
-                                                                tmp_path):
-    """提交参数按规格钳位；混音超 20s 直接止损（不空转 3 次重试）。"""
-    from fastvideo3.modules.m6_talk import _s2v_one
-    from fastvideo3.providers.base import CapabilityMismatchError, ProviderError
-
-    class CapProbeS2V:
-        name = "dashscope_wan22_s2v"
-        model = "wan2.2-s2v"
-        max_resolution = "720P"
-        max_audio_sec = 20.0
-        prefers_16k_audio = False
-        submitted: dict = {}
-
-        async def submit(self, *, dest, image, audio, video=None, prompt="",
-                         resolution="720P", duration=0):
-            type(self).submitted = {"resolution": resolution, "duration": duration}
-            raise ProviderError("离线：不真提交")
-
-        async def poll(self, ext_id):
-            raise AssertionError
-
-    talk = CapProbeS2V()
-    cfg.i2v_resolution = "1080P"
-    wav = storage.path("audio", "shot_s1_01_mix.wav")
-    _write_wav(wav, ON)  # 48 格 @6fps = 8s
-    clip = storage.path("talk", "shot_s1_01.mp4")
-
-    with pytest.raises(ProviderError):
-        await _s2v_one(cfg, talk, tmp_path / "first.png", wav, clip, ledger, jobs,
-                       storage, "s1_01")
-    assert talk.submitted.get("resolution") == "720P", "必须按 s2v 官方上限钳位"
-    assert any(e.get("status") == "resolution_clamped" for e in storage.read_events())
-
-    # 超 20s 的混音：永久错误 → 一次都不提交，直接 CapabilityMismatchError 止损
-    long_wav = storage.path("audio", "shot_s1_02_mix.wav")
-    _write_wav(long_wav, [i % 8 < 4 for i in range(160)])  # ≈26.7s
-    talk.submitted = {}
-    with pytest.raises(CapabilityMismatchError):
-        await _s2v_one(cfg, talk, tmp_path / "first.png", long_wav, clip, ledger, jobs,
-                       storage, "s1_02")
-    assert talk.submitted == {}, "超长音频属官方规格外，重试无意义，不许提交"

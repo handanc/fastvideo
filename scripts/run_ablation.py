@@ -151,7 +151,8 @@ def main() -> int:
 
     async def go() -> list[dict]:
         base_id = f"abl_{ts}_script"
-        base_cfg = load_config(quality="cinema", ablation=arms[0])
+        # 画质档的参数叫 resolution（旧 quality 名 2026-10 就退役了；这里一直是坏签名，一跑就 TypeError）
+        base_cfg = load_config(resolution="1080P", ablation=arms[0])
         base_cfg.fake = args.fake
         script_json = await _gen_script(base_cfg, args.topic, RunStorage(base_id))
         results = []

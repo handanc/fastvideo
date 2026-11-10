@@ -18,7 +18,7 @@ from fastvideo3.core.model_catalog import choices_for, is_known
 
 SAMPLE = """# 密钥区（任何写回都不该动这些行）
 DASHSCOPE_API_KEY=sk-super-secret-keep-me
-FAL_KEY=fal-secret-keep-me
+DEEPSEEK_API_KEY=ds-secret-keep-me
 
 FV3_TEXT_MODEL=qwen3.7-plus
 FV3_T2I_MODEL=wanx2.1-t2i-turbo   # 行尾注释要保留
@@ -44,7 +44,7 @@ def test_replaces_only_the_target_lines_and_keeps_secrets(dotenv):
     assert "FV3_T2I_MODEL=qwen-image-3.0" in out
     # 密钥与无关配置一行都没动
     assert "DASHSCOPE_API_KEY=sk-super-secret-keep-me" in out
-    assert "FAL_KEY=fal-secret-keep-me" in out
+    assert "DEEPSEEK_API_KEY=ds-secret-keep-me" in out
     assert "FV3_RESOLUTION=economy" in out
     assert "wanx2.1-t2i-turbo" not in out
 
@@ -75,12 +75,12 @@ def test_empty_values_and_unknown_caps_write_nothing(dotenv):
     assert dotenv.read_text(encoding="utf-8") == before, "空值＝跟随档位，不能把 .env 清空"
 
 
-def test_talk_model_is_writable_and_drives_mode(tmp_path):
-    """口型也在面板里选（wan2.2-s2v / videoretalk / wan3.0-video / -prime）→ 要能写回 .env。
+def test_talk_model_is_writable(tmp_path):
+    """口型模型名要能写回 .env（现在只有 wan3.0-video / -prime 两档，同一条调用自带口型）。
 
-    写回**不会**造成"模式与通道各存一份"：`load_config` 会按 FV3_TALK_MODEL 反推
-    `talk_mode`（`talkmode.mode_for_model`）。少了这层反推才会出事 —— 通道已改道到
-    wan3.0（只吃提示词），模式还是 s2v_direct（要喂音频）→ 每个对白镜头 CapabilityMismatch。
+    写回不产生"模式与通道各存一份"：口型模式已不可选（`load_config` 恒 scripted_talk），
+    而"按模型名反推模式"那层（`talkmode.mode_for_model`）已于 2026-11-04 随 A/B 链删除 ——
+    没有第二份事实，也就没有可漂的地方。
     """
     from fastvideo3.core.config import load_config
 
@@ -221,7 +221,6 @@ def test_catalog_names_are_loadable_and_env_keys_match_config(cap, tmp_path, dot
         p.write_text(f"{key}={model}\n", encoding="utf-8")
         cfg = load_config(resolution="480P", dotenv_path=p)
         cfg.dashscope_api_key = cfg.dashscope_api_key or "sk-test"
-        cfg.siliconflow_api_key = cfg.siliconflow_api_key or "sk-test"
         assert cfg.model_overrides.get(cap) == model, (key, model)
         prov = make_provider(getattr(Capability, cap.upper()), cfg)
         assert prov.model == model, (cap, model, prov.name)

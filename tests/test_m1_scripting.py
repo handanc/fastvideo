@@ -79,3 +79,85 @@ def test_line_length_violations_detect():
     script = fake_script(BaseInfo(topic="t"))
     script.scenes[0].shots[1].dialogues[0].text = "这" * 40
     assert len(line_length_violations(script)) == 1
+
+
+# ───────────────────── 外貌兜底补写（导入/保存剧本稿的批量入口用）─────────────────────
+class _Reply(TextProvider):
+    """按输入的 id 回一行外貌，顺便记录被问到的角色，便于断言"只问了空的那个"。"""
+
+    name = "reply"
+    model = "reply-1"
+    last_usage: dict = {}
+
+    def __init__(self, reply_for, fail=False):
+        self.prompts: list[str] = []
+        self.reply_for = reply_for
+        self.fail = fail
+
+    async def chat(self, messages, json_schema=None, **kw):
+        self.prompts.append(messages[-1]["content"])
+        if self.fail:
+            return "这不是 JSON"
+        return self.reply_for
+
+
+def _two_char_script():
+    from fastvideo3.core.schema import Character
+
+    script = fake_script(BaseInfo(topic="天庭裁员"))
+    script.characters = [
+        Character(character_id="c_keep", name="唐僧", appearance="男，中年，光头，披金红袈裟"),
+        Character(character_id="c_empty", name="玉帝", appearance=""),
+    ]
+    return script
+
+
+async def test_fill_appearances_never_touches_a_filled_one(cfg, storage, ledger):
+    """已有外貌一律不碰：改它 = 换那个角色的脸 = 定妆照与全部首帧作废（花真钱）。"""
+    from fastvideo3.modules.m1_scripting import fill_appearances
+
+    script = _two_char_script()
+    text = _Reply('{"characters": [{"character_id": "c_keep", "appearance": "别改我"},'
+                  ' {"character_id": "c_empty", "appearance": "男，中老年，富态，黑色短发，黑西装，金领带的袖扣"}]}')
+    out = await fill_appearances(cfg, text, script, storage, ledger)
+    by = {c.character_id: c.appearance for c in out.characters}
+    assert by["c_keep"] == "男，中年，光头，披金红袈裟", by
+    assert by["c_empty"].startswith("男，中老年"), by
+    assert len(text.prompts) == 1, "一次调用补完所有缺外貌的角色（不是逐角色各调一次）"
+    assert "c_keep" not in text.prompts[0], "已有外貌的角色不该出现在提问名单里"
+    assert "玉帝" in text.prompts[0], "提问要带上线索（台词/在场画面），否则模型只能瞎编"
+    assert ledger.total() > 0, "补写花了钱就必须进台账"
+    ev = [e for e in storage.read_events() if e.get("status") == "appearances_filled"]
+    assert ev and ev[-1]["chars"] == 1, ev
+
+
+async def test_fill_appearances_keeps_empty_when_clues_are_zero(cfg, storage, ledger):
+    """模型说"推不出"就留空 + 记事件：一句没依据的漂亮描述比空格更坏（全片换脸的源头）。"""
+    from fastvideo3.modules.m1_scripting import fill_appearances
+
+    script = _two_char_script()
+    text = _Reply('{"characters": [{"character_id": "c_empty", "appearance": ""}]}')
+    out = await fill_appearances(cfg, text, script, storage, ledger)
+    assert [c.appearance for c in out.characters] == ["男，中年，光头，披金红袈裟", ""]
+    assert [e for e in storage.read_events() if e.get("status") == "appearance_still_empty"]
+
+
+async def test_fill_appearances_failure_does_not_break_the_save(cfg, storage, ledger):
+    """供应商坏了/回了非 JSON：只记事件，原样返回 —— 保存不能因为"外貌没补上"而失败。"""
+    from fastvideo3.modules.m1_scripting import fill_appearances
+
+    script = _two_char_script()
+    out = await fill_appearances(cfg, _Reply("", fail=True), script, storage, ledger)
+    assert out.characters[1].appearance == ""
+    assert [e for e in storage.read_events() if e.get("status") == "appearance_fill_failed"]
+
+
+async def test_fill_appearances_skipped_when_nothing_missing(cfg, storage, ledger):
+    from fastvideo3.modules.m1_scripting import fill_appearances
+
+    script = fake_script(BaseInfo(topic="测试主题"))
+    assert all(c.appearance.strip() for c in script.characters), "夹具本身应人人有外貌"
+    text = _Reply('{"characters": []}')
+    await fill_appearances(cfg, text, script, storage, ledger)
+    assert text.prompts == [], "一个都不缺就不该花钱"
+    assert ledger.total() == 0

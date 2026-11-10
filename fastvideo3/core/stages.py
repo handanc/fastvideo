@@ -249,7 +249,8 @@ async def stage_scene_clips(
     """场景级生成：一个场景组 = 一次 wan3.0 调用（组内多镜头连贯、自带台词口型）。
 
     只在 C 链（scripted_talk）且通道支持参考素材时启用 —— 只有 wan3.0 系能"一次调用
-    出带口型的多镜头片段"。其余档位/链路走逐镜头路径（那套首尾帧逻辑保留不动）。
+    出带口型的多镜头片段"。其余情形（`scene_clip_mode=off`、audio_overlay、通道不支持
+    参考素材）走逐镜头路径（那套首尾帧逻辑保留不动）。
     每组的输入形态（参考生视频 / 首尾帧）由 `scenegroup.choose_input_mode` 三条规则
     或界面覆盖决定，见 `m4_scene.generate_scene_clips`。
     """
@@ -361,12 +362,9 @@ async def stage_talk(
                 "talk", "talk_provider_unavailable", str(e),
                 impact=f"口型改用备选 {getattr(talk_provider, 'name', '无')}",
             )
-    # 备用口型通道：主模型不接受该协议时（如 wan3.0-video 拒收 driving_audio）
-    # 换一套协议再试，仍失败才降级为无口型叠音
-    fallback_talk = make_fallback(Capability.TALK, ctx.cfg)
-    if fallback_talk is not None and talk_provider is not None:
-        if fallback_talk.name == talk_provider.name and fallback_talk.model == talk_provider.model:
-            fallback_talk = None
+    # 没有"备用口型通道"这一层了：A/B 链与第三方口型（fal、可灵）已于 2026-11-04 删除，
+    # C 链也没有形态相容的兜底（`talkmode.provider_name/fallback_name` 判过）。主通道失败
+    # 直接走 m6 的 I2V+叠音降级并落 degradations.json —— 而不是换道再失败一次。
     # 口型度量需要视觉模型**定位嘴部取样框**：经验框在真实分镜（特写/过肩/全身混排）
     # 下量不到嘴，退化成"没有结论"而不是给一个像结论的数字（见 utils/lipsync.py）。
     vlm = None
@@ -384,7 +382,6 @@ async def stage_talk(
         ctx.ledger,
         ctx.jobs,
         only_shots=only,
-        fallback_talk=fallback_talk,  # type: ignore[arg-type]
         vlm=vlm,  # type: ignore[arg-type]
     )
     # 降级片段并入 clips 通道 → m7 会自动叠加对白音轨
