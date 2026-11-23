@@ -12,9 +12,9 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-import fastvideo3.app.api as api_mod
-from fastvideo3.core.schema import BaseInfo
-from fastvideo3.providers.fake import fake_script
+import fastvideo4.app.api as api_mod
+from fastvideo4.core.schema import BaseInfo
+from fastvideo4.providers.fake import fake_script
 
 
 @pytest.fixture
@@ -189,7 +189,7 @@ def test_pick_portrait_rejects_foreign_or_traversal_names(client, outdir):
 def test_pick_portrait_invalidates_downstream(client, outdir):
     """✔ 设为定妆照必须作废消费过旧脸的下游，否则旧脸混进新成片。"""
     root, script = _mk_run(outdir, "run_20260101_000030")
-    from fastvideo3.core.storage import RunStorage
+    from fastvideo4.core.storage import RunStorage
 
     storage = RunStorage("run_20260101_000030", root=outdir)
     shots_c1 = [sh.shot_id for sc in script.scenes for sh in sc.shots if "c1" in sh.characters]
@@ -219,9 +219,9 @@ def test_take_counter_changes_seed_and_candidate_names(client, outdir):
     """删除→重生成必须换脸：take+1 进种子与候选文件名。"""
     import asyncio
 
-    from fastvideo3.core.storage import RunStorage
-    from fastvideo3.modules.m2_assets import _char_seed, build_assets
-    from fastvideo3.providers.fake import FakeT2IProvider, FakeVLMProvider
+    from fastvideo4.core.storage import RunStorage
+    from fastvideo4.modules.m2_assets import _char_seed, build_assets
+    from fastvideo4.providers.fake import FakeT2IProvider, FakeVLMProvider
 
     root, script = _mk_run(outdir, "run_20260101_000032")
     storage = RunStorage("run_20260101_000032", root=outdir)
@@ -234,7 +234,7 @@ def test_take_counter_changes_seed_and_candidate_names(client, outdir):
     asyncio.run(
         build_assets(
             cfg, FakeT2IProvider(), script, storage,
-            __import__("fastvideo3.core.cost", fromlist=["CostLedger"]).CostLedger(storage, 100),
+            __import__("fastvideo4.core.cost", fromlist=["CostLedger"]).CostLedger(storage, 100),
             vlm=FakeVLMProvider(),
         )
     )
@@ -243,6 +243,6 @@ def test_take_counter_changes_seed_and_candidate_names(client, outdir):
 
 
 def load_config_for_test():
-    from fastvideo3.core.config import load_config
+    from fastvideo4.core.config import load_config
 
     return load_config(dotenv_path="none.env", resolution="480P")

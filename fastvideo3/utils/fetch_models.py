@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import httpx
 
-from fastvideo3.core.config import MODELS_DIR
-from fastvideo3.utils.yolo import WEIGHT_NAME
+from fastvideo4.core.config import MODELS_DIR
+from fastvideo4.utils.yolo import WEIGHT_NAME
 
 URL = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n-seg.pt"
 

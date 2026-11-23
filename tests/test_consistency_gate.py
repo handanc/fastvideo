@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastvideo3.core import progress as prog
-from fastvideo3.core.schema import BaseInfo, ReviewResult
-from fastvideo3.core.stages import build_context
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.providers.fake import FakeVLMProvider
+from fastvideo4.core import progress as prog
+from fastvideo4.core.schema import BaseInfo, ReviewResult
+from fastvideo4.core.stages import build_context
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.providers.fake import FakeVLMProvider
 
 
 class FaceDriftVLM(FakeVLMProvider):
@@ -45,7 +45,7 @@ class FaceDriftVLM(FakeVLMProvider):
 
 
 async def _chain(cfg, outdir, vlm, *, auto_reshoot: bool = False, gate: bool = True):
-    from fastvideo3.app.cli import _run_step
+    from fastvideo4.app.cli import _run_step
 
     cfg.fake = True
     cfg.consistency_metric = "full" if gate else "off"
@@ -108,7 +108,7 @@ def test_gate_off_for_economy(cfg, outdir):
     这一档 480P 出厂就是 off（2026-10-17 起 480P 唯一保留的"不"就是它：锁脸与度量都开了；
     按真实档位取配置的那半边测试在 `tests/test_480p_face_lock.py`）。
     """
-    from fastvideo3.modules.m9_metrics import gate_failures
+    from fastvideo4.modules.m9_metrics import gate_failures
 
     cfg.consistency_gate = "off"
     report = {
@@ -144,8 +144,8 @@ async def test_auto_reshoot_redoes_picked_shots_exactly_once(cfg, outdir):
     # 没有 clips/shot_*.mp4 可重出）；重出的证据是文件比"重拍"事件更新。
     import time as _t
 
-    from fastvideo3.core.scenegroup import group_scenes
-    from fastvideo3.core.schema import Script
+    from fastvideo4.core.scenegroup import group_scenes
+    from fastvideo4.core.schema import Script
 
     ev_ts = _t.mktime(_t.strptime(shots[0]["ts"], "%Y-%m-%d %H:%M:%S"))
     script = Script.model_validate(storage.load_json("script.json"))

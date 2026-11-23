@@ -7,12 +7,12 @@ AI critic→自动重写的回路连同 `review_script` 一并删除。
 
 from __future__ import annotations
 
-from fastvideo3.core.cost import CostLedger, llm_meta
-from fastvideo3.core.prompts import render
-from fastvideo3.core.schema import ReviewResult, Script, ShotType
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.providers.base import VLMProvider
-from fastvideo3.utils.ffmpeg import extract_frames
+from fastvideo4.core.cost import CostLedger, llm_meta
+from fastvideo4.core.prompts import render
+from fastvideo4.core.schema import ReviewResult, Script, ShotType
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.providers.base import VLMProvider
+from fastvideo4.utils.ffmpeg import extract_frames
 
 
 def pick_reshoot_shots(script: Script, feedback: str, limit: int = 2) -> list[str]:
@@ -72,7 +72,7 @@ async def review_final(
         storage.save_json("final_review.json", result.model_dump(mode="json"))
         return result
     except Exception as e:  # noqa: BLE001
-        from fastvideo3.providers.base import AccountGateError
+        from fastvideo4.providers.base import AccountGateError
 
         gate = isinstance(e, AccountGateError)
         storage.log_event(

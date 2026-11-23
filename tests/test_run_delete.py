@@ -15,8 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 from test_board_api import _mk_run
 
-import fastvideo3.app.api as api_mod
-from fastvideo3.core import tasklock
+import fastvideo4.app.api as api_mod
+from fastvideo4.core import tasklock
 
 RUN = "run_20260101_000095"
 

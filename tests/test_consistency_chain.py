@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from fastvideo3.core.schema import (
+from fastvideo4.core.schema import (
     Asset,
     BaseInfo,
     ConsistencyVerdict,
@@ -25,12 +25,12 @@ from fastvideo3.core.schema import (
     Shot,
     ShotType,
 )
-from fastvideo3.providers.base import (
+from fastvideo4.providers.base import (
     CapabilityMismatchError,
     ReviewParseError,
     ref_paths,
 )
-from fastvideo3.providers.fake import (
+from fastvideo4.providers.fake import (
     FakeI2VProvider,
     FakeT2IProvider,
     FakeTextProvider,
@@ -74,7 +74,7 @@ def _assets(script: Script, tmp_path: Path) -> dict[str, Asset]:
 
 async def test_m3_multi_ref_passes_per_shot_char_count(cfg, storage, ledger, tmp_path):
     """ref_max_chars=2 时双人镜头拿 2 张参考图、单人镜头 1 张（wan2.7 多图协议）。"""
-    from fastvideo3.modules.m3_storyboard import build_storyboard
+    from fastvideo4.modules.m3_storyboard import build_storyboard
 
     cfg.use_reference_keyframes = True
     cfg.ref_max_chars = 2
@@ -95,7 +95,7 @@ async def test_m3_multi_ref_passes_per_shot_char_count(cfg, storage, ledger, tmp
 
 async def test_m3_lockface_not_written_into_visual_prompt(cfg, storage, ledger, tmp_path):
     """P1-4：锁定语料只进本次 t2i 请求，visual_prompt 保持纯画面（m6 口型不再收到无效指令）。"""
-    from fastvideo3.modules.m3_storyboard import build_storyboard
+    from fastvideo4.modules.m3_storyboard import build_storyboard
 
     cfg.use_reference_keyframes = True
     script = fake_script(BaseInfo(topic="t"))
@@ -107,7 +107,7 @@ async def test_m3_lockface_not_written_into_visual_prompt(cfg, storage, ledger, 
 
 async def test_m3_ref_dropped_event_when_provider_unsupported(cfg, storage, ledger, tmp_path):
     """开关开了但 provider 不支持参考图 → 必须落 ref_condition_dropped（不再静默）。"""
-    from fastvideo3.modules.m3_storyboard import build_storyboard
+    from fastvideo4.modules.m3_storyboard import build_storyboard
 
     cfg.use_reference_keyframes = True
     script = fake_script(BaseInfo(topic="t"))
@@ -119,7 +119,7 @@ async def test_m3_ref_dropped_event_when_provider_unsupported(cfg, storage, ledg
 
 async def test_capability_mismatch_raises_instead_of_silently_dropping():
     """P0-2：不支持参考图的 provider 收到 ref_image 必须抛错（死参数病灶）。"""
-    from fastvideo3.providers.dashscope import DashScopeT2IProvider
+    from fastvideo4.providers.dashscope import DashScopeT2IProvider
 
     p = DashScopeT2IProvider("fake-key", "wanx2.1-t2i-plus")
     with pytest.raises(CapabilityMismatchError):
@@ -128,7 +128,7 @@ async def test_capability_mismatch_raises_instead_of_silently_dropping():
 
 async def test_fallback_records_dropped_conditions(cfg, storage, ledger, tmp_path):
     """P0-3：主供耗尽走 fallback 时，被丢弃的 seed/ref 必须进事件 dropped 数组。"""
-    from fastvideo3.modules.m3_storyboard import build_storyboard
+    from fastvideo4.modules.m3_storyboard import build_storyboard
 
     cfg.use_reference_keyframes = True
     script = fake_script(BaseInfo(topic="t"))
@@ -143,7 +143,7 @@ async def test_fallback_records_dropped_conditions(cfg, storage, ledger, tmp_pat
 
 def test_seed_scope_cast_stable_across_scenes():
     """P0-6：cast 作用域下同角色跨场景同种子；scene_cast 保持旧行为；shot 全不同。"""
-    from fastvideo3.modules.m3_storyboard import _stable_seed
+    from fastvideo4.modules.m3_storyboard import _stable_seed
 
     a = Shot(shot_id="s1_1", scene_id="s1", type=ShotType.DIALOGUE, action="a", characters=["c1"])
     b = Shot(shot_id="s2_1", scene_id="s2", type=ShotType.DIALOGUE, action="b", characters=["c1"])
@@ -155,7 +155,7 @@ def test_seed_scope_cast_stable_across_scenes():
 
 def test_review_parse_error_on_garbage_and_missing_score():
     """P0-4：非 JSON / 缺 score 必须抛 ReviewParseError，不再兜底 0.7 通过。"""
-    from fastvideo3.providers.dashscope import DashScopeVLMProvider
+    from fastvideo4.providers.dashscope import DashScopeVLMProvider
 
     with pytest.raises(ReviewParseError):
         DashScopeVLMProvider._parse("这不是 JSON")
@@ -200,7 +200,7 @@ async def test_fake_i2v_accepts_refs_without_image(tmp_path):
 
 async def test_m4_r2v_route_event_and_ledger(cfg, storage, ledger, jobs, tmp_path):
     """角色动作镜头走 r2v 时：事件 route=r2v + ref_ids，台账 note 含 #r2v。"""
-    from fastvideo3.modules.m4_shots import generate_shots
+    from fastvideo4.modules.m4_shots import generate_shots
 
     cfg.use_r2v_for_characters = True
     script = fake_script(BaseInfo(topic="t"))
@@ -218,7 +218,7 @@ async def test_m4_r2v_route_event_and_ledger(cfg, storage, ledger, jobs, tmp_pat
 
 async def test_best_of_n_unscored_when_vlm_fails(cfg, storage, ledger, jobs, tmp_path):
     """P0-4：VLM 全挂时事件为 best_of_n_unscored 且 scores 全 None（不再伪造 0.5）。"""
-    from fastvideo3.modules.m4_shots import _pick_best
+    from fastvideo4.modules.m4_shots import _pick_best
 
     class BrokenVLM(FakeVLMProvider):
         async def review(self, media, *, rubric, dest=None):
@@ -235,7 +235,7 @@ async def test_best_of_n_unscored_when_vlm_fails(cfg, storage, ledger, jobs, tmp
 
 def test_tier_b_hue_catches_outfit_drift(tmp_path):
     """Tier-B：服装主色色相距离能客观抓到"头盔换色"这类漂移（零成本证伪 VLM）。"""
-    from fastvideo3.utils import quality as q
+    from fastvideo4.utils import quality as q
 
     a = tmp_path / "a.png"
     b = tmp_path / "b.png"
@@ -251,7 +251,7 @@ def test_tier_b_hue_catches_outfit_drift(tmp_path):
 
 async def test_m9_report_and_metric_conflict(cfg, storage, ledger, tmp_path):
     """m9：VLM 说 outfit 一致但色相差超阈值 → metric_conflict；报告落盘且锚通过。"""
-    from fastvideo3.modules.m9_metrics import measure_consistency
+    from fastvideo4.modules.m9_metrics import measure_consistency
 
     cfg.consistency_metric = "full"
     script = fake_script(BaseInfo(topic="t"))
@@ -283,8 +283,8 @@ async def test_m9_identity_layer_receives_all_declared_characters(
     旧写法就把"另一个角色明明还在、脸也对得上"的合格镜头判成身份漂移 → 白花一次重拍。
     线上实测（2026-10-12 权重就位后首次真跑）：同帧 唐僧 0.306 / 国王 0.4286。
     """
-    from fastvideo3.modules.m9_metrics import measure_consistency
-    from fastvideo3.utils import faceid
+    from fastvideo4.modules.m9_metrics import measure_consistency
+    from fastvideo4.utils import faceid
 
     cfg.consistency_metric = "full"
     script = fake_script(BaseInfo(topic="t"))
@@ -317,7 +317,7 @@ async def test_m9_identity_layer_receives_all_declared_characters(
 
 async def test_distill_attr_lost_self_heals(cfg, storage, ledger, tmp_path):
     """P1-3：蒸馏蒸发了关键外貌词 → 追加回 prompt 并落 distill_attr_lost。"""
-    from fastvideo3.modules.m3_storyboard import build_storyboard
+    from fastvideo4.modules.m3_storyboard import build_storyboard
 
     script = fake_script(BaseInfo(topic="t"))
     ch = script.characters[0]
@@ -333,7 +333,7 @@ async def test_distill_attr_lost_self_heals(cfg, storage, ledger, tmp_path):
 
 def test_ablation_overlay_wins_over_quality_profile(tmp_path, monkeypatch):
     """P1-7：消融配置在质量档之后叠加（否则会被 cinema 反向覆盖，测不到开关）。"""
-    from fastvideo3.core.config import load_config
+    from fastvideo4.core.config import load_config
 
     cfg = load_config(dotenv_path=tmp_path / "none.env", resolution="1080P",
                       ablation="consistency_off")
@@ -345,7 +345,7 @@ def test_ablation_overlay_wins_over_quality_profile(tmp_path, monkeypatch):
 
 
 def test_ablation_path_traversal_rejected(tmp_path):
-    from fastvideo3.core.config import _resolve_ablation
+    from fastvideo4.core.config import _resolve_ablation
 
     with pytest.raises(ValueError):
         _resolve_ablation("../../.env")
@@ -369,7 +369,7 @@ def test_consistency_verdict_coerces_string_bools():
 
 
 def test_render_strict_raises_on_missing_placeholder():
-    from fastvideo3.core.prompts import render_strict
+    from fastvideo4.core.prompts import render_strict
 
     with pytest.raises(KeyError):
         render_strict("consistency_metric.v1")  # 缺 look_json
@@ -379,8 +379,8 @@ def test_render_strict_raises_on_missing_placeholder():
 
 def test_canonical_tokens_collapse_substrings():
     """必留词收敛：被长词包含的短词丢掉，避免自愈时重复堆叠撑爆 prompt。"""
-    from fastvideo3.core.schema import CharacterLook
-    from fastvideo3.modules.m1_scripting import tokens_from_look
+    from fastvideo4.core.schema import CharacterLook
+    from fastvideo4.modules.m1_scripting import tokens_from_look
 
     look = CharacterLook(
         hair="",

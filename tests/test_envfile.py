@@ -11,10 +11,10 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-import fastvideo3.app.api as api_mod
-from fastvideo3.core import envfile
-from fastvideo3.core.envfile import update_env_models
-from fastvideo3.core.model_catalog import choices_for, is_known
+import fastvideo4.app.api as api_mod
+from fastvideo4.core import envfile
+from fastvideo4.core.envfile import update_env_models
+from fastvideo4.core.model_catalog import choices_for, is_known
 
 SAMPLE = """# 密钥区（任何写回都不该动这些行）
 DASHSCOPE_API_KEY=sk-super-secret-keep-me
@@ -82,7 +82,7 @@ def test_talk_model_is_writable(tmp_path):
     而"按模型名反推模式"那层（`talkmode.mode_for_model`）已于 2026-11-04 随 A/B 链删除 ——
     没有第二份事实，也就没有可漂的地方。
     """
-    from fastvideo3.core.config import load_config
+    from fastvideo4.core.config import load_config
 
     assert envfile.ENV_KEY_FOR_CAP["talk"] == "FV3_TALK_MODEL"
     p = tmp_path / ".env"
@@ -114,7 +114,7 @@ def test_write_failure_is_reported_not_raised(tmp_path):
 # ─────────────────────── 写回后面板选择成为默认 ───────────────────────
 def test_written_value_becomes_the_effective_model(tmp_path, dotenv, monkeypatch):
     """这条是"前端优先级最高"的真实含义：下一次 `load_config` 读到的就是面板选的那个。"""
-    from fastvideo3.core.config import load_config
+    from fastvideo4.core.config import load_config
 
     update_env_models({"t2i": "qwen-image-3.0"}, path=dotenv)
     cfg = load_config(resolution="480P", dotenv_path=dotenv)
@@ -186,10 +186,10 @@ def test_env_write_failure_still_creates_the_run(outdir, tmp_path, monkeypatch):
 
 
 def test_cli_new_writes_back_too(outdir, dotenv, monkeypatch):
-    """命令行与面板同一个动作：`fastvideo3 new --t2i-model` 也写回，两条路径不能各有各的默认。"""
+    """命令行与面板同一个动作：`fastvideo4 new --t2i-model` 也写回，两条路径不能各有各的默认。"""
     from typer.testing import CliRunner
 
-    from fastvideo3.app.cli import app
+    from fastvideo4.app.cli import app
 
     monkeypatch.setattr(envfile, "env_path", lambda: dotenv)
     r = CliRunner().invoke(
@@ -208,9 +208,9 @@ def test_catalog_names_are_loadable_and_env_keys_match_config(cap, tmp_path, dot
     这是"面板选了但没生效"的最后一道防线：写回的变量名如果和 `load_config` 读的不是同一个，
     面板与配置就永远对不上。
     """
-    from fastvideo3.core.config import load_config
-    from fastvideo3.providers.base import Capability
-    from fastvideo3.providers.factory import make_provider
+    from fastvideo4.core.config import load_config
+    from fastvideo4.providers.base import Capability
+    from fastvideo4.providers.factory import make_provider
 
     key = envfile.ENV_KEY_FOR_CAP[cap]
     assert key.startswith("FV3_"), cap

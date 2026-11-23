@@ -21,9 +21,9 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-import fastvideo3.app.api as api_mod
-from fastvideo3.core.config import apply_run_overrides, load_config
-from fastvideo3.core.model_catalog import (
+import fastvideo4.app.api as api_mod
+from fastvideo4.core.config import apply_run_overrides, load_config
+from fastvideo4.core.model_catalog import (
     CHOICES,
     FOLLOW_PROFILE,
     SELECTABLE_CAPS,
@@ -34,12 +34,12 @@ from fastvideo3.core.model_catalog import (
     ref_image_warning,
     validate,
 )
-from fastvideo3.providers.base import Capability
-from fastvideo3.providers.dashscope import (
+from fastvideo4.providers.base import Capability
+from fastvideo4.providers.dashscope import (
     DashScopeI2V27Provider,
     DashScopeWan27ImageProvider,
 )
-from fastvideo3.providers.factory import make_provider
+from fastvideo4.providers.factory import make_provider
 
 
 @pytest.fixture
@@ -58,9 +58,9 @@ def test_talk_model_never_reopens_a_second_mode(tmp_path):
     CapabilityMismatch → 全部降级无口型"。A/B 链于 2026-11-04 删除后，能错配的形态没有了，
     这条断言改成钉住"模式不随模型名漂移"（漂移=又一份事实）。
     """
-    from fastvideo3.core.talkmode import channel
-    from fastvideo3.providers.base import Capability
-    from fastvideo3.providers.factory import make_provider
+    from fastvideo4.core.talkmode import channel
+    from fastvideo4.providers.base import Capability
+    from fastvideo4.providers.factory import make_provider
 
     env = tmp_path / ".env"
     env.write_text(
@@ -115,7 +115,7 @@ def test_catalog_covers_the_requested_models(tmp_path):
 
 def test_configured_models_reads_env_then_yaml(tmp_path):
     """面板"默认 X"的唯一来源：.env 覆盖 > yaml > 内置默认。"""
-    from fastvideo3.core.model_catalog import configured_models
+    from fastvideo4.core.model_catalog import configured_models
 
     env = tmp_path / ".env"
     env.write_text(
@@ -144,7 +144,7 @@ def test_configured_models_reads_env_then_yaml(tmp_path):
 
 def test_effective_model_outside_catalog_is_added_as_a_choice():
     """生效模型不在目录里 → **补进选项**，否则界面会"显示着它、下拉里没有它"。"""
-    from fastvideo3.core.model_catalog import ui_catalog
+    from fastvideo4.core.model_catalog import ui_catalog
 
     data = ui_catalog({"t2i": "qwen-image-9.9", "text": "某个没收录的文本模型", "i2v": ""}, {"t2i": ".env"})
     caps = {c["capability"]: c for c in data["capabilities"]}
@@ -303,8 +303,8 @@ def test_every_selectable_model_shows_a_real_price(client):
     要么按 pyproject 的先例**显式**写 `verified = false`（价从旧表沿用、官网当前查不到），
     并留一句 note 说清它从哪来。"有数字但没根据"两头不靠，不接受。
     """
-    from fastvideo3.core import pricing
-    from fastvideo3.core.cost import load_pricing
+    from fastvideo4.core import pricing
+    from fastvideo4.core.cost import load_pricing
 
     table = load_pricing().get("models") or {}
     data = client.get("/api/model-choices?resolution=cinema").json()
@@ -320,7 +320,7 @@ def test_every_selectable_model_shows_a_real_price(client):
             if model not in catalog:
                 continue  # 本地 .env 补进来的"配置指定"行：如实标注即可
             assert in_table, (
-                f"{cap} 的可选项 {model} 没有单价条目 → 回填 [tool.fastvideo3.pricing]"
+                f"{cap} 的可选项 {model} 没有单价条目 → 回填 [tool.fastvideo4.pricing]"
             )
             spec = table[model] if isinstance(table[model], dict) else {}
             if spec.get("verified") is False:
@@ -413,7 +413,7 @@ def test_create_run_rejects_overflow_capabilities(client):
 def test_cli_new_persists_and_prints_choices(outdir):
     from typer.testing import CliRunner
 
-    from fastvideo3.app.cli import app
+    from fastvideo4.app.cli import app
 
     r = CliRunner().invoke(
         app,
@@ -433,7 +433,7 @@ def test_cli_new_persists_and_prints_choices(outdir):
 def test_cli_new_rejects_unknown_model(outdir):
     from typer.testing import CliRunner
 
-    from fastvideo3.app.cli import app
+    from fastvideo4.app.cli import app
 
     r = CliRunner().invoke(app, ["new", "--topic", "x", "--text-model", "gpt-5"])
     assert r.exit_code != 0

@@ -10,7 +10,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-import fastvideo3.app.api as api_mod
+import fastvideo4.app.api as api_mod
 
 
 @pytest.fixture
@@ -68,7 +68,7 @@ def test_health(client):
     r = client.get("/api/health")
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] == "ok" and body["app"] == "fastvideo3"
+    assert body["status"] == "ok" and body["app"] == "fastvideo4"
 
 
 def test_index_reachable(client):
@@ -97,7 +97,7 @@ def test_create_run_only_writes_meta_and_never_spawns(client, outdir):
 
 def test_create_run_defaults_to_real_mode(client, outdir):
     """不带 fake 字段的请求必须默认真实生成（此前默认 True，Web 运行静默走占位演示）。"""
-    from fastvideo3.app.api import RunCreate
+    from fastvideo4.app.api import RunCreate
 
     assert RunCreate(topic="x").fake is False
     r = client.post("/api/runs", json={"topic": "默认值验证"})

@@ -8,16 +8,16 @@
 
 - `build_graph(ctx, checkpointer)`：装配图
 - `run_graph(cfg, run_id, resume_value=...)`：跑或续跑（SQLite/PostgreSQL 检查点）
-- CLI：`fastvideo3 graph <run_id>` / `--resume --redo scene_2` / `--resume --finish`
+- CLI：`fastvideo4 graph <run_id>` / `--resume --redo scene_2` / `--resume --finish`
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastvideo3.graph.builder import build_graph
-from fastvideo3.graph.nodes import GraphContext, route_after_gate
-from fastvideo3.graph.state import ProductionState
+from fastvideo4.graph.builder import build_graph
+from fastvideo4.graph.nodes import GraphContext, route_after_gate
+from fastvideo4.graph.state import ProductionState
 
 __all__ = [
     "GraphContext",
@@ -40,7 +40,7 @@ def open_checkpointer(cfg: Any, storage: Any):
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
         except ImportError as e:  # pragma: no cover - 需要可选依赖
             raise RuntimeError(
-                'prod-postgres 需要: pip install "fastvideo3[postgres]" 并 docker compose up -d'
+                'prod-postgres 需要: pip install "fastvideo4[postgres]" 并 docker compose up -d'
             ) from e
         dsn = (
             f"postgresql://{cfg.pg_user}:{cfg.pg_password}@{cfg.pg_host}:{cfg.pg_port}/{cfg.pg_db}"
@@ -66,8 +66,8 @@ async def run_graph(
     """
     from langgraph.types import Command
 
-    from fastvideo3.app.cli import _cfg_from_meta
-    from fastvideo3.core.storage import RunStorage
+    from fastvideo4.app.cli import _cfg_from_meta
+    from fastvideo4.core.storage import RunStorage
 
     storage = RunStorage(run_id, root=root)
     meta = storage.load_json("run_meta.json")

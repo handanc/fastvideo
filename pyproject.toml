@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fastvideo3"
+name = "fastvideo4"
 version = "0.1.0"
-description = "FastVideo3 —— 全 API 化短剧视频生成教学平台（按顺序分步执行，每步之间人可介入）"
+description = "FastVideo4 —— 全 API 化短剧视频生成教学平台（按顺序分步执行，每步之间人可介入）"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -54,10 +54,10 @@ dev = [
 ]
 
 [project.scripts]
-fastvideo3 = "fastvideo3.app.cli:app_entry"
+fastvideo4 = "fastvideo4.app.cli:app_entry"
 
 [tool.setuptools.packages.find]
-include = ["fastvideo3*"]
+include = ["fastvideo4*"]
 
 [tool.ruff]
 line-length = 100
@@ -88,23 +88,23 @@ markers = [
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
 
-# BEGIN fastvideo3-pricing（由 fastvideo3 refresh-prices 维护，别手改格式）
+# BEGIN fastvideo4-pricing（由 fastvideo4 refresh-prices 维护，别手改格式）
 # ── 成本单价表（权威）─────────────────────────────────────────────
-# 记账顺序：**真实账单(API) → 本表 → 能力默认价**。本表由 `fastvideo3 refresh-prices`
+# 记账顺序：**真实账单(API) → 本表 → 能力默认价**。本表由 `fastvideo4 refresh-prices`
 # 抓官网价目页回写，手工改记得同步 `checked_at`（doctor 会把"这价多久没校准"显示出来）。
 # 口径：按官网**原价**记。页面上的"限时7折/8折"到期就没了，按折扣价记账会让成本上限
 # **晚跳闸 = 实际超支**；按原价记只会早跳闸 = 少花。宁可少花，不可超支。
 # unit：token_m=元/百万Token（输入/输出两个价）| second=元/秒 | image=元/张 | char=元/字符 | call=元/次
 # tiers：按输出分辨率分档（元/秒）。会自动摊平成 `模型@480p` 这类计价键，
 #   裸键取**最高档**，供红线/预估按最坏情况用（见 core/pricing.py 的 _flatten）。
-[tool.fastvideo3.pricing]
+[tool.fastvideo4.pricing]
 checked_at = "2026-10-12"
 source = "https://help.aliyun.com/zh/model-studio/model-pricing"
 basis = "list_price"
 # 2026-11-04：A 链 wan2.2-s2v（含 wan2.2-s2v-detect）、B 链 videoretalk、wan2.7 driving_audio
 # 的口型链路已删除，这些模型的单价与 worst_case 键一并摘除（不是漏登记，原值见 git 历史）。
 
-[tool.fastvideo3.pricing.defaults]
+[tool.fastvideo4.pricing.defaults]
 # 没登记单价的模型按这里兜底，并标 price_certain=false（看板会说"其中 ¥X 是估算"）
 text = { unit = "token_m", price_cny = 2.0, in_cny = 2.0, out_cny = 8.0, note = "按 plus 档兜底" }
 t2i = { unit = "image", price_cny = 0.20 }
@@ -113,10 +113,10 @@ talk = { unit = "second", price_cny = 0.6 }
 tts = { unit = "char", price_cny = 0.0002 }
 vlm = { unit = "token_m", price_cny = 1.0, in_cny = 1.0, out_cny = 10.0 }
 
-[tool.fastvideo3.pricing.worst_case]
+[tool.fastvideo4.pricing.worst_case]
 dashscope_wan30_talk = "wan3.0-video@1080p"
 
-[tool.fastvideo3.pricing.models]
+[tool.fastvideo4.pricing.models]
 # ── 文本（元/百万 Token：输入 | 输出）── 一次调用真实花多少 = 用 API 回传的 usage 算
 "qwen3.7-flash" = { unit = "token_m", in_cny = 0.2, out_cny = 0.8, note = "0<Token≤32K 档" }
 "qwen3.7-flash-2026-07-15" = { unit = "token_m", in_cny = 0.2, out_cny = 0.8, note = "0<Token≤32K 档" }
@@ -173,4 +173,4 @@ dashscope_wan30_talk = "wan3.0-video@1080p"
 "cosyvoice-v3-flash" = { unit = "char", price_cny = 0.0001 }
 "cosyvoice-v3-plus" = { unit = "char", price_cny = 0.0002 }
 "edge-tts" = { unit = "call", price_cny = 0.0, free = true, note = "微软免费端点：¥0 是真实价，不是漏登记" }
-# END fastvideo3-pricing
+# END fastvideo4-pricing

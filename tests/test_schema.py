@@ -1,6 +1,6 @@
 """数据契约测试（Schema-first 的守门员）。"""
 
-from fastvideo3.core.schema import (
+from fastvideo4.core.schema import (
     BaseInfo,
     JobStatus,
     ProjectConfig,
@@ -10,7 +10,7 @@ from fastvideo3.core.schema import (
     ShotType,
     TransitionType,
 )
-from fastvideo3.providers.fake import fake_script
+from fastvideo4.providers.fake import fake_script
 
 
 def test_fake_script_is_schema_valid():

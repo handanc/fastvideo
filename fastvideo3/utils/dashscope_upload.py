@@ -14,8 +14,8 @@ from pathlib import Path
 
 import httpx
 
-from fastvideo3.core import endpoints
-from fastvideo3.providers.base import ProviderError
+from fastvideo4.core import endpoints
+from fastvideo4.providers.base import ProviderError
 
 # 默认值只在 `core/endpoints.py` 定义一份。上传策略是**原生任务 API** 的一部分，
 # 所以它必须跟提交用同一个端点：换业务空间/套餐端点后仍打公共端点拿到的 oss:// 临时

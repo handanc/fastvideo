@@ -14,15 +14,15 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from fastvideo3.core.config import (
+from fastvideo4.core.config import (
     DEFAULT_RESOLUTION,
     LEGACY_QUALITY_TO_RESOLUTION,
     RESOLUTIONS,
     resolution_of_meta,
 )
-from fastvideo3.utils import ffmpeg as ff
-from fastvideo3.utils import qc
-from fastvideo3.utils.faceid import COSINE_THRESHOLD, available, identity_similarity, summarize
+from fastvideo4.utils import ffmpeg as ff
+from fastvideo4.utils import qc
+from fastvideo4.utils.faceid import COSINE_THRESHOLD, available, identity_similarity, summarize
 
 
 # ─────────────────────────── 技术 QC：判据必须真抓得住 ───────────────────────────
@@ -45,7 +45,7 @@ def test_qc_flags_black_and_silent_clip(tmp_path):
 
 def test_qc_passes_a_normal_clip_with_audio(tmp_path):
     """有画面有声音的正常片段不该被误判（假阳性会让用户不信任这一层）。"""
-    from fastvideo3.utils.audio import concat_wavs  # noqa: F401  仅为确认音频工具可用
+    from fastvideo4.utils.audio import concat_wavs  # noqa: F401  仅为确认音频工具可用
 
     img = _solid(tmp_path, "mid.png", (120, 90, 60))
     wav = tmp_path / "tone.wav"
@@ -165,8 +165,8 @@ def test_faceid_summarize_excludes_inconclusive_from_rate():
 
 def test_gate_uses_objective_layer_even_when_vlm_untrusted():
     """VLM 自校准锚不可信时，客观层（SFace）仍应能拦 —— 以前这种情况一律放弃重做。"""
-    from fastvideo3.core.config import AppConfig
-    from fastvideo3.modules.m9_metrics import gate_failures
+    from fastvideo4.core.config import AppConfig
+    from fastvideo4.modules.m9_metrics import gate_failures
 
     cfg = AppConfig(fake=True, consistency_gate="reshoot")
     report = {
@@ -195,7 +195,7 @@ def _stub_faces(monkeypatch, tmp_path, vectors: dict[str, list[float]]):
     """
     import numpy as np
 
-    from fastvideo3.utils import faceid as _f
+    from fastvideo4.utils import faceid as _f
 
     def _img(path):
         return type("Img", (), {"tag": Path(path).read_text(encoding="utf-8")})()
@@ -257,7 +257,7 @@ def test_multi_ref_no_face_is_inconclusive(monkeypatch, tmp_path):
 
 def test_multi_ref_missing_cards_and_unavailable_layer_never_raise(monkeypatch, tmp_path):
     """没有任何角色图 / 客观层不可用：返回 inconclusive + 说明，绝不抛错（度量不该拖垮交付）。"""
-    from fastvideo3.utils import faceid as _f
+    from fastvideo4.utils import faceid as _f
 
     r = _f.identity_similarity_multi({}, tmp_path / "nope.png")
     assert r["verdict"] == "inconclusive" and "参考图" in r["reason"]
@@ -291,7 +291,7 @@ def test_resolution_is_the_single_knob():
 def test_api_resolutions_endpoint_lists_three():
     from fastapi.testclient import TestClient
 
-    from fastvideo3.app.api import app
+    from fastvideo4.app.api import app
 
     with TestClient(app) as c:
         r = c.get("/api/resolutions")
@@ -318,7 +318,7 @@ def test_resolution_label_actually_drives_output_size():
     现在 `load_config(resolution=…)` 内部就把尺寸落定（RESOLUTION_SIZES 是唯一来源），
     调用方不必再补一次 apply_resolution —— 少一处"忘了调"的机会。
     """
-    from fastvideo3.core.config import RESOLUTION_SIZES, apply_resolution, load_config
+    from fastvideo4.core.config import RESOLUTION_SIZES, apply_resolution, load_config
 
     for tier, size in RESOLUTION_SIZES.items():
         res, aspect = tier
@@ -338,7 +338,7 @@ def test_create_run_720p_restores_720p_size(outdir, monkeypatch):
     """建任务时选 720P → 落 meta → 续跑恢复出来的 cfg 也是 720×1280（两条路径同一口径）。"""
     from fastapi.testclient import TestClient
 
-    import fastvideo3.app.api as api_mod
+    import fastvideo4.app.api as api_mod
 
     monkeypatch.setattr(api_mod, "_spawn", lambda cmd, log_path=None: None)
     with TestClient(api_mod.app) as c:
@@ -353,7 +353,7 @@ def test_create_run_720p_restores_720p_size(outdir, monkeypatch):
 def test_api_resolutions_sizes_are_truthful():
     from fastapi.testclient import TestClient
 
-    from fastvideo3.app.api import app
+    from fastvideo4.app.api import app
 
     with TestClient(app) as c:
         rows = {x["resolution"]: x for x in c.get("/api/resolutions").json()["resolutions"]}
@@ -366,7 +366,7 @@ def test_api_resolutions_sizes_are_truthful():
 def test_create_run_with_resolution_persists_tier(outdir, monkeypatch):
     from fastapi.testclient import TestClient
 
-    import fastvideo3.app.api as api_mod
+    import fastvideo4.app.api as api_mod
 
     monkeypatch.setattr(api_mod, "_spawn", lambda cmd, log_path=None: None)
     with TestClient(api_mod.app) as c:
@@ -380,7 +380,7 @@ def test_create_run_with_resolution_persists_tier(outdir, monkeypatch):
 def test_cli_new_accepts_resolution(outdir):
     from typer.testing import CliRunner
 
-    from fastvideo3.app.cli import app
+    from fastvideo4.app.cli import app
 
     r = CliRunner().invoke(app, ["new", "--topic", "CLI分辨率", "--resolution", "1080P", "--fake"])
     assert r.exit_code == 0, r.output
@@ -396,7 +396,7 @@ def test_cli_new_accepts_resolution(outdir):
 def client(outdir, monkeypatch):
     from fastapi.testclient import TestClient
 
-    import fastvideo3.app.api as api_mod
+    import fastvideo4.app.api as api_mod
 
     monkeypatch.setattr(api_mod, "_spawn", lambda cmd, log_path=None: None)
     with TestClient(api_mod.app) as c:
@@ -467,8 +467,8 @@ def test_scene_generation_model_has_exactly_one_lever(client, outdir):
     也能单独指定口型模型（实测事故形状：面板显示 A、跑的是 B）。
     现在两边一致 —— `i2v_model` 是唯一个杠杆，`talk_model` 一律进忽略清单并说明原因。
     """
-    import fastvideo3.app.api as api_mod
-    from fastvideo3.providers.factory import _wan30_talk_model
+    import fastvideo4.app.api as api_mod
+    from fastvideo4.providers.factory import _wan30_talk_model
 
     rid, root = _mk(client, outdir)
     r = client.patch(f"/api/runs/{rid}/models", json={"model_overrides": {"i2v": "wan3.0-video-prime"}})
@@ -520,7 +520,7 @@ def test_duration_bounds_are_one_to_3600_on_both_paths(client, outdir):
     钉住边界而不只是"能跑"：下限 0 会让剧本没有目标长度、成本预估归零，且熔断判据
     （`exceeded()` 用 `>=`）在第一步就跳闸 —— 表现是"点了没反应"，最难查。
     """
-    from fastvideo3.core.config import DURATION_MAX, DURATION_MIN
+    from fastvideo4.core.config import DURATION_MAX, DURATION_MIN
 
     assert (DURATION_MIN, DURATION_MAX) == (1, 3600)
     for bad in (0, -5, 3601):
@@ -532,7 +532,7 @@ def test_duration_bounds_are_one_to_3600_on_both_paths(client, outdir):
 
     from typer.testing import CliRunner
 
-    from fastvideo3.app.cli import app
+    from fastvideo4.app.cli import app
 
     runner = CliRunner()
     bad = runner.invoke(app, ["new", "--topic", "x", "--duration", "0", "--fake"])

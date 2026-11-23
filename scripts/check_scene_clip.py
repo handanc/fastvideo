@@ -28,8 +28,8 @@ from pathlib import Path
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
 
-from fastvideo3.core.config import PROJECT_ROOT  # noqa: E402
-from fastvideo3.utils.ffmpeg import find_ffmpeg  # noqa: E402
+from fastvideo4.core.config import PROJECT_ROOT  # noqa: E402
+from fastvideo4.utils.ffmpeg import find_ffmpeg  # noqa: E402
 
 CUT_TOL_SEC = 0.7  # 切点容差：模型不是帧精确的，卡太紧会误报
 

@@ -1,4 +1,4 @@
-# FastVideo3 运行时依赖（与 pyproject.toml [project.dependencies] 同步）
+# FastVideo4 运行时依赖（与 pyproject.toml [project.dependencies] 同步）
 # 安装顺序见 scripts/setup.sh / setup.ps1：
 #   ⚠ 先装 CPU 版 torch（供可选的本地视觉组件），避免默认拉 CUDA 大包：
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -35,4 +35,4 @@ rich>=13.7
 sqlalchemy>=2.0
 aiosqlite>=0.20
 # 进阶 PostgreSQL 模式（docker compose up -d，JobStore 任务台账走 PG）另装:
-#   pip install "fastvideo3[postgres]"  或  psycopg[binary]
+#   pip install "fastvideo4[postgres]"  或  psycopg[binary]

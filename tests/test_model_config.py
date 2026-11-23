@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from fastvideo3.core.config import ProviderRouting, load_config
-from fastvideo3.core.cost import price_of
-from fastvideo3.providers import protocols
-from fastvideo3.providers.base import Capability
-from fastvideo3.providers.factory import make_fallback, make_provider
+from fastvideo4.core.config import ProviderRouting, load_config
+from fastvideo4.core.cost import price_of
+from fastvideo4.providers import protocols
+from fastvideo4.providers.base import Capability
+from fastvideo4.providers.factory import make_fallback, make_provider
 
 KEYS = {"DASHSCOPE_API_KEY": "sk-test", "DEEPSEEK_API_KEY": "sk-ds"}
 _MODEL_ENVS = (
@@ -45,7 +45,7 @@ def test_blank_env_does_not_clobber_yaml(monkeypatch, tmp_path):
 
 def test_t2i_trial_model_reroutes_to_multimodal_provider(monkeypatch, tmp_path):
     """qwen-image-3.0 走 multimodal-generation，而不是万相异步 text2image 端点。"""
-    from fastvideo3.providers.dashscope import DashScopeWan27ImageProvider
+    from fastvideo4.providers.dashscope import DashScopeWan27ImageProvider
 
     cfg = _cfg(monkeypatch, tmp_path, FV3_T2I_MODEL="qwen-image-3.0")
     p = make_provider(Capability.T2I, cfg)
@@ -55,7 +55,7 @@ def test_t2i_trial_model_reroutes_to_multimodal_provider(monkeypatch, tmp_path):
 
 
 def test_i2v_trial_model_reroutes_to_media_array_provider(monkeypatch, tmp_path):
-    from fastvideo3.providers.dashscope import DashScopeI2V27Provider
+    from fastvideo4.providers.dashscope import DashScopeI2V27Provider
 
     cfg = _cfg(monkeypatch, tmp_path, FV3_I2V_MODEL="wan3.0-video")
     p = make_provider(Capability.I2V, cfg)
@@ -70,7 +70,7 @@ def test_talk_model_stays_on_its_real_protocol(monkeypatch, tmp_path):
     台词写在提示词里由模型自己发声。曾按 2.7 那套发音频 → 每个对白镜头一次真实 400
     （报文原文存在 tests/test_talk_fallback.py），所以"发错形态"仍是要钉的事。
     """
-    from fastvideo3.providers.dashscope import DashScopeWan30TalkProvider
+    from fastvideo4.providers.dashscope import DashScopeWan30TalkProvider
 
     cfg = _cfg(monkeypatch, tmp_path, FV3_TALK_MODEL="wan3.0-video")
     p = make_provider(Capability.TALK, cfg)
@@ -86,7 +86,7 @@ def test_fallback_is_the_paid_yaml_model_not_the_trial_one(monkeypatch, tmp_path
     于是这里的"yaml 付费模型"从 wanx2.1-t2i-turbo 变成 wan2.7-image —— **判据没变**：
     兜底不吃 .env 的试用模型名。多钉一位：兜底也得收得了参考图，否则锁脸在这条路径上又断一次。
     """
-    from fastvideo3.providers.dashscope import DashScopeWan27ImageProvider
+    from fastvideo4.providers.dashscope import DashScopeWan27ImageProvider
 
     cfg = _cfg(monkeypatch, tmp_path, FV3_T2I_MODEL="qwen-image-3.0")
     fb = make_fallback(Capability.T2I, cfg)
@@ -97,8 +97,8 @@ def test_fallback_is_the_paid_yaml_model_not_the_trial_one(monkeypatch, tmp_path
 
 
 def test_r2v_model_not_clobbered_by_i2v_override(monkeypatch, tmp_path):
-    from fastvideo3.providers.dashscope import DashScopeR2VProvider
-    from fastvideo3.providers.factory import make_r2v_provider
+    from fastvideo4.providers.dashscope import DashScopeR2VProvider
+    from fastvideo4.providers.factory import make_r2v_provider
 
     cfg = _cfg(monkeypatch, tmp_path, FV3_I2V_MODEL="wan3.0-video")
     cfg.routing["r2v"] = ProviderRouting(default="dashscope_wan27_r2v")
@@ -141,7 +141,7 @@ def test_free_quota_placeholders_are_gone_and_real_prices_are_in():
     assert price_of("wan3.0-video@1080p", "i2v", 5.0) == 6.0, "1080P 是 720P 的两倍"
     assert price_of("wan3.0-video-prime@1080p", "talk", 5.0) == 9.0
     # 文本按 token：没有用量就记 0（不许编），有用量就按输入/输出两个价算
-    from fastvideo3.core import pricing
+    from fastvideo4.core import pricing
 
     flash = pricing.resolve("qwen3.7-flash", "text")
     assert pricing.amount_of(flash, tokens_in=1_000_000, tokens_out=1_000_000) == 1.0
@@ -165,9 +165,9 @@ def test_video_cost_cap_rejects_overpriced_channel(monkeypatch, tmp_path):
     拦下时必须把**拦的价、上限、以及改哪个变量**写进报错：只说"超了"的报错会让用户
     去翻源码才知道 `FV3_MAX_VIDEO_COST_PER_SEC` 才是那个旋钮。
     """
-    from fastvideo3.core.cost import price_of
-    from fastvideo3.providers.base import Capability, ProviderError
-    from fastvideo3.providers.factory import make_provider
+    from fastvideo4.core.cost import price_of
+    from fastvideo4.providers.base import Capability, ProviderError
+    from fastvideo4.providers.factory import make_provider
 
     cfg = _cfg(monkeypatch, tmp_path)
     p = make_provider(Capability.TALK, cfg)

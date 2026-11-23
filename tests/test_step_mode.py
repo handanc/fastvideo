@@ -17,12 +17,12 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from test_board_api import _mk_run
 
-import fastvideo3.app.api as api_mod
-from fastvideo3.core import progress as prog
-from fastvideo3.core import tasklock
-from fastvideo3.core.config import load_config
-from fastvideo3.core.schema import BaseInfo, Script
-from fastvideo3.core.storage import RunStorage
+import fastvideo4.app.api as api_mod
+from fastvideo4.core import progress as prog
+from fastvideo4.core import tasklock
+from fastvideo4.core.config import load_config
+from fastvideo4.core.schema import BaseInfo, Script
+from fastvideo4.core.storage import RunStorage
 
 
 @pytest.fixture
@@ -249,8 +249,8 @@ def _png(w=200, h=400, color=(10, 200, 10)):
 
 async def test_five_step_chain_fills_only_gaps(cfg, outdir, tmp_path):
     """离线全链路：逐步点五次跑通；中途删一张角色图 → 回到 chars 且只补那一个。"""
-    from fastvideo3.app.cli import _run_step
-    from fastvideo3.core.stages import build_context
+    from fastvideo4.app.cli import _run_step
+    from fastvideo4.core.stages import build_context
 
     cfg.fake = True
     cfg.use_reference_keyframes = True  # 让首帧真的消费定妆照，血缘才有 char 边
@@ -280,7 +280,7 @@ async def test_five_step_chain_fills_only_gaps(cfg, outdir, tmp_path):
     # 「开始生成」只可能产出**场景片段**：逐镜头 clips/shot_*、talk/shot_* 是"首帧图→
     # 单镜头短片"那条老路的产物，本项目已不再走它（一段戏切成互不连贯的短片，正是
     # "镜头之间像瞬移"的根源）。留着断言是为了防止谁把兜底路径又接回正常流程。
-    from fastvideo3.core.scenegroup import group_scenes as _gs
+    from fastvideo4.core.scenegroup import group_scenes as _gs
 
     script = Script.model_validate(storage.load_json("script.json"))
     groups = _gs(script)
@@ -291,8 +291,8 @@ async def test_five_step_chain_fills_only_gaps(cfg, outdir, tmp_path):
     assert not list((storage.root / "talk").glob("shot_*.mp4")), "口型由 wan3.0 自带，不再单出"
     # 参考形态的组**一张首帧都不许画**：模型从立绘/空景图起画，首帧没进过任何请求，
     # 画它等于白烧 t2i 钱（用户明确要的简化：不走"首帧图→分镜视频"那条路）。
-    from fastvideo3.core.assets import refs_on_disk
-    from fastvideo3.core.scenegroup import MODE_REFERENCE, choose_input_mode
+    from fastvideo4.core.assets import refs_on_disk
+    from fastvideo4.core.scenegroup import MODE_REFERENCE, choose_input_mode
 
     for g in groups:
         mode, _why = choose_input_mode(
@@ -329,7 +329,7 @@ async def test_five_step_chain_fills_only_gaps(cfg, outdir, tmp_path):
     assert stale_shots and c1_shots <= stale_shots, (
         f"消费过 c1 的镜头必须作废：stale={sorted(stale_shots)} c1={sorted(c1_shots)}"
     )
-    from fastvideo3.core.scenegroup import group_scenes
+    from fastvideo4.core.scenegroup import group_scenes
 
     same_group_as_c1 = set()
     for g in group_scenes(Script.model_validate(storage.load_json("script.json"))):
@@ -350,14 +350,14 @@ async def test_five_step_chain_fills_only_gaps(cfg, outdir, tmp_path):
 
 def test_lock_released_when_endpoint_errors_after_acquire(client, outdir, monkeypatch):
     """持锁后、spawn 前抛异常必须还锁：否则死锁卡住全系统（实测发生过）。"""
-    from fastvideo3.core import progress as prog_mod
+    from fastvideo4.core import progress as prog_mod
 
     _mk_run(outdir, "run_20260101_000026")
 
     def boom(*a, **k):
         raise RuntimeError("compute_progress 炸了")
 
-    # api 端点内部 `from fastvideo3.core import progress as prog` → 打模块属性即可
+    # api 端点内部 `from fastvideo4.core import progress as prog` → 打模块属性即可
     orig = prog_mod.compute_progress
     monkeypatch.setattr(prog_mod, "compute_progress", boom)
     with pytest.raises(RuntimeError):  # TestClient 默认把服务端异常抛回测试
@@ -372,7 +372,7 @@ def test_lock_released_when_endpoint_errors_after_acquire(client, outdir, monkey
 
 def test_lipsync_coverage_and_verdict_merge(outdir):
     """覆盖率口径 + 判定并入：high/cinema 缺口即不合格，economy 只报告不判死。"""
-    from fastvideo3.core.progress import apply_lipsync_verdict, lipsync_coverage
+    from fastvideo4.core.progress import apply_lipsync_verdict, lipsync_coverage
 
     root, script = _mk_run(outdir, "run_20260101_000042", with_final=False)
     dlg = [sh.shot_id for sc in script.scenes for sh in sc.shots if sh.dialogues]
@@ -407,8 +407,8 @@ async def test_missing_last_frames_are_a_frames_step_gap(cfg, outdir):
     于是没有任何一步会再去补尾帧，m4/m6 永远退回单首帧，界面上只看到"首尾帧改造没生效"。
     尾帧**已作废**（stale）的那条路本来就能补，缺的是"从未存在"这一条。
     """
-    from fastvideo3.app.cli import _run_step
-    from fastvideo3.core.stages import build_context
+    from fastvideo4.app.cli import _run_step
+    from fastvideo4.core.stages import build_context
 
     cfg.fake = True
     cfg.talk_mode = "scripted_talk"  # C 链：对白镜头的画面也由口型通道出 → 同样要尾帧

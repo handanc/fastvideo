@@ -8,7 +8,7 @@
 2. **写回 `.env`** —— 成为之后新建任务的默认。
 
 这两条一起才是用户要的"前端选择的模型优先级最高"：本 run 由 meta 保证，以后的 run 由写回的
-`.env` 保证，命令行 `fastvideo3 new` 不指定时也读到同一个值。
+`.env` 保证，命令行 `fastvideo4 new` 不指定时也读到同一个值。
 
 **为什么单独一个文件而不是就地拼字符串**：`.env` 里装着 API 密钥。
 - 只替换 `FV3_*_MODEL` 这几行的**值**，其余每一行（密钥、注释、空行、排版）原样保留；
@@ -24,7 +24,7 @@ import os
 import re
 from pathlib import Path
 
-from fastvideo3.core.config import PROJECT_ROOT
+from fastvideo4.core.config import PROJECT_ROOT
 
 #: 能力 → 环境变量名。必须与 `config.load_config()` 读取的那几个键**一一对应**，
 #: 写错了就是"面板选了但没生效"。

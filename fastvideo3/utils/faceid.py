@@ -29,7 +29,7 @@ from typing import Any
 
 import numpy as np
 
-from fastvideo3.core.config import MODELS_DIR
+from fastvideo4.core.config import MODELS_DIR
 
 #: YuNet 人脸检测 + SFace 人脸识别（OpenCV Zoo 官方权重名，与 cv2 API 配套）
 DETECTOR_NAME = "face_detection_yunet_2023mar.onnx"

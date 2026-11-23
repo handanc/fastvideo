@@ -4,7 +4,7 @@
 额度用尽后账单照收，台账继续记 ¥0 —— 那条 run 显示"合计 ¥6.30"，而 i2v/talk/text
 全是 ¥0.000。现在的口径：
 
-- **单价权威表在 `pyproject.toml` 的 `[tool.fastvideo3.pricing]`**（`fastvideo3 refresh-prices`
+- **单价权威表在 `pyproject.toml` 的 `[tool.fastvideo4.pricing]`**（`fastvideo4 refresh-prices`
   抓官网价目页回写），按官网**原价**记；`pricing.yaml` 只剩兼容兜底。
 - 计费量优先取 API 回传的 `usage`：视频按输出秒 + **实际分辨率档**，文本/VLM 按 **token**。
 - 本项目**不判断哪个模型免费**，只客观记成本；所以判据是"这个单价可不可信"，
@@ -18,14 +18,14 @@ from pathlib import Path
 
 import pytest
 
-from fastvideo3.core import pricing
-from fastvideo3.core.cost import CostLedger, price_info, price_of
-from fastvideo3.providers.dashscope import actual_resolution_tier, billable_seconds
+from fastvideo4.core import pricing
+from fastvideo4.core.cost import CostLedger, price_info, price_of
+from fastvideo4.providers.dashscope import actual_resolution_tier, billable_seconds
 
 
 # ─────────────────────────── 单价解析分层 ───────────────────────────
 def test_resolve_uses_the_price_table_and_marks_it_certain():
-    """权威单价表 = pyproject.toml 的 [tool.fastvideo3.pricing]（旧 yaml 只是兜底）。"""
+    """权威单价表 = pyproject.toml 的 [tool.fastvideo4.pricing]（旧 yaml 只是兜底）。"""
     info = price_info("wan3.0-video", "i2v")
     assert info.source == "pyproject" and info.certain is True
     # 裸键取**最高档**（1080P ¥1.2/秒）：预估/红线按最坏情况，分档键才是实际出账价
@@ -102,7 +102,7 @@ def test_status_reports_which_models_can_only_be_estimated():
     # 这条为空就是回归的开始 —— 以前这里放着 ¥0 的免费额度占位，账单在跑而台账记 0。
     assert st["uncertain_models"] == [], (
         f"这些可选模型没有真实单价，只能按能力默认价估算：{st['uncertain_models']}"
-        " → 回填 pyproject.toml 的 [tool.fastvideo3.pricing].models"
+        " → 回填 pyproject.toml 的 [tool.fastvideo4.pricing].models"
     )
     assert st["checked_at"], "单价表要能说清是哪天从哪个页面校准的"
     assert "model-pricing" in st["price_source_url"]
@@ -149,7 +149,7 @@ def test_ledger_records_price_provenance(storage):
 
 
 def test_read_cost_exposes_uncertain_amount(outdir):
-    import fastvideo3.app.api as api_mod
+    import fastvideo4.app.api as api_mod
 
     root = Path(outdir) / "run_x"
     (root / "final").mkdir(parents=True)
@@ -179,7 +179,7 @@ def test_billing_canonical_request_is_deterministic_and_ordered():
     这是 V3 签名最容易错的一步（顺序错/漏一个头 → 服务端 SignatureDoesNotMatch），
     而它完全可以离线钉住：给定同样的输入，串必须逐字节相同。
     """
-    from fastvideo3.core import billing
+    from fastvideo4.core import billing
 
     params = {"BillingCycle": "2026-10", "ProductCode": "dashscope", "Granularity": "MONTHLY"}
     headers = {
@@ -209,7 +209,7 @@ def test_billing_canonical_request_is_deterministic_and_ordered():
 
 
 def test_billing_rfc3986_encoding():
-    from fastvideo3.core import billing
+    from fastvideo4.core import billing
 
     assert billing._rfc3986("a b") == "a%20b", "空格必须是 %20，不是 +"
     assert billing._rfc3986("a*b") == "a%2Ab"
@@ -218,7 +218,7 @@ def test_billing_rfc3986_encoding():
 
 def test_billing_without_credentials_says_so(monkeypatch):
     """没配 AK/SK 就如实说取不到，**绝不返回 0 当作"这个月没花钱"**。"""
-    from fastvideo3.core import billing
+    from fastvideo4.core import billing
 
     monkeypatch.delenv("FV3_ALIYUN_ACCESS_KEY_ID", raising=False)
     monkeypatch.delenv("FV3_ALIYUN_ACCESS_KEY_SECRET", raising=False)
@@ -229,7 +229,7 @@ def test_billing_without_credentials_says_so(monkeypatch):
 
 
 def test_reconcile_flags_understated_ledger():
-    from fastvideo3.core import billing
+    from fastvideo4.core import billing
 
     rep = billing.reconcile({"pretax_amount": 30.0}, 10.0)
     assert rep["delta_cny"] == 20.0 and rep["ratio"] == 3.0
@@ -240,12 +240,12 @@ def test_reconcile_flags_understated_ledger():
 
 async def test_m4_records_api_usage_seconds(cfg, storage, ledger, jobs):
     """m4 记账要用 API 回传的产出秒数，不是我们请求的 shot.duration_sec。"""
-    from fastvideo3.core.schema import BaseInfo
-    from fastvideo3.modules.m2_assets import build_assets
-    from fastvideo3.modules.m3_storyboard import build_storyboard
-    from fastvideo3.modules.m4_shots import generate_shots
-    from fastvideo3.providers.base import VideoJobStatus
-    from fastvideo3.providers.fake import FakeI2VProvider, FakeT2IProvider, fake_script
+    from fastvideo4.core.schema import BaseInfo
+    from fastvideo4.modules.m2_assets import build_assets
+    from fastvideo4.modules.m3_storyboard import build_storyboard
+    from fastvideo4.modules.m4_shots import generate_shots
+    from fastvideo4.providers.base import VideoJobStatus
+    from fastvideo4.providers.fake import FakeI2VProvider, FakeT2IProvider, fake_script
 
     class _UsageI2V(FakeI2VProvider):
         async def poll(self, job_id):

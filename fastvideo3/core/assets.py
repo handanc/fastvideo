@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastvideo3.core.schema import Asset
-from fastvideo3.core.storage import RunStorage
+from fastvideo4.core.schema import Asset
+from fastvideo4.core.storage import RunStorage
 
 _PREFIX_KIND = (("char_", "character"), ("scene_", "scene"))
 

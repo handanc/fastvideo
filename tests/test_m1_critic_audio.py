@@ -8,10 +8,10 @@
 
 import pytest
 
-from fastvideo3.core.schema import BaseInfo
-from fastvideo3.modules.m1_scripting import generate_script
-from fastvideo3.providers.fake import FakeTextProvider, fake_script
-from fastvideo3.utils.audio import concat_wavs, wav_duration
+from fastvideo4.core.schema import BaseInfo
+from fastvideo4.modules.m1_scripting import generate_script
+from fastvideo4.providers.fake import FakeTextProvider, fake_script
+from fastvideo4.utils.audio import concat_wavs, wav_duration
 
 
 class _RecordingText(FakeTextProvider):
@@ -44,7 +44,7 @@ async def test_existing_script_text_is_parse_only(cfg, storage, ledger):
     （run_20261012_184649 实测：用户两次要求加一句台词，v3→v4 只动了 version 与 title）。
     改写现在走 `rewrite_script_text`（模型改文本 → `parse_script_text` 本地解析 → 验证落地）。
     """
-    from fastvideo3.core.script_text import render_script_text
+    from fastvideo4.core.script_text import render_script_text
 
     base = BaseInfo(topic="t")
     draft = render_script_text(fake_script(base))
@@ -74,7 +74,7 @@ async def test_parse_and_feedback_together_is_rejected(cfg, storage, ledger):
 
 
 async def test_concat_wavs(tmp_path):
-    from fastvideo3.providers.fake import FakeTTSProvider
+    from fastvideo4.providers.fake import FakeTTSProvider
 
     tts = FakeTTSProvider()
     a = await tts.synthesize("你好", dest=tmp_path / "a.wav")
@@ -90,9 +90,9 @@ def test_plan_voices_matches_gender_and_stays_distinct():
     守的病灶：LLM 不填 voice_id（实测全空）时旧实现 `md5(cid) % 池` 会让唐僧拿女声，
     并可能让两个主角撞同一把嗓子 —— 这就是"人物音频很奇怪"的直接来源之一。
     """
-    from fastvideo3.core.schema import Character
-    from fastvideo3.modules.m5_audio import COSY_V2_VOICES, EDGE_VOICES, plan_voices
-    from fastvideo3.providers.fake import fake_script
+    from fastvideo4.core.schema import Character
+    from fastvideo4.modules.m5_audio import COSY_V2_VOICES, EDGE_VOICES, plan_voices
+    from fastvideo4.providers.fake import fake_script
 
     script = fake_script(BaseInfo(topic="t"))
     script.characters = [
@@ -130,8 +130,8 @@ def test_infer_gender_prefers_appearance_over_name():
     这条是真数据上跑出来的：不修就落到"未知"桶 → 从全池第一个开始分配，
     运气好才是女声。
     """
-    from fastvideo3.core.schema import Character
-    from fastvideo3.modules.m5_audio import infer_gender
+    from fastvideo4.core.schema import Character
+    from fastvideo4.modules.m5_audio import infer_gender
 
     queen = Character(character_id="c_queen", name="女儿国国王",
                       appearance="绝美女子，身着华丽红色宫装，头戴凤凰金钗")
@@ -149,7 +149,7 @@ def test_infer_gender_prefers_appearance_over_name():
 
 def test_plan_voices_v1_model_uses_unsuffixed_names():
     """模型版本与音色名必须配套：v1 用无后缀名，v2 用 _v2 —— 送错就是 418。"""
-    from fastvideo3.modules.m5_audio import COSY_V1_VOICES, voice_pool_for
+    from fastvideo4.modules.m5_audio import COSY_V1_VOICES, voice_pool_for
 
     assert set(voice_pool_for("dashscope_cosyvoice", "cosyvoice-v1")) == set(COSY_V1_VOICES)
     assert all(x.endswith("_v2") for x in voice_pool_for("dashscope_cosyvoice", "cosyvoice-v2"))
@@ -157,8 +157,8 @@ def test_plan_voices_v1_model_uses_unsuffixed_names():
 
 def test_emotion_prosody_understands_chinese_free_text():
     """剧本情绪是中文自由文本，韵律表必须先归一，否则每句一个语调。"""
-    from fastvideo3.providers.edge_tts import edge_prosody
-    from fastvideo3.utils.emotion import normalize_emotion
+    from fastvideo4.providers.edge_tts import edge_prosody
+    from fastvideo4.utils.emotion import normalize_emotion
 
     assert normalize_emotion("焦急") == "nervous"
     assert normalize_emotion("震惊转羞涩") == "surprised"  # 多情绪取先命中的（决定起调）
@@ -176,7 +176,7 @@ def test_tts_fallback_is_recorded_and_permanent_error_skips_retry(cfg, storage, 
     """主 TTS 挂了要走兜底时**必须**落降级台账；418 这类永久错误不空转 3 次。"""
     import asyncio
 
-    from fastvideo3.providers.base import TTSProvider
+    from fastvideo4.providers.base import TTSProvider
 
     class BrokenTTS(TTSProvider):
         name = "dashscope_cosyvoice"
@@ -193,9 +193,9 @@ def test_tts_fallback_is_recorded_and_permanent_error_skips_retry(cfg, storage, 
             )
 
     broken = BrokenTTS()
-    from fastvideo3.modules.m5_audio import _tts_with_retry
-    from fastvideo3.providers.base import ProviderError
-    from fastvideo3.providers.fake import FakeTTSProvider
+    from fastvideo4.modules.m5_audio import _tts_with_retry
+    from fastvideo4.providers.base import ProviderError
+    from fastvideo4.providers.fake import FakeTTSProvider
 
     dest = storage.path("audio", "line_probe.wav")
     asyncio.run(_tts_with_retry(
@@ -217,8 +217,8 @@ def test_tts_ledger_books_by_character_count(cfg, storage, ledger):
     """cosyvoice 按字符计费：quantity 必须是字数（此前恒 1 → 台账低两个数量级）。"""
     import asyncio
 
-    from fastvideo3.modules.m5_audio import _tts_with_retry
-    from fastvideo3.providers.fake import FakeTTSProvider
+    from fastvideo4.modules.m5_audio import _tts_with_retry
+    from fastvideo4.providers.fake import FakeTTSProvider
 
     text = "管她呢！俺老孙大闹天宫都没怕过，带师傅谈个恋爱怎么了。"
     asyncio.run(_tts_with_retry(
@@ -232,10 +232,10 @@ async def test_tts_runtime_fallback(cfg, storage, ledger):
     """主 TTS 连续失败 → 运行时降级到备用供应商（保交付）。"""
     from pathlib import Path
 
-    from fastvideo3.core.schema import BaseInfo
-    from fastvideo3.modules.m5_audio import synthesize_dialogues
-    from fastvideo3.providers.base import TTSProvider
-    from fastvideo3.providers.fake import FakeTTSProvider, fake_script
+    from fastvideo4.core.schema import BaseInfo
+    from fastvideo4.modules.m5_audio import synthesize_dialogues
+    from fastvideo4.providers.base import TTSProvider
+    from fastvideo4.providers.fake import FakeTTSProvider, fake_script
 
     class BrokenTTS(TTSProvider):
         name = "broken"

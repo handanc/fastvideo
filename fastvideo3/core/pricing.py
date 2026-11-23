@@ -4,8 +4,8 @@
 （当时是免费额度期），额度用尽后账单照收，而台账继续记 ¥0 —— 那条 run 显示
 "合计 ¥6.30"，实际 i2v/talk 全是 ¥0.000，成本上限形同虚设。所以这一层现在规定：
 
-1. **单价的唯一存放处是 `pyproject.toml` 的 `[tool.fastvideo3.pricing]`**，由
-   `fastvideo3 refresh-prices` 抓官网价目页回写（人工改了也只需改这里 + 更新 `checked_at`）。
+1. **单价的唯一存放处是 `pyproject.toml` 的 `[tool.fastvideo4.pricing]`**，由
+   `fastvideo4 refresh-prices` 抓官网价目页回写（人工改了也只需改这里 + 更新 `checked_at`）。
    `pricing.yaml` 退居**兼容兜底**：新表里没登记的模型才回落到它，方便迁移期不炸。
 2. **按官网原价记，不按限时折扣记**（wan3.0 页面标"限时7折"）。折扣终会停，
    按折扣价记账会让熔断线**晚**跳 = 实际超支；按原价跳只会**早**跳 = 少花。
@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fastvideo3.core.config import OUTPUT_DIR, PROJECT_ROOT
+from fastvideo4.core.config import OUTPUT_DIR, PROJECT_ROOT
 
 CACHE_NAME = "_pricing_remote.json"
 DEFAULT_TTL_HOURS = 24.0
@@ -34,7 +34,7 @@ PYPROJECT = PROJECT_ROOT / "pyproject.toml"
 LEGACY_YAML = PROJECT_ROOT / "pricing.yaml"
 
 #: 单价表在 pyproject.toml 里的表名（`refresh-prices` 只重写这一段，其余字节不动）
-TABLE_KEY = "tool.fastvideo3.pricing"
+TABLE_KEY = "tool.fastvideo4.pricing"
 
 
 
@@ -78,7 +78,7 @@ def _sheet_path() -> Path:
 
 
 def _load_pyproject_table(path: Path | None = None) -> dict[str, Any]:
-    """读 `[tool.fastvideo3.pricing]`。py3.11 自带 tomllib，不引第三方依赖。
+    """读 `[tool.fastvideo4.pricing]`。py3.11 自带 tomllib，不引第三方依赖。
 
     读不到就返回空 dict（**不抛**）：单价表格式坏掉时该退回旧 yaml 表继续记账，
     而不是让整条生成链路停在取价这一步。
@@ -356,7 +356,7 @@ def render_table(doc: dict[str, Any]) -> str:
     """把单价表渲染成 pyproject 里那一段 TOML 文本（`refresh-prices` 的产物）。"""
     lines = [
         f"[{TABLE_KEY}]",
-        '# ── 成本单价表（权威）── 由 `fastvideo3 refresh-prices` 抓官网价目页回写，别手改格式。',
+        '# ── 成本单价表（权威）── 由 `fastvideo4 refresh-prices` 抓官网价目页回写，别手改格式。',
         '# 记账口径：真实账单(API) → 本表 → 能力默认价；按官网**原价**记（限时折扣到期就没了，',
         "#   按折扣价记会让熔断线晚跳 = 实际超支）。",
         '# unit: token_m=元/百万Token(输入输出分价) | second=元/秒 | char=元/字符 | call=元/次 | image=元/张',
@@ -415,8 +415,8 @@ def status() -> dict[str, Any]:
     要检查的是"面板/CLI 能选到的模型"，不是"已经在表里的模型" —— 后者当然都能解析，
     拿它当判据就永远显示"覆盖完整"（这条一度就是这么写错的）。
     """
-    from fastvideo3.core.model_catalog import CHOICES
-    from fastvideo3.core.talkmode import TALK_CHANNELS
+    from fastvideo4.core.model_catalog import CHOICES
+    from fastvideo4.core.talkmode import TALK_CHANNELS
 
     data, why = remote_sheet()
     pp = pyproject_sheet()
@@ -436,7 +436,7 @@ def status() -> dict[str, Any]:
         "remote_url": remote_url() or "",
         "remote_state": why,
         "remote_models": len((data or {}).get("models") or {}),
-        "table": "pyproject.toml [tool.fastvideo3.pricing]" if pp["models"] else "pricing.yaml",
+        "table": "pyproject.toml [tool.fastvideo4.pricing]" if pp["models"] else "pricing.yaml",
         "pyproject_models": len(pp["models"]),
         "yaml_models": len(yml["models"]),
         "checked_at": meta["checked_at"],

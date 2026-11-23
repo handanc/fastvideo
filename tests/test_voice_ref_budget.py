@@ -23,13 +23,13 @@ import pytest
 from fastapi.testclient import TestClient
 from test_board_api import _mk_run
 
-import fastvideo3.app.api as api_mod
-from fastvideo3.core import voiceref
-from fastvideo3.core.config import load_config
-from fastvideo3.core.scenegroup import MAX_REF_AUDIO_TOTAL_SEC, MAX_REF_AUDIOS, group_scenes
-from fastvideo3.core.schema import AudioLine, BaseInfo, DialogueLine, Scene, Script, Shot, ShotType
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.modules.m4_scene import plan_inputs
+import fastvideo4.app.api as api_mod
+from fastvideo4.core import voiceref
+from fastvideo4.core.config import load_config
+from fastvideo4.core.scenegroup import MAX_REF_AUDIO_TOTAL_SEC, MAX_REF_AUDIOS, group_scenes
+from fastvideo4.core.schema import AudioLine, BaseInfo, DialogueLine, Scene, Script, Shot, ShotType
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.modules.m4_scene import plan_inputs
 
 RUN = "run_20260101_000098"
 

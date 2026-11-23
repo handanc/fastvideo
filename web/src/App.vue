@@ -47,7 +47,7 @@ onMounted(() => applyTheme(theme.value))
 
 <template>
   <header class="topbar">
-    <div class="brand" @click="view = 'new'">🎬 FastVideo3-AI短剧生成系统</div>
+    <div class="brand" @click="view = 'new'">🎬 FastVideo4-AI短剧生成系统</div>
     <div class="topbarRight">
       <nav>
         <button :class="{ active: view === 'new' }" @click="view = 'new'">新建任务</button>

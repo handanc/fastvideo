@@ -25,17 +25,17 @@ import re
 import pytest
 from typer.testing import CliRunner
 
-from fastvideo3.core.config import RESOLUTIONS, ProviderRouting, load_config
-from fastvideo3.core.model_catalog import (
+from fastvideo4.core.config import RESOLUTIONS, ProviderRouting, load_config
+from fastvideo4.core.model_catalog import (
     CHOICES,
     configured_models,
     locks_face_capable,
     ref_image_warning,
     ui_catalog,
 )
-from fastvideo3.providers import factory
-from fastvideo3.providers.base import Capability
-from fastvideo3.providers.factory import (
+from fastvideo4.providers import factory
+from fastvideo4.providers.base import Capability
+from fastvideo4.providers.factory import (
     _PROVIDER_MODEL_KEY,
     make_provider,
     make_r2v_provider,
@@ -146,7 +146,7 @@ def test_profile_yamls_no_longer_carry_their_own_text2image():
     用结构判据（直接读文件）而不是行为判据：留一份在 profile 里，下次有人只改那一档，
     三档一致性就又变成看运气。
     """
-    from fastvideo3.core.config import PROJECT_ROOT
+    from fastvideo4.core.config import PROJECT_ROOT
 
     for name in ("profile_720P.yaml", "profile_1080P.yaml"):
         text = io.open(PROJECT_ROOT / "configs" / name, encoding="utf-8").read()
@@ -163,7 +163,7 @@ def test_panel_effective_model_is_what_will_be_called():
     """
     from fastapi.testclient import TestClient
 
-    import fastvideo3.app.api as api_mod
+    import fastvideo4.app.api as api_mod
 
     with TestClient(api_mod.app) as c:
         for res in RESOLUTIONS:
@@ -186,7 +186,7 @@ def test_panel_effective_model_is_what_will_be_called():
 @pytest.mark.parametrize("resolution", RESOLUTIONS)
 @pytest.mark.parametrize("model", ["wan2.7-image", "qwen-image-3.0", "qwen-image-2.0"])
 def test_webui_choice_drives_every_resolution(mkcfg, resolution, model):
-    from fastvideo3.providers.dashscope import DashScopeWan27ImageProvider
+    from fastvideo4.providers.dashscope import DashScopeWan27ImageProvider
 
     cfg = mkcfg(resolution)
     # 「模型选择」点名的落盘形态：run_meta.model_overrides → apply_run_overrides → cfg
@@ -200,7 +200,7 @@ def test_webui_choice_drives_every_resolution(mkcfg, resolution, model):
 
 def test_run_recorded_choice_survives_resume(mkcfg):
     """建任务时点的名，续跑时压过 .env 与档位 yaml（唯一恢复入口 = apply_run_overrides）。"""
-    from fastvideo3.core.config import apply_run_overrides
+    from fastvideo4.core.config import apply_run_overrides
 
     meta = {"resolution_tier": "480P", "model_overrides": {"t2i": "qwen-image-2.0"}}
     cfg = apply_run_overrides(mkcfg("1080P", FV3_T2I_MODEL="wan2.7-image"), meta)
@@ -232,7 +232,7 @@ def test_env_configured_no_ref_model_is_shown_as_a_risk(mkcfg):
 # ─────────────────── 4. 复用 run 的入口不许换模型 ───────────────────
 def test_stage_reuses_the_run_recorded_model(tmp_path, monkeypatch):
     """`stage --run-id` 以前只吃命令行参数：同一个 run 网页用 A 模型、命令行用 B 模型。"""
-    from fastvideo3.app import cli as cli_mod
+    from fastvideo4.app import cli as cli_mod
 
     captured: dict = {}
 

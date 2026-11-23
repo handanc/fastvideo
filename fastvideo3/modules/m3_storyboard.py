@@ -19,7 +19,7 @@ from pathlib import Path
 from fastvideo3.core import pause
 from fastvideo3.core.config import AppConfig
 from fastvideo3.core.cost import CostLedger, llm_meta
-from fastvideo3.core.prompts import render
+from fastvideo3.core.prompts import render, visual_anchor
 from fastvideo3.core.schema import Asset, Character, Script, Shot, effective_cast
 from fastvideo3.core.storage import RunStorage
 from fastvideo3.providers.base import (

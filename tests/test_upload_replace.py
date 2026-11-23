@@ -19,10 +19,10 @@ from test_board_api import (
     _mk_run,  # 复用同一套 run 目录搭建（tests 非包，pytest 已把该目录入 sys.path）
 )
 
-import fastvideo3.app.api as api_mod
-from fastvideo3.core.schema import BaseInfo
-from fastvideo3.modules.m2_assets import build_assets
-from fastvideo3.providers.fake import FakeT2IProvider, FakeVLMProvider, fake_script
+import fastvideo4.app.api as api_mod
+from fastvideo4.core.schema import BaseInfo
+from fastvideo4.modules.m2_assets import build_assets
+from fastvideo4.providers.fake import FakeT2IProvider, FakeVLMProvider, fake_script
 
 
 @pytest.fixture
@@ -109,7 +109,7 @@ def test_safe_promote_retries_through_transient_lock(tmp_path, monkeypatch):
     """瞬时占用（杀软扫一下、FileResponse 还在发）应重试后成功。"""
     import shutil as _sh
 
-    from fastvideo3.core.storage import safe_promote
+    from fastvideo4.core.storage import safe_promote
 
     src = tmp_path / "cand.png"
     dest = tmp_path / "char_c1.png"
@@ -160,7 +160,7 @@ def test_safe_promote_refreshes_mtime_for_cache_busting(tmp_path):
     """
     import time as _t
 
-    from fastvideo3.core.storage import safe_promote
+    from fastvideo4.core.storage import safe_promote
 
     src = tmp_path / "cand.png"
     dest = tmp_path / "char_c1.png"

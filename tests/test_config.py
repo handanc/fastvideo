@@ -1,6 +1,6 @@
 """配置系统测试：.env + yaml 合并、路由解析。"""
 
-from fastvideo3.core.config import AppConfig, load_config
+from fastvideo4.core.config import AppConfig, load_config
 
 
 def test_appconfig_defaults_and_db_url(outdir):
@@ -11,7 +11,7 @@ def test_appconfig_defaults_and_db_url(outdir):
 
 def test_appconfig_postgres_url():
     cfg = AppConfig(profile="prod-postgres", pg_password="pw")
-    assert cfg.db_url.startswith("postgresql+psycopg://fv3:pw@localhost:5432/fastvideo3")
+    assert cfg.db_url.startswith("postgresql+psycopg://fv3:pw@localhost:5432/fastvideo4")
 
 
 def test_load_config_merges_env_and_yaml(tmp_path):

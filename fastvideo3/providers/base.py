@@ -18,7 +18,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
-from fastvideo3.core.schema import ReviewResult
+from fastvideo4.core.schema import ReviewResult
 
 ModelT = TypeVar("ModelT", bound=BaseModel)  # review_json 的结构化输出类型
 

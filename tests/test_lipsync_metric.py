@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from fastvideo3.core.schema import RegionBoxes
-from fastvideo3.utils import lipsync as ls
+from fastvideo4.core.schema import RegionBoxes
+from fastvideo4.utils import lipsync as ls
 
 FPS = 6
 N_FRAMES = 48
@@ -36,7 +36,7 @@ def _write_video(path: Path, on: list[bool], movers) -> None:
     这种真实误框形态（皮尔逊与尺度无关，那种情况下 corr 会**很高**，只能靠
     运动幅度对照识破 —— 见 lipsync.AMP_DOMINANCE）。
     """
-    from fastvideo3.utils.ffmpeg import run_ffmpeg
+    from fastvideo4.utils.ffmpeg import run_ffmpeg
 
     if isinstance(movers, tuple):
         movers = [(movers, 140)]
@@ -214,7 +214,7 @@ async def test_m6_reports_lipsync_but_never_marks_stale(cfg, storage):
     而度量只给 原始 corr 0.163 / 偏相关 0.113（阈值 0.25）→ 会被判"不同步"。
     假阴性比假阳性贵得多（反复重抽），所以自动重做回路里不留口型这条判据。
     """
-    from fastvideo3.modules.m6_talk import _lipsync_check
+    from fastvideo4.modules.m6_talk import _lipsync_check
 
     on = [i % 8 < 4 for i in range(N_FRAMES)]
     shifted = [i % 8 < 4 for i in range(4, N_FRAMES + 4)]
@@ -244,7 +244,7 @@ async def test_m6_reports_lipsync_but_never_marks_stale(cfg, storage):
 
 def test_lipsync_never_enters_auto_reshoot_gate(cfg):
     """闸门里口型一律不触发重做（含 located+unsynced），但脸/衣不一致照旧触发。"""
-    from fastvideo3.modules.m9_metrics import gate_failures
+    from fastvideo4.modules.m9_metrics import gate_failures
 
     cfg.consistency_gate = "reshoot"
     cfg.lipsync_min_corr = 0.25
@@ -312,7 +312,7 @@ def test_clamp_resolution_follows_the_provider_declared_ceiling():
     非法档名原样发给只有两档的模型，服务端只回一句分辨率相关的 400，看着像"这个模型
     不能对口型"。所以这条机制的测试必须留下，且不能绑在某一家 provider 上。
     """
-    from fastvideo3.providers.base import clamp_resolution
+    from fastvideo4.providers.base import clamp_resolution
 
     class _Cap720:
         max_resolution = "720P"

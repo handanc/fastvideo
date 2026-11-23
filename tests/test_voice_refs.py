@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from fastvideo3.core.scenegroup import VOICE_REF_SEC, SceneGroup
-from fastvideo3.core.schema import AudioLine
-from fastvideo3.core.voiceref import (
+from fastvideo4.core.scenegroup import VOICE_REF_SEC, SceneGroup
+from fastvideo4.core.schema import AudioLine
+from fastvideo4.core.voiceref import (
     MIN_VOICE_REF_SEC,
     build_voice_refs,
     pick_lines,
@@ -21,7 +21,7 @@ from fastvideo3.core.voiceref import (
     trim_wav,
     within_budget,
 )
-from fastvideo3.providers.fake import FakeTTSProvider
+from fastvideo4.providers.fake import FakeTTSProvider
 
 
 def _group(shots: tuple[str, ...] = ("s1_01", "s1_02")) -> SceneGroup:
@@ -36,7 +36,7 @@ async def _line(tmp_path: Path, cid: str, sid: str, idx: int, text: str) -> Audi
     """用 FakeTTS 造一条真 wav（时长由字数决定），返回 AudioLine。"""
     dest = tmp_path / f"line_{sid}_{idx}.wav"
     await FakeTTSProvider().synthesize(text, voice="v", emotion="neutral", dest=dest)
-    from fastvideo3.utils.audio import wav_duration
+    from fastvideo4.utils.audio import wav_duration
 
     return AudioLine(
         line_id=f"{sid}_{idx}", shot_id=sid, character_id=cid, text=text,
@@ -47,7 +47,7 @@ async def _line(tmp_path: Path, cid: str, sid: str, idx: int, text: str) -> Audi
 async def test_trim_caps_at_budget_and_keeps_playable_wav(tmp_path):
     src = tmp_path / "long.wav"
     await FakeTTSProvider().synthesize("这句话很长很长很长很长很长很长很长很长很长很长", voice="v", dest=src)
-    from fastvideo3.utils.audio import wav_duration
+    from fastvideo4.utils.audio import wav_duration
 
     assert wav_duration(src) > VOICE_REF_SEC, "用例前提：母带要比预算长"
     out = trim_wav(src, tmp_path / "ref.wav", VOICE_REF_SEC)
@@ -96,7 +96,7 @@ async def test_characters_without_a_line_in_the_group_are_reported(tmp_path, sto
 
 async def test_too_short_sample_is_skipped_not_sent(tmp_path, storage):
     """太短的样本抓不住音色，发上去等于给模型一段噪声参考 → 宁可不发并说明。"""
-    from fastvideo3.utils.audio import wav_duration
+    from fastvideo4.utils.audio import wav_duration
 
     short = tmp_path / "line_s1_01_0.wav"
     await FakeTTSProvider().synthesize("嗯", voice="v", dest=short)
@@ -130,7 +130,7 @@ async def test_short_lines_are_joined_until_the_sample_is_usable(tmp_path, stora
         await _line(tmp_path, "c2", "s1_01", 0, "阿弥陀佛"),
         await _line(tmp_path, "c2", "s1_02", 0, "休得胡言"),
     ]
-    from fastvideo3.utils.audio import wav_duration
+    from fastvideo4.utils.audio import wav_duration
 
     assert all(_line_dur(x) < MIN_VOICE_REF_SEC for x in lines), "用例前提：每句都太短"
     got, skipped = build_voice_refs(storage, lines, _group(), ("c2",))
@@ -143,6 +143,6 @@ async def test_short_lines_are_joined_until_the_sample_is_usable(tmp_path, stora
 
 
 def _line_dur(ln) -> float:
-    from fastvideo3.utils.audio import wav_duration
+    from fastvideo4.utils.audio import wav_duration
 
     return wav_duration(Path(ln.wav_uri))

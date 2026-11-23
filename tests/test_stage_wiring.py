@@ -14,15 +14,15 @@ from __future__ import annotations
 import pytest
 from PIL import Image
 
-from fastvideo3.core.schema import Asset, BaseInfo
-from fastvideo3.core.stages import (
+from fastvideo4.core.schema import Asset, BaseInfo
+from fastvideo4.core.stages import (
     build_context,
     stage_assets,
     stage_shots,
     stage_storyboard,
 )
-from fastvideo3.providers.base import Capability, ProviderError
-from fastvideo3.providers.fake import FakeT2IProvider, fake_script
+from fastvideo4.providers.base import Capability, ProviderError
+from fastvideo4.providers.fake import FakeT2IProvider, fake_script
 
 
 @pytest.fixture
@@ -89,7 +89,7 @@ async def test_storyboard_wires_text_distillation(cfg, ctx, storage):
 async def test_shots_wires_r2v_and_records_route(cfg, ctx, storage):
     """shots 必须接 r2v + assets，否则 cinema 的参考生视频引擎整条关闭。"""
     cfg.use_r2v_for_characters = True
-    from fastvideo3.core.config import ProviderRouting
+    from fastvideo4.core.config import ProviderRouting
 
     cfg.routing["r2v"] = ProviderRouting(default="dashscope_wan27_r2v")
     script = _seed_script(storage)
@@ -103,14 +103,14 @@ async def test_shots_wires_r2v_and_records_route(cfg, ctx, storage):
 
 async def test_degradations_are_loud_not_silent(cfg, storage, jobs, monkeypatch):
     """VLM 装配失败必须落降级台账，不能静默变 None（否则"评审 0 条"无人察觉）。"""
-    from fastvideo3.providers.factory import make_provider as real_make
+    from fastvideo4.providers.factory import make_provider as real_make
 
     def boom(capability, cfg_, work_dir=None):
         if capability is Capability.VLM:
             raise ProviderError("模拟未开通/欠费")
         return real_make(capability, cfg_, work_dir)
 
-    monkeypatch.setattr("fastvideo3.core.stages.make_provider", boom)
+    monkeypatch.setattr("fastvideo4.core.stages.make_provider", boom)
     cfg.asset_candidates = 2
     ctx = build_context(cfg, storage)
     script = _seed_script(storage)

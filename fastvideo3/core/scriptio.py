@@ -15,10 +15,10 @@ import json
 import time
 from typing import Any
 
-from fastvideo3.core import progress as prog
-from fastvideo3.core import voice_budget
-from fastvideo3.core.schema import Script
-from fastvideo3.core.storage import RunStorage, safe_unlink
+from fastvideo4.core import progress as prog
+from fastvideo4.core import voice_budget
+from fastvideo4.core.schema import Script
+from fastvideo4.core.storage import RunStorage, safe_unlink
 
 
 class ScriptRejected(ValueError):
@@ -64,10 +64,10 @@ async def refresh_looks_for_changed_chars(
     if not changed:
         return
 
-    from fastvideo3.core.cost import CostLedger
-    from fastvideo3.modules.m1_scripting import extract_looks
-    from fastvideo3.providers.base import Capability
-    from fastvideo3.providers.factory import make_provider
+    from fastvideo4.core.cost import CostLedger
+    from fastvideo4.modules.m1_scripting import extract_looks
+    from fastvideo4.providers.base import Capability
+    from fastvideo4.providers.factory import make_provider
 
     sub = Script(
         base_info=new.base_info, title=new.title, characters=changed,
@@ -147,7 +147,7 @@ async def commit_script(
     直接复用，只能整片重跑才能收拾。按现在这个顺序崩在中间，最坏是"多标了几项待重做"
     （重跑一遍同样的东西，白花钱），而 `progress` 的准则本来就是**漏标致命、多标可接受**。
     """
-    from fastvideo3.modules.m1_scripting import enforce_transition_variety
+    from fastvideo4.modules.m1_scripting import enforce_transition_variety
 
     problems = cross_check(new_script)
     if problems:

@@ -14,7 +14,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from fastvideo3.core.config import MODELS_DIR
+from fastvideo4.core.config import MODELS_DIR
 
 WEIGHT_NAME = "yolov8n-seg.pt"
 
@@ -32,7 +32,7 @@ def available() -> bool:
 def load_model():  # pragma: no cover - 依赖重型可选组件
     if not available():
         raise RuntimeError(
-            '缺少 ultralytics：pip install "fastvideo3[full]"（并先装 CPU 版 torch）'
+            '缺少 ultralytics：pip install "fastvideo4[full]"（并先装 CPU 版 torch）'
         )
     from ultralytics import YOLO
 

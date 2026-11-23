@@ -24,7 +24,7 @@ import re
 
 from pydantic import ValidationError
 
-from fastvideo3.core.schema import (
+from fastvideo4.core.schema import (
     BaseInfo,
     Character,
     DialogueLine,

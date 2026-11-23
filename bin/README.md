@@ -5,10 +5,10 @@
 所以把这个目录当成交付物的一部分：
 
 ```powershell
-fastvideo3 provision          # 优先从当前 venv 复制（离线、零下载），否则走镜像下载
+fastvideo4 provision          # 优先从当前 venv 复制（离线、零下载），否则走镜像下载
 ```
 
-解析顺序（`fastvideo3/core/runtime.py`）：
+解析顺序（`fastvideo4/core/runtime.py`）：
 
 1. 环境变量 `FV3_FFMPEG_PATH`（显式指定，最高优先级）
 2. **本目录**的 `ffmpeg.exe` / `ffmpeg` —— 排在系统 PATH **之前**，部署包的行为由项目决定

@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import pytest
 
-from fastvideo3.core.jobs import JobStore
-from fastvideo3.core.schema import JobStatus, RunJob
-from fastvideo3.core.storage import RunStorage
+from fastvideo4.core.jobs import JobStore
+from fastvideo4.core.schema import JobStatus, RunJob
+from fastvideo4.core.storage import RunStorage
 
 
 @pytest.fixture

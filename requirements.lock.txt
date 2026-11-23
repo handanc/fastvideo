@@ -1,4 +1,4 @@
-# FastVideo3 运行环境锁文件 —— 由 `provision --lock` 从验证过的环境生成，别手改。
+# FastVideo4 运行环境锁文件 —— 由 `provision --lock` 从验证过的环境生成，别手改。
 # 复现：python -m venv .venv && .venv 的 pip  install -r requirements.lock.txt
 # 生成于：Python 3.11.15（win32）
 # 本项目自己用 `pip install -e .` 装，所以不在清单里（-e 路径换机器就失效）。
@@ -28,7 +28,7 @@ dashscope==1.27.1
 distro==1.9.0
 edge-tts==7.2.8
 fastapi==0.141.1
-# Editable Git install with no remote (fastvideo3==0.1.0)
+# Editable Git install with no remote (fastvideo4==0.1.0)
 filelock==4.0.3
 fonttools==4.66.0
 frozenlist==1.8.0

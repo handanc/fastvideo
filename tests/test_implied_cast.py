@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from fastvideo3.core.schema import (
+from fastvideo4.core.schema import (
     Asset,
     BaseInfo,
     Script,
@@ -30,8 +30,8 @@ from fastvideo3.core.schema import (
     ShotType,
     effective_cast,
 )
-from fastvideo3.modules.m3_storyboard import build_storyboard
-from fastvideo3.providers.fake import FakeT2IProvider, FakeVLMProvider, fake_script
+from fastvideo4.modules.m3_storyboard import build_storyboard
+from fastvideo4.providers.fake import FakeT2IProvider, FakeVLMProvider, fake_script
 
 
 class RefSpy(FakeT2IProvider):
@@ -228,7 +228,7 @@ async def test_multi_ref_order_matches_the_lockface_labels(cfg, storage, ledger,
 
 
 def _fp(script: Script) -> str:
-    from fastvideo3.core.schema import script_fingerprint
+    from fastvideo4.core.schema import script_fingerprint
 
     return script_fingerprint(script)
 

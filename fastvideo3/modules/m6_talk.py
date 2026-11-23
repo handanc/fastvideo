@@ -24,7 +24,7 @@ from fastvideo3.core.config import AppConfig
 from fastvideo3.core.cost import CostLedger
 from fastvideo3.core.jobs import JobStore
 from fastvideo3.core.pause import BudgetPaused, current_limit, stop_for_budget
-from fastvideo3.core.prompts import NO_ONSCREEN_TEXT
+from fastvideo3.core.prompts import NO_ONSCREEN_TEXT, visual_anchor
 from fastvideo3.core.schema import AudioLine, JobStatus, RunJob, Script
 from fastvideo3.core.storage import RunStorage
 from fastvideo3.core.talkmode import DEFAULT_VOICE_SOURCE, voices_script

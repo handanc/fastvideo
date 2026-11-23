@@ -1,9 +1,9 @@
-# ── 已迁移：单价表现在在 pyproject.toml 的 [tool.fastvideo3.pricing] ──────────────
+# ── 已迁移：单价表现在在 pyproject.toml 的 [tool.fastvideo4.pricing] ──────────────
 #
 # 这里只保留**兼容兜底**（`core/pricing.py` 的解析顺序：远端价目表 → pyproject 单价表
 # → 本文件 → 能力默认价）。日常改价一律改 pyproject，或跑：
 #
-#     fastvideo3 refresh-prices          # 抓官网价目页回写，含 checked_at
+#     fastvideo4 refresh-prices          # 抓官网价目页回写，含 checked_at
 #
 # ⚠ 本文件以前放着几条 **¥0 的"免费额度期"占位价**（qwen3.7-flash / wan3.0-video /
 #   qwen-image-3.0 …）。那是 2026-10-12 成本失真的直接成因：额度用尽后账单照收，

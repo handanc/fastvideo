@@ -17,13 +17,13 @@ from typing import Any
 
 from langgraph.types import interrupt
 
-from fastvideo3.core import progress as prog
-from fastvideo3.core import stages
-from fastvideo3.core.config import AppConfig
-from fastvideo3.core.pause import BudgetPaused
-from fastvideo3.core.scenegroup import group_scenes
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.graph.state import ProductionState
+from fastvideo4.core import progress as prog
+from fastvideo4.core import stages
+from fastvideo4.core.config import AppConfig
+from fastvideo4.core.pause import BudgetPaused
+from fastvideo4.core.scenegroup import group_scenes
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.graph.state import ProductionState
 
 
 @dataclass
@@ -49,7 +49,7 @@ async def _run_step_ids(
 
     缺口判定一律现算 `compute_progress`：节点不自己记"我做过没有"，否则就又多一份状态真相。
     """
-    from fastvideo3.app.cli import _run_step
+    from fastvideo4.app.cli import _run_step
 
     rep = prog.compute_progress(g.storage, g.meta, g.cfg)
     todo = [s for s in rep.steps if s.id in ids and s.state != "done"]
@@ -116,7 +116,7 @@ def make_nodes(g: GraphContext) -> dict[str, Any]:
         重做不删文件，只把该组的场景片段标 stale —— 与界面「删除片段」、上游改动作废下游
         走的是同一套血缘判据，不再多一份"怎样才算要重出"的实现。
         """
-        from fastvideo3.core.schema import Script
+        from fastvideo4.core.schema import Script
 
         script = Script.model_validate(g.storage.load_json("script.json"))
         rep_now = prog.compute_progress(g.storage, g.meta, g.cfg)

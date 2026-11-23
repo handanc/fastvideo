@@ -25,11 +25,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from fastvideo3.core import pause
-from fastvideo3.core.config import AppConfig
-from fastvideo3.core.schema import Script
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.core.talkmode import lipsync_required
+from fastvideo4.core import pause
+from fastvideo4.core.config import AppConfig
+from fastvideo4.core.schema import Script
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.core.talkmode import lipsync_required
 
 #: 五步流水线（对齐小云雀形态）：剧本 → 角色图 → 场景图 → **场景视频** → 成片。
 #: 旧的"分镜首帧"与"镜头视频+口型"两步合并进"场景视频"：首尾帧只是场景视频的内部
@@ -141,16 +141,16 @@ def frame_needs(
     `storage` + `overrides` 用来判断"这组盘上到底有没有参考图"：人工上传的图不在登记表里，
     只看登记表会把参考形态误判成不可用，进而去画一堆本不需要的首帧。
     """
-    from fastvideo3.core.assets import refs_on_disk
-    from fastvideo3.core.scenegroup import (
+    from fastvideo4.core.assets import refs_on_disk
+    from fastvideo4.core.scenegroup import (
         MODE_FIRST_LAST,
         choose_input_mode,
         group_has_dialogue,
         group_scenes,
         servable_groups,
     )
-    from fastvideo3.core.talkmode import shots_need_last_frame
-    from fastvideo3.modules.m4_shots import shots_need_i2v
+    from fastvideo4.core.talkmode import shots_need_last_frame
+    from fastvideo4.modules.m4_shots import shots_need_i2v
 
     overrides = overrides or {}
     scene_mode = str(getattr(cfg, "scene_clip_mode", "auto") or "auto")
@@ -256,8 +256,8 @@ def compute_progress(
     )
 
     # ── s4 场景视频（首尾帧 → 配音 → 场景片段，一步补完）──
-    from fastvideo3.core.scenegroup import group_scenes, servable_groups
-    from fastvideo3.modules.m4_shots import shots_need_i2v
+    from fastvideo4.core.scenegroup import group_scenes, servable_groups
+    from fastvideo4.modules.m4_shots import shots_need_i2v
 
     all_groups = group_scenes(script)
     scene_mode_s4 = str(getattr(cfg, "scene_clip_mode", "auto") or "auto")
@@ -438,7 +438,7 @@ def scene_covered_shots(storage: RunStorage, script: Script, cfg: Any) -> dict[s
     下对白镜头的画面归 m4+m6/m7 叠音，含对白的组不算覆盖，否则口型/配音步骤被跳过
     → 成片没有口型，正是本项目踩过多次的"静默交付坏片"形状。
     """
-    from fastvideo3.core.scenegroup import group_scenes, servable_groups
+    from fastvideo4.core.scenegroup import group_scenes, servable_groups
 
     groups = group_scenes(script)
     servable = {
@@ -474,7 +474,7 @@ def last_frame_coverage(
     注意它**不是步骤缺口**：尾帧是增强项，缺了不该把 frames/videos 步卡成"有缺口"
     （那会造成永远补不上的死锁，本项目踩过）。这里只负责把事实说出来。
     """
-    from fastvideo3.core.talkmode import shots_need_last_frame
+    from fastvideo4.core.talkmode import shots_need_last_frame
 
     scene_mode = str(getattr(cfg, "scene_clip_mode", "") or "auto")
     need = [sh.shot_id for sh in shots_need_last_frame(script, talk_mode, scene_mode)]
@@ -508,7 +508,7 @@ def lipsync_coverage(storage: RunStorage, script: Script, talk_mode: str, cfg: A
     所以这里以 `scene_covered_shots` 为覆盖来源 —— 与"哪些镜头不再需要逐镜头产物"
     是同一份判据，不另起一套。`cfg` 不给时退化为只看 talk 产物（历史调用方行为不变）。
     """
-    from fastvideo3.core.talkmode import channel, lipsync_required
+    from fastvideo4.core.talkmode import channel, lipsync_required
 
     dialogue = [sh.shot_id for sh in script.all_shots() if sh.dialogues]
     if not lipsync_required(talk_mode):
@@ -554,7 +554,7 @@ def diff_invalidation(old: Script, new: Script) -> list[str]:
     rels: set[str] = set()
     # 镜头 → 它所属的**场景组**：场景级生成下，画面/台词/镜头语言的原料都进了那一段
     # `clips/scene_{gid}.mp4` 的提示词里。一段戏在一个 mp4 里，改组内任何一镜 = 整段作废。
-    from fastvideo3.core.scenegroup import group_scenes
+    from fastvideo4.core.scenegroup import group_scenes
 
     def _shot_group_map(script_obj: Script) -> dict[str, str]:
         return {sid: g.group_id for g in group_scenes(script_obj) for sid in g.shot_ids}

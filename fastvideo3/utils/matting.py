@@ -29,7 +29,7 @@ def _session():  # pragma: no cover - 依赖重型可选组件
 def remove_background(image_path: Path, out_path: Path) -> Path:  # pragma: no cover
     """人像前景抠图（RGBA 输出）。"""
     if not available():
-        raise RuntimeError('缺少 rembg：pip install "fastvideo3[full]"')
+        raise RuntimeError('缺少 rembg：pip install "fastvideo4[full]"')
     from rembg import remove
 
     data = image_path.read_bytes()

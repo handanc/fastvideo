@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from fastvideo3.core.schema import BaseInfo
-from fastvideo3.modules.m8_review import pick_reshoot_shots, review_final
-from fastvideo3.providers.fake import FakeVLMProvider, fake_script
+from fastvideo4.core.schema import BaseInfo
+from fastvideo4.modules.m8_review import pick_reshoot_shots, review_final
+from fastvideo4.providers.fake import FakeVLMProvider, fake_script
 
 
 def test_pick_reshoot_shots_hits_keywords_and_never_picks_dialogue():
@@ -21,8 +21,8 @@ def test_pick_reshoot_shots_hits_keywords_and_never_picks_dialogue():
 
 
 async def test_review_final_with_video(cfg, storage, ledger, tmp_path):
-    from fastvideo3.utils.ffmpeg import image_to_video
-    from fastvideo3.utils.image import make_placeholder_image
+    from fastvideo4.utils.ffmpeg import image_to_video
+    from fastvideo4.utils.image import make_placeholder_image
 
     img = tmp_path / "f.png"
     make_placeholder_image(img)

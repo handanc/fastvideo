@@ -18,11 +18,11 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from fastvideo3.core.schema import BaseInfo, Script
-from fastvideo3.core.script_text import parse_script_text, render_script_text
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.providers.base import Capability
-from fastvideo3.providers.fake import FakeTextProvider, fake_script
+from fastvideo4.core.schema import BaseInfo, Script
+from fastvideo4.core.script_text import parse_script_text, render_script_text
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.providers.base import Capability
+from fastvideo4.providers.fake import FakeTextProvider, fake_script
 
 
 class _ModelSeesOnlyDraft(FakeTextProvider):
@@ -71,7 +71,7 @@ class _ModelSeesOnlyDraft(FakeTextProvider):
 
 
 def _look(outfit: str):
-    from fastvideo3.core.schema import CharacterLook
+    from fastvideo4.core.schema import CharacterLook
 
     return CharacterLook(
         face="圆脸", outfit=outfit, headwear="帽子", palette=["灰色"], distinctive=[outfit]
@@ -116,11 +116,11 @@ def _png(p: Path) -> None:
 
 def _revise(outdir: Path, run_id: str, monkeypatch, mutate=None, prompt="把第二句台词改得更直接"):
     """跑真实的 `cli script-regen --mode revise`，只把文本模型换成"看得见剧本稿的模型"。"""
-    from fastvideo3.app import cli
+    from fastvideo4.app import cli
 
     old = Script.model_validate(RunStorage(run_id, root=outdir).load_json("script.json"))
     model = _ModelSeesOnlyDraft(old, mutate)
-    import fastvideo3.core.stages as stages_mod
+    import fastvideo4.core.stages as stages_mod
 
     monkeypatch.setattr(
         stages_mod, "make_provider",
@@ -198,7 +198,7 @@ def test_revise_extracts_look_only_for_new_characters(outdir, monkeypatch):
 
 def test_revise_keeps_old_script_when_commit_fails(outdir, monkeypatch):
     """作废那一步崩掉 → 盘上必须还是旧剧本 + 旧血缘（绝不能"新剧本配旧血缘"）。"""
-    from fastvideo3.core import progress as prog
+    from fastvideo4.core import progress as prog
 
     storage = _seed(outdir, "run_regen_3")
 
@@ -216,7 +216,7 @@ def test_revise_keeps_old_script_when_commit_fails(outdir, monkeypatch):
 
 def test_revise_after_save_failure_stays_consistent(outdir, monkeypatch):
     """崩在剧本落盘之后（抽卡失败）：新剧本必须已经带着正确的作废范围落地。"""
-    from fastvideo3.core import scriptio
+    from fastvideo4.core import scriptio
 
     storage = _seed(outdir, "run_regen_3b")
 

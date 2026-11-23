@@ -19,13 +19,13 @@ import pytest
 from fastapi.testclient import TestClient
 from test_board_api import _mk_run
 
-import fastvideo3.app.api as api_mod
-from fastvideo3.core import pause, tasklock, voice_budget
-from fastvideo3.core.config import load_config
-from fastvideo3.core.scenegroup import CLIP_CAP_SEC, MAX_CLIP_SEC, group_scenes
-from fastvideo3.core.schema import BaseInfo, DialogueLine, Script, Shot, ShotType, TransitionType
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.providers.fake import fake_script
+import fastvideo4.app.api as api_mod
+from fastvideo4.core import pause, tasklock, voice_budget
+from fastvideo4.core.config import load_config
+from fastvideo4.core.scenegroup import CLIP_CAP_SEC, MAX_CLIP_SEC, group_scenes
+from fastvideo4.core.schema import BaseInfo, DialogueLine, Script, Shot, ShotType, TransitionType
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.providers.fake import fake_script
 
 RUN = "run_20260101_000088"
 
@@ -358,7 +358,7 @@ def test_no_call_site_re_hardcodes_the_cap():
 
     root = Path(__file__).resolve().parents[1]
     hits = subprocess.run(  # noqa: S607
-        ["grep", "-rn", "max_clip_sec=", "fastvideo3/"],
+        ["grep", "-rn", "max_clip_sec=", "fastvideo4/"],
         cwd=root, capture_output=True, text=True,
     ).stdout
     real = [ln for ln in hits.splitlines() if "def group_scenes" not in ln and "max_clip_sec=max_clip_sec" not in ln]

@@ -22,7 +22,7 @@ from typing import Any
 
 import yaml
 
-from fastvideo3.core.config import CONFIGS_DIR
+from fastvideo4.core.config import CONFIGS_DIR
 
 # ── 协议标识 ──
 T2I_ASYNC = "async_text2image"        # /services/aigc/text2image/image-synthesis（异步任务）

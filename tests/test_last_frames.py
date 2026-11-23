@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import json
 
-from fastvideo3.core.schema import BaseInfo, DialogueLine, Scene, Script, Shot, ShotType
-from fastvideo3.modules.m2_assets import build_assets
-from fastvideo3.modules.m3_storyboard import _last_frame_prompt, build_storyboard
-from fastvideo3.modules.m4_shots import _last_frame_path, generate_shots
-from fastvideo3.providers.dashscope import DashScopeI2V27Provider, DashScopeWan27Base
-from fastvideo3.providers.fake import FakeI2VProvider, FakeT2IProvider
+from fastvideo4.core.schema import BaseInfo, DialogueLine, Scene, Script, Shot, ShotType
+from fastvideo4.modules.m2_assets import build_assets
+from fastvideo4.modules.m3_storyboard import _last_frame_prompt, build_storyboard
+from fastvideo4.modules.m4_shots import _last_frame_path, generate_shots
+from fastvideo4.providers.dashscope import DashScopeI2V27Provider, DashScopeWan27Base
+from fastvideo4.providers.fake import FakeI2VProvider, FakeT2IProvider
 
 
 def _script_with_dialogue() -> Script:
@@ -72,9 +72,9 @@ async def test_scene_mode_decides_who_needs_last_frames(cfg, storage, ledger, tm
     - 场景级生成关掉（economy/A链/B链/手动 off）：回到逐镜头路径，C 链对白镜头的
       画面由口型通道直出且吃尾帧 → 照旧产。
     """
-    from fastvideo3.core.cost import CostLedger
-    from fastvideo3.core.storage import RunStorage
-    from fastvideo3.core.talkmode import shots_need_last_frame
+    from fastvideo4.core.cost import CostLedger
+    from fastvideo4.core.storage import RunStorage
+    from fastvideo4.core.talkmode import shots_need_last_frame
 
     cfg.use_last_frames = True
     cfg.talk_mode = "scripted_talk"

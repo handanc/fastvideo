@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastvideo3.providers.base import ProviderError, TTSProvider, api_retry
-from fastvideo3.utils.emotion import prosody as _prosody
+from fastvideo4.providers.base import ProviderError, TTSProvider, api_retry
+from fastvideo4.utils.emotion import prosody as _prosody
 
 DEFAULT_VOICE = "zh-CN-YunxiNeural"
 
@@ -53,7 +53,7 @@ class EdgeTTSProvider(TTSProvider):
         if not tmp.exists() or tmp.stat().st_size == 0:
             tmp.unlink(missing_ok=True)
             raise ProviderError("edge-tts 返回空音频")
-        from fastvideo3.utils.ffmpeg import run_ffmpeg
+        from fastvideo4.utils.ffmpeg import run_ffmpeg
 
         try:
             run_ffmpeg(["-i", str(tmp), "-ar", "44100", "-ac", "1", str(dest)])

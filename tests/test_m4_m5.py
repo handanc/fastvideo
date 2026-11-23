@@ -2,13 +2,13 @@
 
 from pathlib import Path
 
-from fastvideo3.core.schema import BaseInfo, ShotType
-from fastvideo3.modules.m2_assets import build_assets
-from fastvideo3.modules.m3_storyboard import build_storyboard
-from fastvideo3.modules.m4_shots import generate_shots, shots_need_i2v
-from fastvideo3.modules.m5_audio import synthesize_dialogues
-from fastvideo3.providers.fake import FakeI2VProvider, FakeT2IProvider, FakeTTSProvider, fake_script
-from fastvideo3.utils.ffmpeg import probe_duration
+from fastvideo4.core.schema import BaseInfo, ShotType
+from fastvideo4.modules.m2_assets import build_assets
+from fastvideo4.modules.m3_storyboard import build_storyboard
+from fastvideo4.modules.m4_shots import generate_shots, shots_need_i2v
+from fastvideo4.modules.m5_audio import synthesize_dialogues
+from fastvideo4.providers.fake import FakeI2VProvider, FakeT2IProvider, FakeTTSProvider, fake_script
+from fastvideo4.utils.ffmpeg import probe_duration
 
 
 async def _frames(cfg, storage, ledger):
@@ -65,8 +65,8 @@ async def test_synthesize_dialogues(cfg, storage, ledger):
 
 def test_motion_prompt_describes_movement_not_meta():
     """i2v motion prompt：动作+运镜+节奏，不含元提示词指令文字。"""
-    from fastvideo3.core.config import AppConfig
-    from fastvideo3.modules.m4_shots import _motion_prompt
+    from fastvideo4.core.config import AppConfig
+    from fastvideo4.modules.m4_shots import _motion_prompt
 
     script = fake_script(BaseInfo(topic="t"))
     shot = next(s for s in script.all_shots() if s.type is ShotType.ACTION)
@@ -115,7 +115,7 @@ async def test_fallback_provider_saves_shot(cfg, storage, ledger, jobs):
 
 async def test_best_of_n_uses_multi_frame_review(cfg, storage, ledger, jobs):
     """best-of-N 每候选抽 3 帧评运动（此前 1 帧评不出闪帧/漂移/卡顿）。"""
-    from fastvideo3.providers.fake import FakeVLMProvider
+    from fastvideo4.providers.fake import FakeVLMProvider
 
     cfg.candidates_per_shot = 2
     script, frames = await _frames(cfg, storage, ledger)
@@ -127,7 +127,7 @@ async def test_best_of_n_uses_multi_frame_review(cfg, storage, ledger, jobs):
             self.n = 0
 
         async def review(self, media, *, rubric, dest=None):
-            from fastvideo3.core.schema import ReviewResult
+            from fastvideo4.core.schema import ReviewResult
 
             self.frame_counts.append(len(media))
             self.n += 1

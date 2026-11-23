@@ -17,12 +17,12 @@ import httpx
 import pytest
 import respx
 
-from fastvideo3.core.config import AppConfig
-from fastvideo3.core.schema import BaseInfo
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.providers import protocols as P
-from fastvideo3.providers.base import Capability, ProviderError
-from fastvideo3.providers.factory import make_provider
+from fastvideo4.core.config import AppConfig
+from fastvideo4.core.schema import BaseInfo
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.providers import protocols as P
+from fastvideo4.providers.base import Capability, ProviderError
+from fastvideo4.providers.factory import make_provider
 
 
 def test_text_model_name_selects_its_own_endpoint():
@@ -42,7 +42,7 @@ def test_explicit_protocol_env_still_wins(monkeypatch):
 def test_wrong_key_fails_at_assembly_not_after_nine_minutes(tmp_path):
     """名字对上了端点、但 KEY 没配 → **装配当场**报错，而不是发出去等读超时。"""
     # 用真实路由表（configs/default.yaml），但不读用户 .env：装配路径要与线上一致才有意义
-    from fastvideo3.core.config import load_config
+    from fastvideo4.core.config import load_config
 
     cfg = load_config(resolution="480P", dotenv_path=tmp_path / "none.env")
     cfg.dashscope_api_key = "sk-x"
@@ -58,7 +58,7 @@ def test_wrong_key_fails_at_assembly_not_after_nine_minutes(tmp_path):
 
 async def test_read_timeout_becomes_a_readable_error():
     """`httpx.ReadTimeout` 的 str 是空串：必须包成带模型/端点/秒数/出路的错误文本。"""
-    from fastvideo3.providers.deepseek import DeepSeekTextProvider
+    from fastvideo4.providers.deepseek import DeepSeekTextProvider
 
     prov = DeepSeekTextProvider(
         "sk-deadbeef", "https://api.deepseek.com", "deepseek-v4-flash-0731", timeout_sec=7.0
@@ -79,7 +79,7 @@ async def test_read_timeout_becomes_a_readable_error():
 
 def test_timeout_comes_from_config(tmp_path):
     """超时值是配置项，不是散落在 provider 里的魔数。"""
-    from fastvideo3.providers.factory import _build_real
+    from fastvideo4.providers.factory import _build_real
 
     cfg = AppConfig(dashscope_api_key="sk-x", fake=False, text_timeout_sec=321.0)
     # _build_real 直接点名 provider，不需要路由表
@@ -90,7 +90,7 @@ def test_timeout_comes_from_config(tmp_path):
 
 def test_panel_status_recognizes_step_failed(tmp_path, monkeypatch):
     """run 目录里最后一条事件是 step_failed → 状态必须是 failed，不是 idle/已停止。"""
-    import fastvideo3.app.api as api_mod
+    import fastvideo4.app.api as api_mod
 
     rid = "run_timeout_visible"
     storage = RunStorage(rid, root=tmp_path)
@@ -124,7 +124,7 @@ def test_panel_refuses_a_text_model_that_is_not_in_the_catalog(tmp_path, monkeyp
     """
     from fastapi.testclient import TestClient
 
-    import fastvideo3.app.api as api_mod
+    import fastvideo4.app.api as api_mod
 
     monkeypatch.setattr(api_mod, "_spawn", lambda cmd, log_path=None: None)
     with TestClient(api_mod.app) as client:
@@ -158,8 +158,8 @@ def test_first_step_failure_is_visible_in_the_step_strip(tmp_path):
     失败标注代码 —— 于是最典型的首步失败反而永远不显示原因，头部写着"失败"、
     步骤条却只有"缺 script.json"（2026-10-14 实测）。
     """
-    from fastvideo3.core import progress as pg
-    from fastvideo3.core.config import AppConfig
+    from fastvideo4.core import progress as pg
+    from fastvideo4.core.config import AppConfig
 
     storage = RunStorage("run_first_step_fail", root=tmp_path)
     storage.save_json(

@@ -19,7 +19,7 @@ from sqlalchemy import (
     update,
 )
 
-from fastvideo3.core.schema import JobStatus, RunJob
+from fastvideo4.core.schema import JobStatus, RunJob
 
 metadata = MetaData()
 

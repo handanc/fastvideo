@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from fastvideo3.core.config import AppConfig
-from fastvideo3.core.cost import CostLedger
-from fastvideo3.core.jobs import JobStore
-from fastvideo3.core.storage import RunStorage
+from fastvideo4.core.config import AppConfig
+from fastvideo4.core.cost import CostLedger
+from fastvideo4.core.jobs import JobStore
+from fastvideo4.core.storage import RunStorage
 
 
 @pytest.fixture
@@ -18,9 +18,9 @@ def outdir(tmp_path, monkeypatch):
     拷的是值，只改 `config.OUTPUT_DIR` 的话 `RunStorage(run_id)`（默认 root）与 CLI
     命令仍然写进真实的 `output/` —— `test_cli.py` 长期在污染项目目录。
     """
-    from fastvideo3.app import cli as cli_mod
-    from fastvideo3.core import config as config_mod
-    from fastvideo3.core import storage as storage_mod
+    from fastvideo4.app import cli as cli_mod
+    from fastvideo4.core import config as config_mod
+    from fastvideo4.core import storage as storage_mod
 
     d = tmp_path / "output"
     d.mkdir(parents=True, exist_ok=True)

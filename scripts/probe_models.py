@@ -1,6 +1,6 @@
 """模型协议探测：用最小花费试出 .env 里指定的模型**真正接受哪种请求协议**。
 
-为什么需要它：`fastvideo3/providers/protocols.py` 的协议表是按百炼命名习惯**推断**的；
+为什么需要它：`fastvideo4/providers/protocols.py` 的协议表是按百炼命名习惯**推断**的；
 新模型（wan3.0-video / qwen-image-3.0 等）的官方请求体无法离线确认。推断错了不是
 "效果差一点"，而是每个请求都 400 —— 而 400 会被 fallback 掩盖成"付费模型也能跑"，
 让人误判改动无效。本脚本把"哪个协议被接受"变成一次可观测的实验。
@@ -27,9 +27,9 @@ from typing import Any
 
 import httpx
 
-from fastvideo3.core import endpoints
-from fastvideo3.core.config import CONFIGS_DIR, load_config
-from fastvideo3.providers import protocols
+from fastvideo4.core import endpoints
+from fastvideo4.core.config import CONFIGS_DIR, load_config
+from fastvideo4.providers import protocols
 
 # 探单脚本打的端点 = 当前 `.env` 解析出来的那两条（不是 providers 模块里的公共默认值）：
 # 换套餐/业务空间后探单若仍打公共端点，"模型不可用"的结论就是假的。
@@ -207,8 +207,8 @@ async def main() -> int:
         return 1
     image_url = None
     if any(c in args.caps for c in ("i2v", "talk", "r2v")):
-        from fastvideo3.utils.dashscope_upload import upload_local_file
-        from fastvideo3.utils.image import make_placeholder_image
+        from fastvideo4.utils.dashscope_upload import upload_local_file
+        from fastvideo4.utils.image import make_placeholder_image
 
         tmp = Path(".probe_frame.png")
         make_placeholder_image(tmp, label="probe", color="#3c3c5a")

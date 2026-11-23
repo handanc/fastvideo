@@ -17,11 +17,11 @@ import pytest
 from fastapi.testclient import TestClient
 from test_board_api import _mk_run
 
-import fastvideo3.app.api as api_mod
-from fastvideo3.core import progress as prog
-from fastvideo3.core import tasklock
-from fastvideo3.core.schema import BaseInfo, Script
-from fastvideo3.core.storage import RunStorage
+import fastvideo4.app.api as api_mod
+from fastvideo4.core import progress as prog
+from fastvideo4.core import tasklock
+from fastvideo4.core.schema import BaseInfo, Script
+from fastvideo4.core.storage import RunStorage
 
 RUN = "run_20260101_000060"
 
@@ -263,8 +263,8 @@ def test_regenerate_blocked_while_busy(client, run):
 # ───────────────────────── 逐步路径消费 prompt ─────────────────────────
 async def test_step_consumes_script_prompt(cfg, outdir):
     """「推倒重写」的子进程万一崩了，意见不能丢：再点「开始生成」仍带着同一条 prompt。"""
-    from fastvideo3.app.cli import _run_step
-    from fastvideo3.core.stages import build_context
+    from fastvideo4.app.cli import _run_step
+    from fastvideo4.core.stages import build_context
 
     run_id = "run_step_prompt"
     storage = RunStorage(run_id, root=outdir)
@@ -313,8 +313,8 @@ def _standard_draft() -> str:
 
     不从盘上 GET 的原因：导入的正是要在**还没有剧本**时跑，GET 那时是 404。
     """
-    from fastvideo3.core.script_text import render_script_text
-    from fastvideo3.providers.fake import fake_script
+    from fastvideo4.core.script_text import render_script_text
+    from fastvideo4.providers.fake import fake_script
 
     return render_script_text(fake_script(BaseInfo(topic="测试主题")))
 

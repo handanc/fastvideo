@@ -18,14 +18,14 @@ import json
 import random
 from pathlib import Path
 
-from fastvideo3.core.config import AppConfig
-from fastvideo3.core.cost import CostLedger, llm_meta
-from fastvideo3.core.prompts import render_strict
-from fastvideo3.core.schema import Asset, ConsistencyVerdict, Script
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.providers.base import VLMProvider
-from fastvideo3.utils import faceid
-from fastvideo3.utils import quality as q
+from fastvideo4.core.config import AppConfig
+from fastvideo4.core.cost import CostLedger, llm_meta
+from fastvideo4.core.prompts import render_strict
+from fastvideo4.core.schema import Asset, ConsistencyVerdict, Script
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.providers.base import VLMProvider
+from fastvideo4.utils import faceid
+from fastvideo4.utils import quality as q
 
 ANCHOR_MIN_SCORE = 0.85
 

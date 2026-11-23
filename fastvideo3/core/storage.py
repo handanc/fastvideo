@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-from fastvideo3.core.config import OUTPUT_DIR
+from fastvideo4.core.config import OUTPUT_DIR
 
 STAGES = ("assets", "storyboard", "audio", "clips", "talk", "review", "final")
 

@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from fastvideo3.core import billing, pricetable, pricing
-from fastvideo3.core.cost import CostLedger, llm_meta
+from fastvideo4.core import billing, pricetable, pricing
+from fastvideo4.core.cost import CostLedger, llm_meta
 
 # ────────────────────────── 1. 官网页解析 ──────────────────────────
 
@@ -167,10 +167,10 @@ def test_merge_into_refuses_zero_prices():
 def test_write_table_replaces_only_the_marked_block(tmp_path):
     """只换 BEGIN/END 之间，其余字节原样保留（含 CRLF 与用户自己的注释）。"""
     original = (
-        "[project]\r\nname = \"fastvideo3\"\r\n\r\n"
+        "[project]\r\nname = \"fastvideo4\"\r\n\r\n"
         "# 我的注释别动\r\n[tool.ruff]\r\nline-length = 100\r\n\r\n"
-        f"{pricetable.BEGIN}\n[tool.fastvideo3.pricing]\nchecked_at = \"2020-01-01\"\n"
-        f"[tool.fastvideo3.pricing.models]\nx = {{ unit = \"call\", price_cny = 1 }}\n{pricetable.END}\n"
+        f"{pricetable.BEGIN}\n[tool.fastvideo4.pricing]\nchecked_at = \"2020-01-01\"\n"
+        f"[tool.fastvideo4.pricing.models]\nx = {{ unit = \"call\", price_cny = 1 }}\n{pricetable.END}\n"
     )
     path = tmp_path / "pyproject.toml"
     path.write_bytes(original.encode("utf-8"))
@@ -320,12 +320,12 @@ def test_reconcile_run_survives_broken_ledgers(tmp_path, monkeypatch):
 def test_api_reconcile_cost_reports_unavailable_not_zero(monkeypatch, outdir):
     from fastapi.testclient import TestClient
 
-    import fastvideo3.app.api as api_mod
+    import fastvideo4.app.api as api_mod
 
     root = Path(outdir) / "run_rc"
     _write_ledger(root, "2026-10", 5.0)
     (root / "run_meta.json").write_text("{}", encoding="utf-8")  # _safe_run_root 认这条 run 存在
-    # 端点里是 `from fastvideo3.core import billing`（函数体每次现取模块）→ 打模块属性就生效
+    # 端点里是 `from fastvideo4.core import billing`（函数体每次现取模块）→ 打模块属性就生效
     monkeypatch.setattr(billing, "available", lambda: False)
     with TestClient(api_mod.app) as c:
         r = c.post("/api/runs/run_rc/reconcile-cost")

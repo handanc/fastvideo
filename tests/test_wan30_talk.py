@@ -23,9 +23,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from fastvideo3.core.config import AppConfig, ProviderRouting
-from fastvideo3.core.prompts import NO_ONSCREEN_TEXT
-from fastvideo3.core.schema import (
+from fastvideo4.core.config import AppConfig, ProviderRouting
+from fastvideo4.core.prompts import NO_ONSCREEN_TEXT
+from fastvideo4.core.schema import (
     BaseInfo,
     Character,
     DialogueLine,
@@ -34,17 +34,17 @@ from fastvideo3.core.schema import (
     Shot,
     ShotType,
 )
-from fastvideo3.core.talkmode import (
+from fastvideo4.core.talkmode import (
     channel,
     needs_clip_for_dialogue,
     provider_name,
     tier_conflict,
 )
-from fastvideo3.modules.m4_shots import shots_need_i2v
-from fastvideo3.modules.m6_talk import _scripted_duration, _scripted_prompt, make_talk_clips
-from fastvideo3.providers.base import Capability, CapabilityMismatchError, ProviderError
-from fastvideo3.providers.dashscope import DashScopeWan27Base, DashScopeWan30TalkProvider
-from fastvideo3.providers.fake import (
+from fastvideo4.modules.m4_shots import shots_need_i2v
+from fastvideo4.modules.m6_talk import _scripted_duration, _scripted_prompt, make_talk_clips
+from fastvideo4.providers.base import Capability, CapabilityMismatchError, ProviderError
+from fastvideo4.providers.dashscope import DashScopeWan27Base, DashScopeWan30TalkProvider
+from fastvideo4.providers.fake import (
     FakeI2VProvider,
     FakeT2IProvider,
     FakeTalkProvider,
@@ -216,7 +216,7 @@ def test_scripted_prompt_lines_verbatim_and_look_anchor():
 
 
 def test_speech_verb_is_deterministic_and_from_emotion():
-    from fastvideo3.modules.m6_talk import _speech_verb
+    from fastvideo4.modules.m6_talk import _speech_verb
 
     assert _speech_verb("angry") == "怒道"
     assert _speech_verb("neutral") == "说"
@@ -303,9 +303,9 @@ class _Wan30Like(FakeTalkProvider):
 
 
 async def _prep(cfg, storage, ledger, script):
-    from fastvideo3.modules.m2_assets import build_assets
-    from fastvideo3.modules.m3_storyboard import build_storyboard
-    from fastvideo3.modules.m5_audio import synthesize_dialogues
+    from fastvideo4.modules.m2_assets import build_assets
+    from fastvideo4.modules.m3_storyboard import build_storyboard
+    from fastvideo4.modules.m5_audio import synthesize_dialogues
 
     assets = await build_assets(cfg, FakeT2IProvider(), script, storage, ledger)
     frames = await build_storyboard(cfg, FakeT2IProvider(), script, assets, storage, ledger)
@@ -393,7 +393,7 @@ async def test_scripted_talk_reuses_existing_clip_on_resume(cfg, storage, ledger
 
 # ─────────────────────── 装配与预估：模式就是选择器 ───────────────────────
 def test_factory_assembles_scripted_channel_from_mode(cfg):
-    from fastvideo3.providers.factory import _talk_route
+    from fastvideo4.providers.factory import _talk_route
 
     cfg.talk_mode = "scripted_talk"
     cfg.routing = {
@@ -412,7 +412,7 @@ def test_scripted_channel_price_lookup_is_wired():
     2026-10-12 官网价目页回填进 pyproject.toml 单价表：480P 0.3 / 720P 0.6 / 1080P 1.2，
     prime 是 0.45 / 0.9 / 1.8。限时 7 折**不记**：折扣随时停，按折扣记会让熔断晚跳。
     """
-    from fastvideo3.core.cost import price_of_provider, price_of_route
+    from fastvideo4.core.cost import price_of_provider, price_of_route
 
     assert price_of_route("dashscope_wan30_talk", "talk", "1080P") == 1.2
     assert price_of_route("dashscope_wan30_talk", "talk", "720P") == 0.6
@@ -438,7 +438,7 @@ async def test_default_voice_source_is_model_and_makes_no_driver(cfg, storage, l
 
 
 def test_master_choice_is_spelled_out_in_the_conflict_warning():
-    from fastvideo3.core.talkmode import tier_conflict
+    from fastvideo4.core.talkmode import tier_conflict
 
     assert "0～2.2" in tier_conflict("scripted_talk", "1080P", "master")
     # 默认的 model 口径不该出现这条警告（它已经是正确配对了）
@@ -474,8 +474,8 @@ def test_srt_uses_window_proportions_for_model_audio_shots():
     实测形状：镜头 4.04s、我们母带 2.53s → 若照 TTS 时长排，字幕会在镜头后半段提前消失，
     而模型可能还在说话；比例铺满窗口最坏只是某句早/晚半秒，不会整条串位。
     """
-    from fastvideo3.core.schema import AudioLine
-    from fastvideo3.modules.m7_edit import build_srt
+    from fastvideo4.core.schema import AudioLine
+    from fastvideo4.modules.m7_edit import build_srt
 
     script = _duo_script()
     lines = [
@@ -518,7 +518,7 @@ async def test_m7_honors_voice_source_over_leftover_driver(cfg, storage, ledger,
     之后把 voice_source 改成 model 再重合成，旧写法仍然 `if driver.exists(): 换母带`，
     于是配置改了、成片照旧声画错位（语音领先口型 0～2.2 秒）。配置必须是权威。
     """
-    from fastvideo3.modules.m7_edit import compose_final
+    from fastvideo4.modules.m7_edit import compose_final
 
     script = _duo_script()
     _talk, talks, _fb = await _run_talk(cfg, storage, ledger, jobs, script)
@@ -594,7 +594,7 @@ def test_scripted_talk_follows_the_selected_i2v_model_when_same_family():
     不跟随的后果就是 `run_20261011_231024` 的形状：同一个 run 里 `i2v=wan3.0-video-prime`、
     `talk=wan3.0-video` 两种档位混跑，账单对不上用户的选择。
     """
-    from fastvideo3.providers.factory import _wan30_talk_model
+    from fastvideo4.providers.factory import _wan30_talk_model
 
     cfg = AppConfig(fake=False, dashscope_api_key="sk-test")
     assert _wan30_talk_model(cfg) == "wan3.0-video", "没选就跟目录默认"
@@ -616,7 +616,7 @@ def test_scripted_talk_follows_the_selected_i2v_model_when_same_family():
 
 
 async def test_scripted_talk_assembled_uses_selected_i2v_model(cfg):
-    from fastvideo3.providers.factory import make_provider
+    from fastvideo4.providers.factory import make_provider
 
     cfg.fake = False
     cfg.dashscope_api_key = "sk-test"

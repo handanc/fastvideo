@@ -18,12 +18,12 @@ import asyncio
 import sys
 from pathlib import Path
 
-from fastvideo3.core.config import OUTPUT_DIR, load_config
-from fastvideo3.core.cost import CostLedger
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.providers.base import Capability, ProviderError
-from fastvideo3.providers.factory import make_provider
-from fastvideo3.utils import quality as q
+from fastvideo4.core.config import OUTPUT_DIR, load_config
+from fastvideo4.core.cost import CostLedger
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.providers.base import Capability, ProviderError
+from fastvideo4.providers.factory import make_provider
+from fastvideo4.utils import quality as q
 
 for _stream in (sys.stdout, sys.stderr):  # Windows GBK 控制台 → UTF-8
     try:

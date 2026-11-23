@@ -7,8 +7,8 @@ from typing import Any
 
 import yaml
 
-from fastvideo3.core.schema import CostEntry
-from fastvideo3.core.storage import RunStorage
+from fastvideo4.core.schema import CostEntry
+from fastvideo4.core.storage import RunStorage
 
 _pricing_cache: dict[str, Any] | None = None
 
@@ -23,7 +23,7 @@ def load_pricing(path: Path | None = None) -> dict[str, Any]:
         with open(path, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     if _pricing_cache is None:
-        from fastvideo3.core.pricing import sheet
+        from fastvideo4.core.pricing import sheet
 
         _pricing_cache = sheet()
     return _pricing_cache
@@ -56,14 +56,14 @@ def llm_meta(provider: Any, **extra: Any) -> dict[str, Any]:
 def price_of(model: str, capability: str, quantity: float = 1.0) -> float:
     """单价 × 数量。取价**只有一份实现**：`core/pricing.resolve`
     （远端价目表 → pricing.yaml → 能力默认价）。需要知道"这个价可不可信"时用 `price_info`。"""
-    from fastvideo3.core.pricing import resolve
+    from fastvideo4.core.pricing import resolve
 
     return resolve(model, capability).price_cny * float(quantity or 0.0)
 
 
 def price_info(model: str, capability: str):
     """单价 + 单位 + 来源 + 可信度（`PriceInfo`）。台账与看板据此说明"哪些是估算"。"""
-    from fastvideo3.core.pricing import resolve
+    from fastvideo4.core.pricing import resolve
 
     return resolve(model, capability)
 
@@ -94,7 +94,7 @@ def price_of_route(
     写法（小写 480p/720p/1080p/2k/4k）。这里原先是硬编码 480p/720p 两档，1080P 会被
     误算成 720p —— wan3.0 系列 720p 与 1080p 差一倍，预估直接少一半。
     """
-    from fastvideo3.providers.base import resolution_tier
+    from fastvideo4.providers.base import resolution_tier
 
     pricing = load_pricing()
     models = pricing.get("models") or {}
@@ -139,7 +139,7 @@ def estimate_run_cost_cny(
     # 抄路由会估错：旧配置里 yaml 路由写着 videoretalk(¥0.08/秒)而实际通道可能是
     # wan2.2-s2v(¥0.9/秒)，差 11 倍 → 预估虚低、口型步骤中途跳闸（两条链均已删除，
     # 现在 talk 只由 talkmode 表决定，但这条判据的来源要留着）。
-    from fastvideo3.core.talkmode import provider_name
+    from fastvideo4.core.talkmode import provider_name
 
     provider = provider_name(cfg, getattr(cfg, "talk_mode", "")) if not cfg.fake else None
     if provider:
@@ -177,8 +177,8 @@ class CostLedger:
         note: str = "",
         meta: dict | None = None,
     ) -> CostEntry:
-        from fastvideo3.core import pricing
-        from fastvideo3.providers.base import resolution_tier
+        from fastvideo4.core import pricing
+        from fastvideo4.providers.base import resolution_tier
 
         merged = dict(meta or {})
         # 记账键按**实际出账的那一档**取（`wan3.0-video@720p`）：相邻档差 2 倍，
@@ -187,7 +187,7 @@ class CostLedger:
         # 已经带 `@档` 的键（m6 走 price_key_for）不再二次追加后缀。
         key = model
         if "@" not in key:
-            from fastvideo3.providers.dashscope import actual_resolution_tier
+            from fastvideo4.providers.dashscope import actual_resolution_tier
 
             usage = merged.get("usage") or {}
             # `usage.SR` 是**裸数字**（720/1080），直接丢给 `resolution_tier()` 会认不出来、

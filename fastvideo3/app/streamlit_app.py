@@ -1,9 +1,9 @@
 """Streamlit 可视化面板（教学第 6 讲观测素材）。
 
-启动：streamlit run fastvideo3/app/streamlit_app.py
+启动：streamlit run fastvideo4/app/streamlit_app.py
 功能：新建任务（只建，不花钱）、点一次补一步、事件流时间线、产物画廊、成本看板。
 
-与 Vue 面板（`fastvideo3 serve`）同一套后端命令：`new` 建任务、`step` 推进一步。
+与 Vue 面板（`fastvideo4 serve`）同一套后端命令：`new` 建任务、`step` 推进一步。
 """
 
 from __future__ import annotations
@@ -15,17 +15,17 @@ from pathlib import Path
 
 import streamlit as st
 
-from fastvideo3.core.config import OUTPUT_DIR
-from fastvideo3.core.storage import list_runs
+from fastvideo4.core.config import OUTPUT_DIR
+from fastvideo4.core.storage import list_runs
 
-st.set_page_config(page_title="FastVideo3", layout="wide")
-st.title("🎬 FastVideo3 —— 短剧生成面板（按顺序逐步完成）")
+st.set_page_config(page_title="FastVideo4", layout="wide")
+st.title("🎬 FastVideo4 —— 短剧生成面板（按顺序逐步完成）")
 
 tab1, tab2 = st.tabs(["新建任务", "运行详情"])
 
 
 def _spawn(*argv: str) -> None:
-    subprocess.Popen([sys.executable, "-m", "fastvideo3.app.cli", *argv])  # noqa: S603
+    subprocess.Popen([sys.executable, "-m", "fastvideo4.app.cli", *argv])  # noqa: S603
 
 
 with tab1:

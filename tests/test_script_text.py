@@ -9,13 +9,13 @@
 
 from __future__ import annotations
 
-from fastvideo3.core.schema import BaseInfo, Script
-from fastvideo3.core.script_text import (
+from fastvideo4.core.schema import BaseInfo, Script
+from fastvideo4.core.script_text import (
     duration_warnings,
     parse_script_text,
     render_script_text,
 )
-from fastvideo3.providers.fake import fake_script
+from fastvideo4.providers.fake import fake_script
 
 
 def _script(target: int = 30) -> Script:

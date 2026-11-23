@@ -6,15 +6,15 @@ import pytest
 import respx
 from httpx import Response
 
-from fastvideo3.providers.base import ModerationError, ProviderError, TransientAPIError
-from fastvideo3.providers.dashscope import (
+from fastvideo4.providers.base import ModerationError, ProviderError, TransientAPIError
+from fastvideo4.providers.dashscope import (
     DashScopeI2V27Provider,
     DashScopeI2VProvider,
     DashScopeR2VProvider,
     DashScopeT2IProvider,
     DashScopeWan27ImageProvider,
 )
-from fastvideo3.providers.deepseek import (
+from fastvideo4.providers.deepseek import (
     DeepSeekTextProvider,
     OpenAICompatTextProvider,
     parse_sse_data,
@@ -340,7 +340,7 @@ def test_first_media_url_accepts_object_and_list_results():
     产物就在响应里，我们却报"失败"。`_first_media_url` 是所有百炼异步任务共用的解包
     （含 wan3.0 场景片段），原来挂在 A 链测试文件里，那条链删除后搬到这里继续守着。
     """
-    from fastvideo3.providers.dashscope import _first_media_url
+    from fastvideo4.providers.dashscope import _first_media_url
 
     obj = {"results": {"video_url": "https://x/1.mp4"}}
     lst = {"results": [{"url": "https://x/2.png"}]}

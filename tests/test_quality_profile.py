@@ -10,10 +10,10 @@ economy/high/cinema 的名字，与分辨率一对一 —— 两个旋钮表达�
 
 from __future__ import annotations
 
-from fastvideo3.core import config as config_mod
-from fastvideo3.core.config import PROJECT_ROOT, load_config
-from fastvideo3.core.schema import Shot, ShotType
-from fastvideo3.utils import ffmpeg as ff
+from fastvideo4.core import config as config_mod
+from fastvideo4.core.config import PROJECT_ROOT, load_config
+from fastvideo4.core.schema import Shot, ShotType
+from fastvideo4.utils import ffmpeg as ff
 
 
 def test_deep_merge_partial_override():
@@ -131,7 +131,7 @@ def test_stable_seed_deterministic_per_scene_cast():
 
 
 def _seed(shot: Shot) -> int:
-    from fastvideo3.modules.m3_storyboard import _stable_seed
+    from fastvideo4.modules.m3_storyboard import _stable_seed
 
     return _stable_seed(shot)
 
@@ -146,9 +146,9 @@ def test_grade_filter_nonempty():
 
 async def test_m3_reference_keyframes_pass_ref_image(cfg, storage, ledger):
     """use_reference_keyframes 开启时，角色镜头首帧必须带角色立绘参考图（硬锁脸链路）。"""
-    from fastvideo3.core.schema import Asset, BaseInfo
-    from fastvideo3.modules.m3_storyboard import build_storyboard
-    from fastvideo3.providers.fake import FakeT2IProvider, fake_script
+    from fastvideo4.core.schema import Asset, BaseInfo
+    from fastvideo4.modules.m3_storyboard import build_storyboard
+    from fastvideo4.providers.fake import FakeT2IProvider, fake_script
 
     class RefT2I(FakeT2IProvider):
         supports_reference_image = True
@@ -180,9 +180,9 @@ async def test_m3_reference_keyframes_pass_ref_image(cfg, storage, ledger):
 
 async def test_m3_no_ref_when_flag_off(cfg, storage, ledger):
     """默认关闭：480P/720P 不传参考图（行为不变）。"""
-    from fastvideo3.core.schema import Asset, BaseInfo
-    from fastvideo3.modules.m3_storyboard import build_storyboard
-    from fastvideo3.providers.fake import FakeT2IProvider, fake_script
+    from fastvideo4.core.schema import Asset, BaseInfo
+    from fastvideo4.modules.m3_storyboard import build_storyboard
+    from fastvideo4.providers.fake import FakeT2IProvider, fake_script
 
     class RefT2I(FakeT2IProvider):
         supports_reference_image = True

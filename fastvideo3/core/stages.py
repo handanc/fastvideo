@@ -17,13 +17,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fastvideo3.core.config import AppConfig
-from fastvideo3.core.cost import CostLedger
-from fastvideo3.core.jobs import JobStore
-from fastvideo3.core.schema import Asset, AudioLine, BaseInfo, Script
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.providers.base import Capability, Provider, ProviderError
-from fastvideo3.providers.factory import make_fallback, make_provider, make_r2v_provider
+from fastvideo4.core.config import AppConfig
+from fastvideo4.core.cost import CostLedger
+from fastvideo4.core.jobs import JobStore
+from fastvideo4.core.schema import Asset, AudioLine, BaseInfo, Script
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.providers.base import Capability, Provider, ProviderError
+from fastvideo4.providers.factory import make_fallback, make_provider, make_r2v_provider
 
 
 @dataclass
@@ -78,7 +78,7 @@ async def stage_script(
     `inherit_from` / `persist` 见 `m1_scripting.generate_script`：改写模式必须带上旧剧本
     （搬回锚点字段）并且**不要**在这里落盘（落盘是 `scriptio.commit_script` 的事务）。
     """
-    from fastvideo3.modules.m1_scripting import generate_script
+    from fastvideo4.modules.m1_scripting import generate_script
 
     script = await generate_script(
         ctx.cfg,
@@ -110,10 +110,10 @@ async def revise_script(ctx: StageContext, old: Script, feedback: str) -> dict:
 
     返回 `{"script": dict, "text": str}`；落盘仍由 `scriptio.commit_script` 负责。
     """
-    from fastvideo3.core.draft_norm import parse_draft
-    from fastvideo3.core.script_text import render_script_text
-    from fastvideo3.core.scriptio import ReviseNotApplied, ScriptRejected
-    from fastvideo3.modules.m1_scripting import rewrite_script_text
+    from fastvideo4.core.draft_norm import parse_draft
+    from fastvideo4.core.script_text import render_script_text
+    from fastvideo4.core.scriptio import ReviseNotApplied, ScriptRejected
+    from fastvideo4.modules.m1_scripting import rewrite_script_text
 
     new_text, reasons = await rewrite_script_text(
         ctx.cfg,
@@ -141,7 +141,7 @@ async def revise_script(ctx: StageContext, old: Script, feedback: str) -> dict:
     # `make_provider`，绕过 ctx → 测试替身拦不住、真实运行还会多花一次钱。
     # `extract_looks` 自带"已有卡就跳过"，所以随后 commit_script 的补抽是空转（不重复抽）。
     if ctx.cfg.look_extraction:
-        from fastvideo3.modules.m1_scripting import extract_looks
+        from fastvideo4.modules.m1_scripting import extract_looks
 
         script = await extract_looks(
             ctx.cfg,
@@ -161,7 +161,7 @@ async def stage_assets(
     only: set[str] | None = None,
     skip_existing: bool = True,
 ) -> dict:
-    from fastvideo3.modules.m2_assets import build_assets
+    from fastvideo4.modules.m2_assets import build_assets
 
     vlm = None
     if ctx.cfg.asset_candidates > 1:  # 立绘抽卡选优（high/cinema）
@@ -189,7 +189,7 @@ async def stage_storyboard(
     only: set[str] | None = None,
     skip_existing: bool = True,
 ) -> dict:
-    from fastvideo3.modules.m3_storyboard import build_storyboard
+    from fastvideo4.modules.m3_storyboard import build_storyboard
 
     t2i = ctx.provider(Capability.T2I)  # 硬门控在 build_storyboard 内部（模块层）
     vlm = None
@@ -223,7 +223,7 @@ async def stage_storyboard(
 async def stage_audio(
     ctx: StageContext, script: Script, *, skip_existing: bool = True
 ) -> dict:
-    from fastvideo3.modules.m5_audio import synthesize_dialogues
+    from fastvideo4.modules.m5_audio import synthesize_dialogues
 
     lines = await synthesize_dialogues(
         ctx.cfg,
@@ -254,9 +254,9 @@ async def stage_scene_clips(
     每组的输入形态（参考生视频 / 首尾帧）由 `scenegroup.choose_input_mode` 三条规则
     或界面覆盖决定，见 `m4_scene.generate_scene_clips`。
     """
-    from fastvideo3.core.scenegroup import group_scenes, servable_groups
-    from fastvideo3.core.talkmode import provider_name
-    from fastvideo3.modules.m4_scene import generate_scene_clips
+    from fastvideo4.core.scenegroup import group_scenes, servable_groups
+    from fastvideo4.core.talkmode import provider_name
+    from fastvideo4.modules.m4_scene import generate_scene_clips
 
     cfg = ctx.cfg
     if getattr(cfg, "scene_clip_mode", "off") == "off":
@@ -313,7 +313,7 @@ async def stage_shots(
     *,
     only: set[str] | None = None,
 ) -> dict:
-    from fastvideo3.modules.m4_shots import generate_shots
+    from fastvideo4.modules.m4_shots import generate_shots
 
     vlm = None
     if ctx.cfg.candidates_per_shot > 1:
@@ -350,7 +350,7 @@ async def stage_talk(
     *,
     only: set[str] | None = None,
 ) -> dict:
-    from fastvideo3.modules.m6_talk import make_talk_clips
+    from fastvideo4.modules.m6_talk import make_talk_clips
 
     talk_provider = None
     if ctx.cfg.talk_mode != "audio_overlay":
@@ -395,7 +395,7 @@ async def stage_review(ctx: StageContext, script: Script, final_video: Path) -> 
     """
     from pathlib import Path as _P
 
-    from fastvideo3.modules.m8_review import review_final
+    from fastvideo4.modules.m8_review import review_final
 
     try:
         vlm = ctx.provider(Capability.VLM)
@@ -423,7 +423,7 @@ async def stage_edit(
     talks: dict[str, str],
     lines: list[AudioLine],
 ) -> dict:
-    from fastvideo3.modules.m7_edit import compose_final
+    from fastvideo4.modules.m7_edit import compose_final
 
     final = await compose_final(ctx.cfg, script, clips, talks, lines, ctx.storage)
     # 成片也进血缘：任何被用进时间线的片段/口型段重做 → 成片自动标 stale，
@@ -455,7 +455,7 @@ def scene_shot_frames(storage: RunStorage, script: Script) -> dict[str, str]:
     时间窗来自 `clips/scene_{gid}.json`（m4 落盘的组内映射）；帧缓存在 `qc/frames/`，
     片段比缓存新就重抽 —— 拿旧片段里的脸去判新片段合格不合格，是反过来的。
     """
-    from fastvideo3.utils.ffmpeg import frame_at, probe_duration
+    from fastvideo4.utils.ffmpeg import frame_at, probe_duration
 
     out: dict[str, str] = {}
     clips_dir = storage.root / "clips"
@@ -503,7 +503,7 @@ def scene_shot_frames(storage: RunStorage, script: Script) -> dict[str, str]:
 async def stage_metrics(
     ctx: StageContext, script: Script, assets: dict[str, Asset], frames: dict[str, str]
 ) -> dict:
-    from fastvideo3.modules.m9_metrics import measure_consistency
+    from fastvideo4.modules.m9_metrics import measure_consistency
 
     if ctx.cfg.consistency_metric == "off":
         return {}

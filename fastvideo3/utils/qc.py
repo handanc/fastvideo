@@ -25,7 +25,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from fastvideo3.utils import ffmpeg as ff
+from fastvideo4.utils import ffmpeg as ff
 
 # ── 判据阈值（全部可复算；改这里等于改验收标准，要在 INTEGRATION 记一笔）──
 BLACK_LUMA = 16.0  # 帧平均亮度（0-255）低于此值算黑帧

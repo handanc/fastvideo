@@ -73,7 +73,7 @@ async function probe() {
   } catch (e) {
     const msg = String((e && e.message) || e)
     probeError.value = /\b(404|405)\b/.test(msg)
-      ? '后端还是旧版本（没有探活接口）：重启 `fastvideo3 serve` 后刷新页面'
+      ? '后端还是旧版本（没有探活接口）：重启 `fastvideo4 serve` 后刷新页面'
       : msg
     probeResult.value = null
   } finally {
@@ -97,7 +97,7 @@ async function save() {
   } catch (e) {
     const msg = String((e && e.message) || e)
     error.value = /\b(404|405)\b/.test(msg)
-      ? '后端还是旧版本（没有 /api/api-keys 这个接口）：重启 `fastvideo3 serve` 后刷新页面'
+      ? '后端还是旧版本（没有 /api/api-keys 这个接口）：重启 `fastvideo4 serve` 后刷新页面'
       : `保存失败：${msg}`
   } finally {
     busy.value = false
@@ -127,7 +127,7 @@ async function save() {
       </button>
     </div>
     <div v-if="noBackend" class="keyNote keyWarn">
-      ⚠ 后端没有这个接口：重启 <code>fastvideo3 serve</code>（或 <code>npm run dev</code> 的代理目标）
+      ⚠ 后端没有这个接口：重启 <code>fastvideo4 serve</code>（或 <code>npm run dev</code> 的代理目标）
       后刷新页面
     </div>
     <div v-else-if="error" class="keyNote keyWarn">⚠ {{ error }}</div>

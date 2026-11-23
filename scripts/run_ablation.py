@@ -23,15 +23,15 @@ import json
 import sys
 import time
 
-from fastvideo3.core.config import OUTPUT_DIR, load_config
-from fastvideo3.core.schema import BaseInfo, Script
-from fastvideo3.core.stages import build_context
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.modules.m2_assets import build_assets
-from fastvideo3.modules.m3_storyboard import build_storyboard
-from fastvideo3.modules.m9_metrics import compare_table
-from fastvideo3.providers.base import Capability
-from fastvideo3.providers.factory import make_fallback
+from fastvideo4.core.config import OUTPUT_DIR, load_config
+from fastvideo4.core.schema import BaseInfo, Script
+from fastvideo4.core.stages import build_context
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.modules.m2_assets import build_assets
+from fastvideo4.modules.m3_storyboard import build_storyboard
+from fastvideo4.modules.m9_metrics import compare_table
+from fastvideo4.providers.base import Capability
+from fastvideo4.providers.factory import make_fallback
 
 for _stream in (sys.stdout, sys.stderr):  # Windows GBK 控制台 → UTF-8（与 CLI 同款容错）
     try:
@@ -43,7 +43,7 @@ DEFAULT_ARMS = ["consistency_off", "ref_only", "ref_plus_r2v", "full_cinema"]
 
 
 async def _gen_script(cfg, topic: str, storage: RunStorage) -> dict:
-    from fastvideo3.modules.m1_scripting import generate_script
+    from fastvideo4.modules.m1_scripting import generate_script
 
     ctx = build_context(cfg, storage)
     script = await generate_script(
@@ -98,8 +98,8 @@ async def _run_arm(
     if with_shots:
         # 只有跑到 m4 才会有 shot_gen{route} 事件 —— r2v_ratio 列在 keyframes-only
         # 形态下是 None（未测，不是 0）。真实消融建议开：i2v 480P×短时长成本可控。
-        from fastvideo3.modules.m4_shots import generate_shots
-        from fastvideo3.providers.factory import make_r2v_provider
+        from fastvideo4.modules.m4_shots import generate_shots
+        from fastvideo4.providers.factory import make_r2v_provider
 
         await generate_shots(
             cfg,
@@ -125,7 +125,7 @@ async def _run_arm(
 
 
 async def _measure(cfg, script, assets, frames, storage, ctx, vlm) -> dict:
-    from fastvideo3.modules.m9_metrics import measure_consistency
+    from fastvideo4.modules.m9_metrics import measure_consistency
 
     return await measure_consistency(
         cfg, script, assets, frames, storage, ctx.ledger, vlm=vlm  # type: ignore[arg-type]

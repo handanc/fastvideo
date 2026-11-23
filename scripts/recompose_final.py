@@ -27,9 +27,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fastvideo3.core.config import load_config  # noqa: E402
-from fastvideo3.core.schema import AudioLine, Script  # noqa: E402
-from fastvideo3.core.storage import RunStorage  # noqa: E402
+from fastvideo4.core.config import load_config  # noqa: E402
+from fastvideo4.core.schema import AudioLine, Script  # noqa: E402
+from fastvideo4.core.storage import RunStorage  # noqa: E402
 
 
 def _reconstruct_drivers(storage: RunStorage, talk_ids: list[str]) -> list[str]:
@@ -39,7 +39,7 @@ def _reconstruct_drivers(storage: RunStorage, talk_ids: list[str]) -> list[str]:
     按段号顺序零间隔拼接 —— 与拼接出的视频时间轴一致，不能用整镜头混音
     （它多插了段间换气，会让后段口型与声音错位）。
     """
-    from fastvideo3.utils.audio import concat_wavs
+    from fastvideo4.utils.audio import concat_wavs
 
     made: list[str] = []
     for sid in talk_ids:
@@ -91,7 +91,7 @@ def main() -> int:
     # 音轨来源与 run 级模型选择也要按 meta 恢复 —— 下面判断"该不该保留模型原声"用的就是
     # cfg.voice_source，读成 .env/yaml 的默认值会把这条 run 的听感改错（m7 换不换母带看它）
     cfg.voice_source = meta.get("voice_source") or cfg.voice_source
-    from fastvideo3.core.config import apply_run_overrides
+    from fastvideo4.core.config import apply_run_overrides
 
     apply_run_overrides(cfg, meta)
 
@@ -139,7 +139,7 @@ def main() -> int:
 
     import asyncio
 
-    from fastvideo3.modules.m7_edit import compose_final, subtitle_sidecar_path
+    from fastvideo4.modules.m7_edit import compose_final, subtitle_sidecar_path
 
     final = asyncio.run(compose_final(cfg, script, clips, talks, lines, storage))
     srt = subtitle_sidecar_path(storage)

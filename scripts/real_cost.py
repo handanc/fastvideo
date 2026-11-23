@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fastvideo3.core import billing  # noqa: E402
+from fastvideo4.core import billing  # noqa: E402
 
 
 def _last_cycle() -> str:

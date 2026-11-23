@@ -2,7 +2,7 @@
 
 from typer.testing import CliRunner
 
-from fastvideo3.app.cli import app
+from fastvideo4.app.cli import app
 
 runner = CliRunner()
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from fastvideo3.utils import lipsync as ls
+from fastvideo4.utils import lipsync as ls
 
 FPS = 6
 N_FRAMES = 48
@@ -22,7 +22,7 @@ N_FRAMES = 48
 
 def _write_video(path: Path, mouth_on: list[bool], seed_flip: bool) -> None:
     """嘴部框在 mouth_on 段逐帧变化（=说话时嘴动），否则静止。"""
-    from fastvideo3.utils.ffmpeg import run_ffmpeg
+    from fastvideo4.utils.ffmpeg import run_ffmpeg
 
     d = path.parent / f"_src_{path.stem}"
     d.mkdir(parents=True, exist_ok=True)
@@ -104,10 +104,10 @@ def test_scene_clip_counts_as_lipsync_coverage(tmp_path):
     """
     import json
 
-    from fastvideo3.core.config import AppConfig
-    from fastvideo3.core.progress import lipsync_coverage
-    from fastvideo3.core.schema import BaseInfo, DialogueLine, Scene, Script, Shot, ShotType
-    from fastvideo3.core.storage import RunStorage
+    from fastvideo4.core.config import AppConfig
+    from fastvideo4.core.progress import lipsync_coverage
+    from fastvideo4.core.schema import BaseInfo, DialogueLine, Scene, Script, Shot, ShotType
+    from fastvideo4.core.storage import RunStorage
 
     storage = RunStorage("run_cov", root=tmp_path)
     script = Script(

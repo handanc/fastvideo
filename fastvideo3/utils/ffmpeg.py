@@ -19,7 +19,7 @@ def find_ffmpeg() -> str:
     global _cached_exe
     if _cached_exe:
         return _cached_exe
-    from fastvideo3.core.runtime import ffmpeg_source
+    from fastvideo4.core.runtime import ffmpeg_source
 
     # 找不到就抛 RuntimeError（消息里带 `provision` 指令）。不静默回退：
     # 一条 run 要调 ffmpeg 几十次，宁可在第一步就说清楚，也不要跑到 m7 才炸。

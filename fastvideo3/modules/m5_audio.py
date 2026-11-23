@@ -10,14 +10,14 @@ import asyncio
 import re
 from pathlib import Path
 
-from fastvideo3.core import pause
-from fastvideo3.core.config import AppConfig
-from fastvideo3.core.cost import CostLedger
-from fastvideo3.core.schema import AudioLine, Script
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.providers.base import ProviderError, TTSProvider
-from fastvideo3.utils.audio import wav_duration
-from fastvideo3.utils.ffmpeg import speed_up_audio
+from fastvideo4.core import pause
+from fastvideo4.core.config import AppConfig
+from fastvideo4.core.cost import CostLedger
+from fastvideo4.core.schema import AudioLine, Script
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.providers.base import ProviderError, TTSProvider
+from fastvideo4.utils.audio import wav_duration
+from fastvideo4.utils.ffmpeg import speed_up_audio
 
 _MAX_RETRY = 2
 
@@ -141,7 +141,7 @@ async def synthesize_dialogues(
     必要：cinema 档 cosyvoice 按字符计费（¥2/万字符），逐步模式反复点"场景视频"
     这一步会把同一批台词反复 TTS 烧钱；economy 的 edge-tts 免费但也没必要重跑。
     """
-    from fastvideo3.core.schema import script_fingerprint
+    from fastvideo4.core.schema import script_fingerprint
 
     # 音色整片一次性分配：同性别内轮流取音色（避免两个主角撞同一把嗓子），
     # 且同一剧本永远得到同一份分配（可复现、反复点击不会换声）。

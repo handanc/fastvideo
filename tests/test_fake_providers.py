@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from fastvideo3.core.schema import BaseInfo, ReviewResult, Script, Shot
-from fastvideo3.providers import fake
-from fastvideo3.providers.base import Capability, TransientAPIError
-from fastvideo3.utils.audio import wav_duration
+from fastvideo4.core.schema import BaseInfo, ReviewResult, Script, Shot
+from fastvideo4.providers import fake
+from fastvideo4.providers.base import Capability, TransientAPIError
+from fastvideo4.utils.audio import wav_duration
 
 
 async def test_fake_text_script_and_review():

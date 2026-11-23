@@ -30,11 +30,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fastvideo3.core.config import load_config  # noqa: E402
-from fastvideo3.utils.lipsync import (  # noqa: E402
+from fastvideo4.core.config import load_config  # noqa: E402
+from fastvideo4.utils.lipsync import (  # noqa: E402
     MOUTH_BOX as ls_MOUTH_BOX,
 )
-from fastvideo3.utils.lipsync import (
+from fastvideo4.utils.lipsync import (
     lipsync_diag,
     locate_boxes,
     scan_lipsync,
@@ -44,7 +44,7 @@ from fastvideo3.utils.lipsync import (
 
 def _clip_audio(clip: Path, workdir: Path) -> Path | None:
     """从 mp4 里取出自带音轨（16k 单声道 wav）；无音轨返回 None。"""
-    from fastvideo3.utils.ffmpeg import run_ffmpeg
+    from fastvideo4.utils.ffmpeg import run_ffmpeg
 
     out = workdir / f"{clip.stem}_audio.wav"
     if out.exists():
@@ -81,8 +81,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
     print("|---|---|---|---|---|---|---|")
     vlm = None
     if args.with_vlm:
-        from fastvideo3.providers.base import Capability
-        from fastvideo3.providers.factory import make_provider
+        from fastvideo4.providers.base import Capability
+        from fastvideo4.providers.factory import make_provider
 
         try:
             vlm = make_provider(Capability.VLM, load_config(resolution=args.resolution))
@@ -125,8 +125,8 @@ def cmd_sheet(args: argparse.Namespace) -> int:
 
     from PIL import Image, ImageDraw
 
-    from fastvideo3.utils.ffmpeg import extract_frames
-    from fastvideo3.utils.lipsync import audio_rms_series, locate_boxes, pearson
+    from fastvideo4.utils.ffmpeg import extract_frames
+    from fastvideo4.utils.lipsync import audio_rms_series, locate_boxes, pearson
 
     run_dir = Path(args.run_dir)
     shot = args.shot
@@ -143,8 +143,8 @@ def cmd_sheet(args: argparse.Namespace) -> int:
     work.mkdir(exist_ok=True)
     boxes = None
     if args.with_vlm:
-        from fastvideo3.providers.base import Capability
-        from fastvideo3.providers.factory import make_provider
+        from fastvideo4.providers.base import Capability
+        from fastvideo4.providers.factory import make_provider
 
         try:
             vlm = make_provider(Capability.VLM, load_config(resolution=args.resolution))

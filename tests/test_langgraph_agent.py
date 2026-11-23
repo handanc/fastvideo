@@ -13,10 +13,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastvideo3.core import progress as prog
-from fastvideo3.core.schema import BaseInfo
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.graph import run_graph
+from fastvideo4.core import progress as prog
+from fastvideo4.core.schema import BaseInfo
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.graph import run_graph
 
 
 def _mk_run(outdir: Path, rid: str) -> RunStorage:
@@ -61,8 +61,8 @@ async def test_graph_runs_to_final_and_stops_at_human_gate(cfg, outdir):
     assert payload.get("final") == "final/final.mp4"
     assert (storage.root / "final" / "final.mp4").is_file(), "图必须真的把片子拼出来"
 
-    from fastvideo3.core.scenegroup import group_scenes
-    from fastvideo3.core.schema import Script
+    from fastvideo4.core.scenegroup import group_scenes
+    from fastvideo4.core.schema import Script
 
     groups = group_scenes(Script.model_validate(storage.load_json("script.json")))
     made = sorted(p.name[len("scene_"):-len(".mp4")] for p in (storage.root / "clips").glob("scene_*.mp4"))
@@ -78,8 +78,8 @@ async def test_gate_resume_finish_ends_and_redo_marks_group_stale(cfg, outdir):
     storage = _mk_run(outdir, rid)
     await run_graph(cfg, rid, root=outdir, cfg_from_meta=False)
 
-    from fastvideo3.core.scenegroup import group_scenes
-    from fastvideo3.core.schema import Script
+    from fastvideo4.core.scenegroup import group_scenes
+    from fastvideo4.core.schema import Script
 
     gid = group_scenes(Script.model_validate(storage.load_json("script.json")))[0].group_id
     clip_rel = f"clips/scene_{gid}.mp4"
@@ -129,7 +129,7 @@ def test_cli_group_name_resolution_is_tolerant_but_never_silent():
 
     静默忽略参数是本项目最难查的一类失败：用户以为重出了，其实什么都没发生。
     """
-    from fastvideo3.app.cli import _resolve_groups
+    from fastvideo4.app.cli import _resolve_groups
 
     valid = ["s1", "s2", "s3"]
     assert _resolve_groups("s2", valid)[0] == ["s2"]
@@ -149,9 +149,9 @@ async def test_graph_resume_after_crash_does_not_resubmit(cfg, outdir, monkeypat
     # 先跑到场景片段这步，再人为把任务状态改成"在途"，模拟服务重启
     await run_graph(cfg, rid, root=outdir, cfg_from_meta=False)
 
-    from fastvideo3.core.jobs import JobStore
-    from fastvideo3.core.scenegroup import group_scenes
-    from fastvideo3.core.schema import JobStatus, Script
+    from fastvideo4.core.jobs import JobStore
+    from fastvideo4.core.scenegroup import group_scenes
+    from fastvideo4.core.schema import JobStatus, Script
 
     jobs = JobStore(cfg.db_url, run_id=rid)
     gid = group_scenes(Script.model_validate(storage.load_json("script.json")))[0].group_id
@@ -161,7 +161,7 @@ async def test_graph_resume_after_crash_does_not_resubmit(cfg, outdir, monkeypat
     jobs.update(job_id, status=JobStatus.RUNNING, output_uri="ext-existing-123")
 
     submits: list[str] = []
-    import fastvideo3.modules.m4_scene as m4
+    import fastvideo4.modules.m4_scene as m4
 
     real = m4.poll_until_done
 
@@ -178,12 +178,12 @@ async def test_graph_resume_after_crash_does_not_resubmit(cfg, outdir, monkeypat
     # 强制该组作废，逼生成函数真的走一次提交/轮询分支
     storage.mark_stale([f"clips/scene_{gid}.mp4"], "测试：模拟中断恢复")
 
-    from fastvideo3.core.stages import build_context, stage_scene_clips
+    from fastvideo4.core.stages import build_context, stage_scene_clips
 
     script = Script.model_validate(storage.load_json("script.json"))
     ctx = build_context(cfg, storage)
     spy_submit_calls: list[int] = []
-    provider = ctx.provider(__import__("fastvideo3.providers.base", fromlist=["Capability"]).Capability.TALK)
+    provider = ctx.provider(__import__("fastvideo4.providers.base", fromlist=["Capability"]).Capability.TALK)
     orig_submit = provider.submit
 
     async def counted_submit(*a, **kw):
@@ -208,8 +208,8 @@ async def test_graph_path_matches_step_path_products(cfg, outdir):
     这条是"图只是薄适配器、没有第二份实现"的证据 —— 上一版图路径被删就是因为两份实现漂移，
     现在用差分把它钉住：一旦图里长出私有能力（多画一张帧、多出一个逐镜头片段），这里就红。
     """
-    from fastvideo3.app.cli import _run_step
-    from fastvideo3.core.stages import build_context
+    from fastvideo4.app.cli import _run_step
+    from fastvideo4.core.stages import build_context
 
     rid_step, rid_graph = "run_parity_step", "run_parity_graph"
     s1 = _mk_run(outdir, rid_step)

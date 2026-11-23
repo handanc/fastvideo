@@ -15,8 +15,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from fastvideo3.core.schema import BaseInfo, ReviewResult, Script
-from fastvideo3.providers.base import (
+from fastvideo4.core.schema import BaseInfo, ReviewResult, Script
+from fastvideo4.providers.base import (
     I2VProvider,
     ImageResult,
     ModelT,
@@ -29,8 +29,8 @@ from fastvideo3.providers.base import (
     VLMProvider,
     ref_paths,
 )
-from fastvideo3.utils.ffmpeg import image_to_video
-from fastvideo3.utils.image import make_placeholder_image
+from fastvideo4.utils.ffmpeg import image_to_video
+from fastvideo4.utils.image import make_placeholder_image
 
 # 调色板：不同 prompt 生成不同颜色，便于肉眼区分"资产"
 _PALETTE = ["#264653", "#2a9d8f", "#e9c46a", "#f4a261", "#e76f51", "#6d597a", "#355070"]
@@ -263,7 +263,7 @@ class FakeT2IProvider(T2IProvider):
     ) -> ImageResult:
         if self.fail_first > 0:
             self.fail_first -= 1
-            from fastvideo3.providers.base import TransientAPIError
+            from fastvideo4.providers.base import TransientAPIError
 
             raise TransientAPIError("fake transient failure")
         self.last_refs = ref_paths(ref_image)
@@ -287,7 +287,7 @@ class _FakeVideoJobMixin:
     def _fail_if_needed(self) -> None:
         if self._fail_first > 0:
             self._fail_first -= 1
-            from fastvideo3.providers.base import TransientAPIError
+            from fastvideo4.providers.base import TransientAPIError
 
             raise TransientAPIError("fake transient failure")
 

@@ -10,10 +10,10 @@ from __future__ import annotations
 import wave
 from pathlib import Path
 
-from fastvideo3.core.schema import AudioLine
-from fastvideo3.providers.base import Capability
-from fastvideo3.providers.factory import make_fallback
-from fastvideo3.utils.audio import concat_wavs, normalize_wav, wav_duration
+from fastvideo4.core.schema import AudioLine
+from fastvideo4.providers.base import Capability
+from fastvideo4.providers.factory import make_fallback
+from fastvideo4.utils.audio import concat_wavs, normalize_wav, wav_duration
 
 
 def _wav(path: Path, sec: float = 0.2, rate: int = 44100) -> Path:
@@ -43,7 +43,7 @@ def test_normalize_wav_keeps_duration_and_produces_file(tmp_path):
 
 
 def test_shot_wav_returns_normalized_mix(tmp_path, storage):
-    from fastvideo3.modules.m6_talk import _shot_wav
+    from fastvideo4.modules.m6_talk import _shot_wav
 
     lines = [
         AudioLine(line_id="s1_0", shot_id="s1", character_id="c1", text="甲",
@@ -82,7 +82,7 @@ def test_edge_tts_emotion_maps_to_prosody(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "edge_tts", stub)
 
     # 绕过真 ffmpeg：把 mp3→wav 的转换替换成直接造 wav
-    import fastvideo3.utils.ffmpeg as ff
+    import fastvideo4.utils.ffmpeg as ff
 
     def fake_run(args, **kw):
         _wav(Path(args[-1]))
@@ -90,14 +90,14 @@ def test_edge_tts_emotion_maps_to_prosody(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ff, "run_ffmpeg", fake_run)
 
-    from fastvideo3.providers.edge_tts import EdgeTTSProvider
+    from fastvideo4.providers.edge_tts import EdgeTTSProvider
 
     dest = tmp_path / "line.wav"
     asyncio.run(
         EdgeTTSProvider().synthesize("测试台词", voice="zh-CN-YunxiNeural",
                                      emotion="angry", dest=dest)
     )
-    from fastvideo3.providers.edge_tts import edge_prosody
+    from fastvideo4.providers.edge_tts import edge_prosody
 
     # 断言跟着表走，不写死数字：写死过一次，改表时测试全红却没人知道哪个才是对的
     assert (captured["rate"], captured["pitch"]) == edge_prosody("angry")
@@ -112,7 +112,7 @@ def test_fallback_provider_ignores_env_override(cfg):
     口型现在根本没有兜底通道）；性质本身与通道无关，所以搬到仍在用的 t2i 兜底上继续守：
     `make_fallback` 走的是 `overrides={}`，兜底只能拿 yaml 里它自己那个模型名。
     """
-    from fastvideo3.core.config import ProviderRouting
+    from fastvideo4.core.config import ProviderRouting
 
     cfg.fake = False  # make_fallback 在 fake 模式下恒返回 None（Fake 全家桶不需要兜底）
     cfg.routing["t2i"] = ProviderRouting(default="dashscope_wan27_image", fallback="dashscope_t2i")

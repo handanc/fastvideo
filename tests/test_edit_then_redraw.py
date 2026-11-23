@@ -20,13 +20,13 @@ import pytest
 from fastapi.testclient import TestClient
 from test_step_mode import _mk_run  # 复用"剧本+资产+首帧已生成"的 run 搭建
 
-import fastvideo3.app.api as api_mod
-import fastvideo3.core.stages as stages_mod
-from fastvideo3.core import progress as prog
-from fastvideo3.core.stages import build_context
-from fastvideo3.core.storage import RunStorage
-from fastvideo3.providers.base import Capability
-from fastvideo3.providers.fake import (
+import fastvideo4.app.api as api_mod
+import fastvideo4.core.stages as stages_mod
+from fastvideo4.core import progress as prog
+from fastvideo4.core.stages import build_context
+from fastvideo4.core.storage import RunStorage
+from fastvideo4.providers.base import Capability
+from fastvideo4.providers.fake import (
     FakeI2VProvider,
     FakeT2IProvider,
     FakeTalkProvider,
@@ -121,7 +121,7 @@ async def test_edited_descriptions_reach_the_redraw_prompts(client, outdir, cfg,
             return FakeI2VProvider()
         if cap is Capability.TALK:
             return FakeTalkProvider()
-        from fastvideo3.providers.factory import make_provider as real
+        from fastvideo4.providers.factory import make_provider as real
 
         return real(cap, cfg_, work_dir)
 
@@ -130,7 +130,7 @@ async def test_edited_descriptions_reach_the_redraw_prompts(client, outdir, cfg,
     storage = RunStorage(rid, root=outdir)
     meta = storage.load_json("run_meta.json")
     ctx = build_context(cfg, storage)
-    from fastvideo3.app.cli import _run_step
+    from fastvideo4.app.cli import _run_step
 
     steps = []
     for _ in range(4):
@@ -167,7 +167,7 @@ async def test_edited_description_redraws_without_deleting(client, outdir, cfg, 
             return spy
         if cap is Capability.VLM:
             return FakeVLMProvider()
-        from fastvideo3.providers.factory import make_provider as real
+        from fastvideo4.providers.factory import make_provider as real
 
         return real(cap, cfg_, work_dir)
 
@@ -175,7 +175,7 @@ async def test_edited_description_redraws_without_deleting(client, outdir, cfg, 
     storage = RunStorage(rid, root=outdir)
     meta = storage.load_json("run_meta.json")
     ctx = build_context(cfg, storage)
-    from fastvideo3.app.cli import _run_step
+    from fastvideo4.app.cli import _run_step
 
     rep = prog.compute_progress(storage, meta, cfg)
     pending = set(rep.next.missing or []) | {

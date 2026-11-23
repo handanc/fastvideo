@@ -16,14 +16,14 @@ from __future__ import annotations
 
 import pytest
 
-from fastvideo3.core.schema import BaseInfo, Script
-from fastvideo3.core.script_text import (
+from fastvideo4.core.schema import BaseInfo, Script
+from fastvideo4.core.script_text import (
     quoted_spans,
     render_script_text,
     revise_landed,
     script_signature,
 )
-from fastvideo3.providers.fake import FakeTextProvider, fake_script
+from fastvideo4.providers.fake import FakeTextProvider, fake_script
 
 FEEDBACK = '给 char_queen 添加对话，女儿国国王对唐僧说：「圣僧何不留下，与我共享繁华」'
 
@@ -41,7 +41,7 @@ def test_render_parse_roundtrip_survives_a_bracketed_title():
     非贪婪正则把 title 切成「《唐僧动凡心吗」、rest 以「》 · 」开头 → 风格被当成时长、
     时长被当成画幅，整份稿子判为格式错误。于是"✎ 编辑剧本稿"和按 prompt 改写**都**保存不了。
     """
-    from fastvideo3.core.script_text import parse_script_text
+    from fastvideo4.core.script_text import parse_script_text
 
     s = _script()
     s.title = "《唐僧动凡心吗》"  # 模型的真实输出形状
@@ -129,7 +129,7 @@ def test_revise_landed_passes_when_line_added():
     target = next(
         sh.shot_id for sh in old.all_shots() if sh.type.value == "dialogue"
     )
-    from fastvideo3.core.script_text import parse_script_text
+    from fastvideo4.core.script_text import parse_script_text
 
     new_text = _add_dialogue(text, target, old.characters[-1].character_id, "圣僧何不留下，与我共享繁华")
     new, problems = parse_script_text(new_text, old)
@@ -141,7 +141,7 @@ def test_revise_landed_passes_when_line_added():
 # ─────────────────── 改写流程：空转必须失败，不能报"已重写" ───────────────────
 async def test_rewrite_reports_noop_instead_of_claiming_success(cfg, storage, ledger):
     """模型把稿子原样吐回来（实测形状）→ 返回未落地原因，**不**当成成功。"""
-    from fastvideo3.modules.m1_scripting import rewrite_script_text
+    from fastvideo4.modules.m1_scripting import rewrite_script_text
 
     old = _script()
     text = render_script_text(old)
@@ -153,8 +153,8 @@ async def test_rewrite_reports_noop_instead_of_claiming_success(cfg, storage, le
 
 
 async def test_rewrite_accepts_a_real_edit(cfg, storage, ledger):
-    from fastvideo3.core.script_text import parse_script_text
-    from fastvideo3.modules.m1_scripting import rewrite_script_text
+    from fastvideo4.core.script_text import parse_script_text
+    from fastvideo4.modules.m1_scripting import rewrite_script_text
 
     old = _script()
     text = render_script_text(old)
@@ -177,9 +177,9 @@ async def test_rewrite_accepts_a_real_edit(cfg, storage, ledger):
 
 async def test_revise_script_raises_and_writes_nothing_on_noop(cfg, storage, ledger, jobs):
     """端到端：`stages.revise_script` 在空转时抛 `ReviseNotApplied`，旧剧本原样保留。"""
-    from fastvideo3.core import stages
-    from fastvideo3.core.scriptio import ReviseNotApplied
-    from fastvideo3.providers.base import Capability
+    from fastvideo4.core import stages
+    from fastvideo4.core.scriptio import ReviseNotApplied
+    from fastvideo4.providers.base import Capability
 
     old = _script()
     storage.save_json("script.json", old.model_dump(mode="json"))
@@ -197,8 +197,8 @@ async def test_revise_script_raises_and_writes_nothing_on_noop(cfg, storage, led
 
 async def test_revise_script_keeps_title_and_base_info(cfg, storage, ledger, jobs):
     """title / base_info 由**解析器**从旧剧本继承 —— 模型再也无法顺手清空它。"""
-    from fastvideo3.core import stages
-    from fastvideo3.providers.base import Capability
+    from fastvideo4.core import stages
+    from fastvideo4.providers.base import Capability
 
     old = _script()
     cid = old.characters[-1].character_id

@@ -1,4 +1,4 @@
-from fastvideo3.core.prompts import render
+from fastvideo4.core.prompts import render
 
 
 def test_render_replaces_variables():

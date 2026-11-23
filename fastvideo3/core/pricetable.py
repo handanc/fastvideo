@@ -1,4 +1,4 @@
-"""查官网价目页 → 回写 `pyproject.toml` 的 `[tool.fastvideo3.pricing]`。
+"""查官网价目页 → 回写 `pyproject.toml` 的 `[tool.fastvideo4.pricing]`。
 
 为什么要把取价变成一条命令而不是让人抄：单价抄错一档已经很难查了 —— 本项目真的
 发生过 `videoretalk` 按 ¥0.50/秒 记而官方是 ¥0.08/秒（差 6 倍，直接扭曲过口型通道
@@ -28,7 +28,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
-from fastvideo3.core.config import PROJECT_ROOT
+from fastvideo4.core.config import PROJECT_ROOT
 
 PRICING_URL = "https://help.aliyun.com/zh/model-studio/model-pricing"
 
@@ -309,12 +309,12 @@ def fetch(url: str = PRICING_URL, timeout: float = 60.0) -> tuple[str, str | Non
         return "", f"{type(e).__name__}: {e}"
 
 
-BEGIN = "# BEGIN fastvideo3-pricing（由 fastvideo3 refresh-prices 维护，别手改格式）"
-END = "# END fastvideo3-pricing"
+BEGIN = "# BEGIN fastvideo4-pricing（由 fastvideo4 refresh-prices 维护，别手改格式）"
+END = "# END fastvideo4-pricing"
 
 
 def render_block(doc: dict[str, Any]) -> str:
-    from fastvideo3.core.pricing import render_table
+    from fastvideo4.core.pricing import render_table
 
     return f"{BEGIN}\n{render_table(doc)}{END}\n"
 
@@ -330,7 +330,7 @@ def write_table(doc: dict[str, Any], path: Path | None = None) -> tuple[str, str
     span = re.search(re.escape(BEGIN) + r".*?" + re.escape(END) + r"[^\S\n]*\n?", raw, re.S)
     if span:
         updated = raw[: span.start()] + block + raw[span.end():]
-        what = "已替换 [tool.fastvideo3.pricing] 段"
+        what = "已替换 [tool.fastvideo4.pricing] 段"
     else:
         updated = raw.rstrip("\n") + "\n\n" + block
         what = "pyproject.toml 里原先没有单价表，已追加到末尾"

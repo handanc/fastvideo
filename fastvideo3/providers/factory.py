@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastvideo3.core.config import AppConfig, ProviderRouting
-from fastvideo3.core.schema import BaseInfo
-from fastvideo3.providers.base import Capability, Provider, ProviderError
+from fastvideo4.core.config import AppConfig, ProviderRouting
+from fastvideo4.core.schema import BaseInfo
+from fastvideo4.providers.base import Capability, Provider, ProviderError
 
 
 def _talk_route(cfg: AppConfig, route: ProviderRouting) -> ProviderRouting:
@@ -21,7 +21,7 @@ def _talk_route(cfg: AppConfig, route: ProviderRouting) -> ProviderRouting:
     映射表与形态相容规则见 `core/talkmode.py`：yaml 路由仍然可以**换供应商**（例如把 B 链的
     videoretalk 换成同形态的另一条链），但只在该供应商吃同样输入形态时生效。
     """
-    from fastvideo3.core import talkmode
+    from fastvideo4.core import talkmode
 
     # **例外**：`.env` 里显式写了 `FV3_TALK_MODEL=<模型名>` 时按它装配，本表不否决。
     # 理由：那是专家级的主动覆盖（试新模型/换端点），而且 `_auto_route` 已把 provider 改道到
@@ -173,7 +173,7 @@ def make_fallback(
 
 
 def _make_fake(capability: Capability, cfg: AppConfig, work_dir: Path | None) -> Provider:
-    from fastvideo3.providers import fake
+    from fastvideo4.providers import fake
 
     if capability is Capability.TEXT:
         return fake.FakeTextProvider(base_info=BaseInfo(topic="fake"))
@@ -197,7 +197,7 @@ def _auto_route(name: str, cap_key: str, overrides: dict[str, str]) -> str:
     把 t2i 模型改成 qwen-image-3.0 而 provider 仍是 dashscope_t2i（万相异步
     text2image 端点）时，请求必然 400。协议推断不出来时**不改道**（不猜）。
     """
-    from fastvideo3.providers import protocols
+    from fastvideo4.providers import protocols
 
     model = overrides.get(cap_key)
     if not model:
@@ -227,7 +227,7 @@ def _video_cost_cap(cfg: AppConfig, provider: Provider) -> None:
     百炼 wan 系同一个模型 480P/720P/1080P 差到 3 倍（见 pyproject 的 worst_case 表），
     按低档校验等于红线形同虚设。
     """
-    from fastvideo3.core.cost import price_of
+    from fastvideo4.core.cost import price_of
 
     key = provider.worst_case_price_key()
     price = price_of(key, provider.capability.value, 1.0)
@@ -269,7 +269,7 @@ def _wan30_talk_model(cfg: AppConfig) -> str:
     形态（真实 400，原文存在 tests/test_talk_fallback.py）。所以判据是"该模型在 talk 能力上
     解析出来的协议是不是 `TALK_SCRIPTED`"，不是名字前缀匹配。
     """
-    from fastvideo3.providers import protocols
+    from fastvideo4.providers import protocols
 
     ov = (cfg.model_overrides or {}).get("talk")
     if ov:
@@ -287,7 +287,7 @@ def _build_real(
     cap_key: str | None = None,
     overrides: dict[str, str] | None = None,
 ) -> Provider:
-    from fastvideo3.providers import dashscope, deepseek, edge_tts
+    from fastvideo4.providers import dashscope, deepseek, edge_tts
 
     cap_key = cap_key or capability.value
     ov = cfg.model_overrides if overrides is None else overrides

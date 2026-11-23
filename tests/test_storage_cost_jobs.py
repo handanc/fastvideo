@@ -1,9 +1,9 @@
 """存储 / 成本台账 / 任务台账测试。"""
 
-from fastvideo3.core.cost import CostLedger
-from fastvideo3.core.jobs import JobStore
-from fastvideo3.core.schema import JobStatus, RunJob
-from fastvideo3.core.storage import RunStorage, list_runs
+from fastvideo4.core.cost import CostLedger
+from fastvideo4.core.jobs import JobStore
+from fastvideo4.core.schema import JobStatus, RunJob
+from fastvideo4.core.storage import RunStorage, list_runs
 
 
 def test_run_storage_layout_and_json(storage):
@@ -74,12 +74,12 @@ def test_price_table_round_trips_without_losing_entries():
     """
     import tomllib
 
-    from fastvideo3.core import pricing
-    from fastvideo3.core.pricing import render_table
+    from fastvideo4.core import pricing
+    from fastvideo4.core.pricing import render_table
 
     doc = pricing.raw_table()
     assert doc.get("models"), "单价表必须在 pyproject.toml 里（记账的单价来源）"
-    again = tomllib.loads(render_table(doc))["tool"]["fastvideo3"]["pricing"]
+    again = tomllib.loads(render_table(doc))["tool"]["fastvideo4"]["pricing"]
     assert set(again["models"]) == set(doc["models"]), "渲染/解析往返丢了模型条目"
     assert set(again["worst_case"]) == set(doc["worst_case"]), "渲染/解析往返丢了 worst_case 键"
     for name, spec in doc["models"].items():
@@ -94,13 +94,13 @@ def test_pricing_covers_all_configured_models():
 
     缺失条目会静默回退到能力默认价（`cost.price_of`），如 wan2.2-i2v-plus 曾按
     ¥0.11/s 记账（实际 ¥0.70/s），预算熔断严重失真。此测试守住护栏本身。
-    表已搬到 `pyproject.toml` 的 `[tool.fastvideo3.pricing]`，所以读合并视图
+    表已搬到 `pyproject.toml` 的 `[tool.fastvideo4.pricing]`，所以读合并视图
     （`pricing.sheet()`：远端 → pyproject → 旧 yaml）而不是只读那两份文件之一。
     """
     import yaml
 
-    from fastvideo3.core.config import CONFIGS_DIR
-    from fastvideo3.core.pricing import sheet
+    from fastvideo4.core.config import CONFIGS_DIR
+    from fastvideo4.core.pricing import sheet
 
     priced = set(sheet()["models"])
 

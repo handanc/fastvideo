@@ -55,7 +55,7 @@ def _crop_data(im: Image.Image, box: tuple[float, float, float, float], size=(24
 
 def extract_frames_gray(video: Path, workdir: Path, fps: int = 6) -> list[Path]:
     """抽帧一次（返回帧文件路径），供多个取样区复用同一批帧。"""
-    from fastvideo3.utils.ffmpeg import extract_frames, probe_duration
+    from fastvideo4.utils.ffmpeg import extract_frames, probe_duration
 
     dur = probe_duration(video)
     n = max(4, int(dur * fps))
@@ -98,7 +98,7 @@ def mouth_motion_series(video: Path, workdir: Path, fps: int = 6) -> list[float]
 
 def first_frame(video: Path, workdir: Path) -> Path | None:
     """抽首帧供定位（i2v/s2v 的画面构图基本继承首帧，定位一次即够）。"""
-    from fastvideo3.utils.ffmpeg import extract_frames
+    from fastvideo4.utils.ffmpeg import extract_frames
 
     try:
         frames = extract_frames(video, workdir / "_f0", count=1)
@@ -109,8 +109,8 @@ def first_frame(video: Path, workdir: Path) -> Path | None:
 
 async def locate_boxes(video: Path, vlm: Any, workdir: Path) -> Any | None:
     """用视觉模型定位嘴/眼取样框，返回 `RegionBoxes`；定位不到返回 None（不猜框）。"""
-    from fastvideo3.core.prompts import render_strict
-    from fastvideo3.core.schema import RegionBoxes
+    from fastvideo4.core.prompts import render_strict
+    from fastvideo4.core.schema import RegionBoxes
 
     if vlm is None:
         return None

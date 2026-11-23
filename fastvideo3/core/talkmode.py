@@ -135,8 +135,8 @@ def shots_need_last_frame(script: Any, talk_mode: str, scene_mode: str = "auto")
       需要运动片段的镜头都要尾帧（m4 发 last_frame）；C 链对白镜头的画面由口型
       通道直出且该通道吃尾帧，也要。
     """
-    from fastvideo3.core.scenegroup import MODE_FIRST_LAST, choose_input_mode, group_scenes
-    from fastvideo3.modules.m4_shots import shots_need_i2v
+    from fastvideo4.core.scenegroup import MODE_FIRST_LAST, choose_input_mode, group_scenes
+    from fastvideo4.modules.m4_shots import shots_need_i2v
 
     want: set[str] = set()
     scene_active = talk_mode == "scripted_talk" and scene_mode != "off"

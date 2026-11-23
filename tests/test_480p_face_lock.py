@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from fastvideo3.core.config import (
+from fastvideo4.core.config import (
     RESOLUTIONS,
     AppConfig,
     load_config,
@@ -30,11 +30,11 @@ from fastvideo3.core.config import (
     tier_hard_gates_faces,
     tier_locks_faces,
 )
-from fastvideo3.core.scenegroup import group_scenes
-from fastvideo3.core.schema import BaseInfo, DialogueLine, Shot, ShotType
-from fastvideo3.modules.m4_scene import plan_inputs
-from fastvideo3.providers.base import Capability, ref_paths
-from fastvideo3.providers.fake import FakeT2IProvider, fake_script
+from fastvideo4.core.scenegroup import group_scenes
+from fastvideo4.core.schema import BaseInfo, DialogueLine, Shot, ShotType
+from fastvideo4.modules.m4_scene import plan_inputs
+from fastvideo4.providers.base import Capability, ref_paths
+from fastvideo4.providers.fake import FakeT2IProvider, fake_script
 
 
 def _cfg(tmp_path, resolution: str, *, fake: bool = True) -> AppConfig:
@@ -110,7 +110,7 @@ def test_480p_t2i_provider_actually_accepts_reference_images(tmp_path):
     上一版的病灶就在这：开关为 true 而 provider 收不了参考图，`_char_refs` 每次返回空列表、
     只落一条事件，成片照常交付、看板全绿。
     """
-    from fastvideo3.providers.factory import make_provider
+    from fastvideo4.providers.factory import make_provider
 
     # fake=False：`--fake` 会把装配整个换成 Fake provider，那样测的是 Fake 的能力位，
     # 不是这一档真正会发请求的那个端点（这条测试要钉的正是"线路通了"）
@@ -129,8 +129,8 @@ async def test_m3_at_480p_sends_the_portrait_as_first_frame_condition(storage, l
     盘上判据用 `keyframe_gen{ref_count,ref_ids}`（README 的"通电判据"就是它）：
     按事件的 shot ↔ 剧本的 shot 对齐，比按下标 zip provider 的调用次数稳。
     """
-    from fastvideo3.core.schema import Asset
-    from fastvideo3.modules.m3_storyboard import build_storyboard
+    from fastvideo4.core.schema import Asset
+    from fastvideo4.modules.m3_storyboard import build_storyboard
 
     real = _cfg(tmp_path, "480P")
     script = fake_script(BaseInfo(topic="t"))
@@ -163,7 +163,7 @@ async def test_m3_at_480p_sends_the_portrait_as_first_frame_condition(storage, l
 
 def test_480p_never_auto_reshoots_even_when_the_face_clearly_drifts(tmp_path):
     """度量说脸换了人：480P 一条都不许进自动重做，720P 必须进（同报告同判据）。"""
-    from fastvideo3.modules.m9_metrics import gate_failures
+    from fastvideo4.modules.m9_metrics import gate_failures
 
     report = {
         "judge_trusted": True,
@@ -180,7 +180,7 @@ def test_480p_never_auto_reshoots_even_when_the_face_clearly_drifts(tmp_path):
 
 def test_resolutions_api_does_not_claim_480p_unlocks_faces(tmp_path):
     """/api/resolutions 的说明文字由该档的实际开关算出来（面板不抄第二份事实）。"""
-    from fastvideo3.app.api import resolutions
+    from fastvideo4.app.api import resolutions
 
     rows = {r["resolution"]: r for r in resolutions()["resolutions"]}
     for res in RESOLUTIONS:
@@ -192,7 +192,7 @@ def test_resolutions_api_does_not_claim_480p_unlocks_faces(tmp_path):
 
 def test_ref_image_warning_now_covers_480p(tmp_path):
     """选了收不了参考图的 t2i → 任何档都提前拦（判据取自 configs，不是硬写的分辨率清单）。"""
-    from fastvideo3.core.model_catalog import ref_image_warning
+    from fastvideo4.core.model_catalog import ref_image_warning
 
     assert ref_image_warning("t2i", "wanx2.1-t2i-turbo", "480P"), (
         "480P 已经锁脸了，还放用户挑一个收不了参考图的模型 = 静默漂脸"
@@ -203,7 +203,7 @@ def test_ref_image_warning_now_covers_480p(tmp_path):
 
 def test_tier_conflict_no_longer_tells_users_480p_does_not_lock_faces():
     """旧文案"480P 不锁脸"必须消失：判据改了还留着文案，就是对着不存在的前提劝用户加钱。"""
-    from fastvideo3.core.talkmode import tier_conflict
+    from fastvideo4.core.talkmode import tier_conflict
 
     msg = tier_conflict("scripted_talk", "480P")
     assert "不锁脸" not in msg, msg

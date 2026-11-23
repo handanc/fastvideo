@@ -11,7 +11,7 @@ def wav_duration(path: Path) -> float:
         with wave.open(str(path), "rb") as w:
             return w.getnframes() / float(w.getframerate() or 16000)
     except Exception:
-        from fastvideo3.utils.ffmpeg import probe_duration
+        from fastvideo4.utils.ffmpeg import probe_duration
 
         return probe_duration(path)
 
@@ -50,7 +50,7 @@ def normalize_wav(src: Path, out: Path, integrated: float = -16.0) -> Path:
     过轻的驱动音频会让嘴型幅度偏弱。归一到 -16 LUFS（竖屏平台交付标准）再喂入。
     失败时退回原文件（宁可不归一也不能丢音频）。
     """
-    from fastvideo3.utils.ffmpeg import loudnorm_filter, loudnorm_measure, run_ffmpeg
+    from fastvideo4.utils.ffmpeg import loudnorm_filter, loudnorm_measure, run_ffmpeg
 
     try:
         measured = loudnorm_measure(src)
